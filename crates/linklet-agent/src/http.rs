@@ -26,7 +26,7 @@ use std::net::TcpStream;
 use linklet_adapters::HkdfChannel;
 use linklet_core::auth::{self, Token};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
-use linklet_core::json;
+use linklet_core::json::{self, Json};
 use linklet_core::wire::{self, WireError};
 
 /// The largest request body the agent will read.
@@ -34,7 +34,22 @@ use linklet_core::wire::{self, WireError};
 /// A command line and a number. Anything larger is not a request this protocol
 /// has a meaning for, and reading it anyway is how a peer gets to decide how much
 /// memory the agent spends.
-const MAX_BODY: usize = 64 * 1024;
+/// The largest body the agent will read, in bytes.
+///
+/// Sixteen mebibytes, which is enough for a build artifact and small enough that a
+/// handful of simultaneous connections cannot exhaust the machine. **The body is
+/// read into memory in full**, so the real ceiling is this multiplied by the number
+/// of threads, and streaming is what would remove the limit. It is not done, and
+/// `docs/ROADMAP.md` records it rather than leaving the number to look arbitrary.
+const MAX_BODY: usize = 16 * 1024 * 1024;
+
+/// The largest body the agent will read for a JSON request.
+///
+/// Kept separate and small, because a request the agent parses as JSON has no
+/// business being megabytes: a body that big on the command path is either a bug or
+/// an attempt to make the agent allocate. A transfer gets the larger ceiling above
+/// and is not parsed as JSON at all.
+const MAX_JSON_BODY: usize = 1024 * 1024;
 
 /// One request, as far as the agent needs to understand it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +59,7 @@ pub struct Request {
     /// The path, with any query string already removed.
     pub path: String,
     /// The body, or empty.
-    pub body: String,
+    pub body: Vec<u8>,
     /// The `Authorization` header, if it was sent.
     pub authorization: Option<String>,
 }
@@ -146,7 +161,7 @@ pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
     }
 
     let body = match content_length {
-        None | Some(0) => String::new(),
+        None | Some(0) => Vec::new(),
         Some(length) => {
             if length > MAX_BODY {
                 return Err(ReadError::Body(format!(
@@ -157,7 +172,18 @@ pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
             reader
                 .read_exact(&mut buffer)
                 .map_err(|e| ReadError::Body(format!("{length} bytes declared, {e}")))?;
-            String::from_utf8_lossy(&buffer).into_owned()
+            // Bytes, not text. This used to be `from_utf8_lossy`, which silently
+
+            // replaces anything that is not UTF-8 with U+FFFD -- a silent
+
+            // modification of the data, in the path that handles input from the
+
+            // network. For a sealed body it is not a mangling but a corruption,
+
+            // and it was the reason the sealed body had to be hex in the first
+
+            // place. Both problems have the same fix.
+            buffer
         }
     };
 
@@ -174,22 +200,33 @@ pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
 /// `Connection: close` on every reply, because this server does not keep
 /// connections alive and a peer that assumed otherwise would wait for a second
 /// response that is never coming.
+/// A JSON body, as the bytes the framing layer now carries.
+///
+/// Exists so that changing the body type from `String` to `Vec<u8>` was a rename at
+/// every JSON site rather than a rewrite of each one.
+fn json_body(value: &Json) -> Vec<u8> {
+    json::write(value).into_bytes()
+}
+
 pub fn write_reply(
     stream: &mut TcpStream,
     status: u16,
     reason: &str,
-    body: &str,
+    body: &[u8],
 ) -> std::io::Result<()> {
-    let response = format!(
+    // The head is text; the body is bytes and is written after it. The two cannot
+    // be one format string any more, which is the whole change: a body that can
+    // only be text is a body that has to be hex to carry anything else.
+    let head = format!(
         "HTTP/1.1 {status} {reason}\r\n\
-         Content-Type: application/json\r\n\
+         Content-Type: application/octet-stream\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
-         \r\n\
-         {body}",
+         \r\n",
         body.len()
     );
-    stream.write_all(response.as_bytes())?;
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body)?;
     stream.flush()
 }
 
@@ -202,7 +239,7 @@ pub fn answer(
     request: &Request,
     expected: &Token,
     session: &mut Option<Box<dyn Sealed>>,
-) -> (u16, String, bool) {
+) -> (u16, Vec<u8>, bool) {
     // The handshake comes **before** authentication and carries no token, which
     // looks backwards and is not: the message holds nothing but a public key, so
     // there is nothing to protect, and refusing it would mean a caller could not
@@ -211,7 +248,7 @@ pub fn answer(
     if request.method == "POST" && request.path == wire::HELLO_PATH {
         return match begin_session(request, expected, session) {
             Ok(reply) => (200, reply, true),
-            Err(error) => (400, json::write(&wire::wire_error_to_json(&error)), false),
+            Err(error) => (400, json_body(&wire::wire_error_to_json(&error)), false),
         };
     }
 
@@ -226,7 +263,7 @@ pub fn answer(
     if !authorized {
         return (
             auth::UNAUTHORIZED,
-            json::write(&auth::unauthorized_body()),
+            json_body(&auth::unauthorized_body()),
             false,
         );
     }
@@ -234,7 +271,7 @@ pub fn answer(
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", path) if path == wire::IDENTITY_PATH => (
             200,
-            json::write(&linklet_core::object! {
+            json_body(&linklet_core::object! {
                 "name" => "linklet-agent",
                 "version" => env!("CARGO_PKG_VERSION"),
             }),
@@ -249,7 +286,7 @@ pub fn answer(
             let Some(session) = session.as_mut() else {
                 return (
                     400,
-                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                    json_body(&wire::wire_error_to_json(&WireError::BadRequest(
                         "a command must be sealed: send POST /handshake on this connection first"
                             .to_string(),
                     ))),
@@ -257,20 +294,11 @@ pub fn answer(
                 );
             };
 
-            // The body is hex of the sealed JSON, because the framing below this
-            // is textual by construction. Doubling the size of a body that is
-            // already capped is cheaper than making every path in the HTTP layer
-            // carry bytes, and it has the small virtue of being unable to contain
-            // a delimiter.
-            let Ok(ciphertext) = wire::from_hex(&request.body) else {
-                return (401, json::write(&auth::unauthorized_body()), false);
-            };
-
-            let Ok(plaintext) = session.open(&ciphertext) else {
+            let Ok(plaintext) = session.open(&request.body) else {
                 // The same refusal as a bad token, on purpose: whether the secret
                 // was wrong or the bytes were altered is not a distinction the
                 // caller needs and not one an attacker should be given.
-                return (401, json::write(&auth::unauthorized_body()), false);
+                return (401, json_body(&auth::unauthorized_body()), false);
             };
 
             // A sealed message that does not decode as UTF-8 is authentic and
@@ -279,7 +307,7 @@ pub fn answer(
             let Ok(text) = String::from_utf8(plaintext) else {
                 return (
                     400,
-                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                    json_body(&wire::wire_error_to_json(&WireError::BadRequest(
                         "the sealed request is not UTF-8".to_string(),
                     ))),
                     false,
@@ -289,7 +317,7 @@ pub fn answer(
             let Ok(value) = json::parse(&text) else {
                 return (
                     400,
-                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                    json_body(&wire::wire_error_to_json(&WireError::BadRequest(
                         "the sealed request is not JSON".to_string(),
                     ))),
                     false,
@@ -299,7 +327,7 @@ pub fn answer(
             let run_request = match wire::run_request_from_json(&value) {
                 Ok(run_request) => run_request,
                 Err(error) => {
-                    return (400, json::write(&wire::wire_error_to_json(&error)), false);
+                    return (400, json_body(&wire::wire_error_to_json(&error)), false);
                 }
             };
 
@@ -310,10 +338,10 @@ pub fn answer(
             // the clear would leak the command's output, which is the part a
             // caller most wants kept.
             match session.seal(reply.as_bytes()) {
-                Ok(sealed) => (200, wire::to_hex(&sealed), false),
+                Ok(sealed) => (200, sealed, false),
                 Err(_) => (
                     500,
-                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                    json_body(&wire::wire_error_to_json(&WireError::BadRequest(
                         "the reply could not be sealed".to_string(),
                     ))),
                     false,
@@ -326,7 +354,7 @@ pub fn answer(
         // is a client talking to the wrong program.
         (_, path) if path == wire::RUN_PATH || path == wire::IDENTITY_PATH => (
             405,
-            json::write(&wire::wire_error_to_json(&WireError::BadRequest(format!(
+            json_body(&wire::wire_error_to_json(&WireError::BadRequest(format!(
                 "{} is not a method this path answers",
                 request.method
             )))),
@@ -335,7 +363,7 @@ pub fn answer(
 
         (_, path) => (
             404,
-            json::write(&wire::wire_error_to_json(&WireError::NoSuchPath(
+            json_body(&wire::wire_error_to_json(&WireError::NoSuchPath(
                 path.to_string(),
             ))),
             false,
@@ -358,8 +386,22 @@ fn begin_session(
     request: &Request,
     expected: &Token,
     session: &mut Option<Box<dyn Sealed>>,
-) -> Result<String, WireError> {
-    let value = json::parse(&request.body)
+) -> Result<Vec<u8>, WireError> {
+    // The handshake is the one request whose body is JSON in the clear, so it is the
+    // one place the smaller ceiling applies. A handshake is a public key and a field
+    // name; a megabyte of it is a request to make the agent allocate.
+    if request.body.len() > MAX_JSON_BODY {
+        return Err(WireError::BadRequest(format!(
+            "a handshake of {} bytes is larger than the {MAX_JSON_BODY} byte limit",
+            request.body.len()
+        )));
+    }
+
+    // A handshake carries JSON, so bytes that are not UTF-8 make it malformed rather
+    // than valid-but-unreadable.
+    let text = std::str::from_utf8(&request.body)
+        .map_err(|_| WireError::BadRequest("the handshake is not UTF-8".to_string()))?;
+    let value = json::parse(text)
         .map_err(|error| WireError::BadRequest(format!("the handshake is not JSON: {error}")))?;
     let peer = wire::handshake_public_from_json(&value)?;
     let peer = EphemeralPublic::from_bytes(peer)
@@ -375,7 +417,7 @@ fn begin_session(
     // token.
     *session = Some(established);
 
-    Ok(json::write(&wire::handshake_to_json(ours.as_bytes())))
+    Ok(json_body(&wire::handshake_to_json(ours.as_bytes())))
 }
 
 /// Serves one connection: read, answer, and possibly read again.
@@ -398,7 +440,7 @@ pub fn serve_connection(mut stream: TcpStream, expected: &Token) {
             Ok(request) => answer(&request, expected, &mut session),
             Err(error) => (
                 400,
-                json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                json_body(&wire::wire_error_to_json(&WireError::BadRequest(
                     error.to_string(),
                 ))),
                 false,
@@ -426,3 +468,7 @@ pub fn serve_connection(mut stream: TcpStream, expected: &Token) {
         }
     }
 }
+// The body is the sealed bytes themselves. It used to be hex, because
+// the framing layer carried text -- which doubled every sealed body and,
+// worse, sent it through a lossy UTF-8 conversion that would have corrupted
+// the ciphertext instead of failing.

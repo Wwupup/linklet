@@ -111,7 +111,7 @@ impl Agent {
 /// Reads the body by its declared length rather than to the end, because the
 /// connection carries **two** messages now and reading to the end would swallow
 /// the second reply into the first.
-fn read_one(reader: &mut BufReader<TcpStream>) -> (u16, String) {
+fn read_one(reader: &mut BufReader<TcpStream>) -> (u16, Vec<u8>) {
     let mut status_line = String::new();
     reader
         .read_line(&mut status_line)
@@ -136,7 +136,7 @@ fn read_one(reader: &mut BufReader<TcpStream>) -> (u16, String) {
 
     let mut body = vec![0u8; content_length.unwrap_or(0)];
     reader.read_exact(&mut body).expect("the body");
-    (status, String::from_utf8_lossy(&body).into_owned())
+    (status, body)
 }
 
 /// The agent under test, with the handshake done and a session in hand.
@@ -175,6 +175,8 @@ impl Agent {
         reader.get_mut().flush().expect("flushing");
 
         let (status, body) = read_one(&mut reader);
+        // A handshake reply is JSON, so this one is text on purpose.
+        let body = String::from_utf8_lossy(&body).into_owned();
         assert_eq!(status, 200, "the handshake was refused: {body}");
         let theirs = wire::handshake_public_from_json(&json::parse(&body).expect("a JSON reply"))
             .expect("an ephemeral_public field");
@@ -193,31 +195,29 @@ impl Conversation {
             .session
             .seal(plaintext.as_bytes())
             .expect("sealing the request");
-        let hex = wire::to_hex(&sealed);
-
-        let request = format!(
-            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{hex}",
+        // The body is the sealed bytes. It used to be hex, because the framing layer
+        // carried text -- and a body that can only be text cannot carry ciphertext.
+        let head = format!(
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             wire::RUN_PATH,
-            hex.len()
+            sealed.len()
         );
         self.reader
             .get_mut()
-            .write_all(request.as_bytes())
+            .write_all(head.as_bytes())
+            .and_then(|()| self.reader.get_mut().write_all(&sealed))
             .expect("writing the sealed request");
         self.reader.get_mut().flush().expect("flushing");
 
         let (status, body) = read_one(&mut self.reader);
+        // A reply that is not 200 is the agent refusing, and it comes back as JSON.
+        // A 200 is the sealed result. The status line is what tells them apart, not a
+        // guess about the shape of the body.
         if status != 200 {
-            // A refusal comes back as plain JSON, which is how the two kinds of
-            // reply are told apart on this path.
-            return (status, body);
+            return (status, String::from_utf8_lossy(&body).into_owned());
         }
 
-        let ciphertext = wire::from_hex(body.trim()).expect("a hex sealed reply");
-        let plaintext = self
-            .session
-            .open(&ciphertext)
-            .expect("opening the sealed reply");
+        let plaintext = self.session.open(&body).expect("opening the sealed reply");
         (status, String::from_utf8(plaintext).expect("UTF-8"))
     }
 }

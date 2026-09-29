@@ -173,7 +173,9 @@ pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, C
         length = hello_body.len(),
     );
 
-    let hello_reply = round_trip(&mut reader, &hello, REPLY_ALLOWANCE)?;
+    // A handshake reply is JSON, so this is one of the two places a reply is text.
+    let hello_reply = String::from_utf8(round_trip(&mut reader, &hello, REPLY_ALLOWANCE)?)
+        .map_err(|e| CallError::Protocol(format!("the handshake reply is not text: {e}")))?;
     let hello_value = json::parse(&hello_reply).map_err(|e| CallError::Protocol(e.to_string()))?;
     let theirs = wire::handshake_public_from_json(&hello_value)
         .map_err(|e| CallError::Protocol(e.to_string()))?;
@@ -192,41 +194,39 @@ pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, C
     let sealed = session
         .seal(body.as_bytes())
         .map_err(|e| CallError::Protocol(format!("cannot seal the request: {e}")))?;
-    let sealed_hex = wire::to_hex(&sealed);
-
-    let sealed_request = format!(
+    // The head is text and the body is the sealed bytes, written after it. The two
+    // cannot be one string any more, and that is the point: a body that can only be
+    // text has to be hex to carry ciphertext, which doubles every transfer.
+    let head = format!(
         "POST {path} HTTP/1.1\r\n\
          Host: {host}\r\n\
          {credential}\
-         Content-Type: text/plain\r\n\
+         Content-Type: application/octet-stream\r\n\
          Content-Length: {length}\r\n\
          Connection: close\r\n\
-         \r\n\
-         {sealed_hex}",
+         \r\n",
         path = wire::RUN_PATH,
         host = address.text,
         credential = authorization_line(address),
-        length = sealed_hex.len(),
+        length = sealed.len(),
     );
+    reader
+        .get_mut()
+        .write_all(head.as_bytes())
+        .and_then(|()| reader.get_mut().write_all(&sealed))
+        .and_then(|()| reader.get_mut().flush())
+        .map_err(|e| CallError::Transport(format!("cannot send the request: {e}")))?;
+    // The request was written by hand above, so this reads its reply rather than
+    // sending one. `read_reply` raises on any status but 200, carrying the agent
+    // own words, so a body that arrives here is a result and not a refusal.
+    reader
+        .get_ref()
+        .set_read_timeout(Some(read_budget))
+        .map_err(|e| CallError::Transport(e.to_string()))?;
+    let sealed_reply = read_reply(&mut reader)?;
 
-    let sealed_reply = round_trip(&mut reader, &sealed_request, read_budget)?;
-
-    // The reply to a sealed request is hex, and nothing else in the protocol is.
-    // So a body that is not hex means the agent answered with a refusal or an
-    // error rather than a result -- and `read_reply` hands back the body, not the
-    // status line, so this is where a 401 surfaces. Reported as a refusal because
-    // that is what it is: the call could not be made.
-    let ciphertext = match wire::from_hex(sealed_reply.trim()) {
-        Ok(ciphertext) => ciphertext,
-        Err(_) => {
-            return Err(CallError::Refused(format!(
-                "the agent did not answer with a sealed reply: {}",
-                sealed_reply.trim()
-            )));
-        }
-    };
     let plaintext = session
-        .open(&ciphertext)
+        .open(&sealed_reply)
         .map_err(|e| CallError::Protocol(format!("the sealed reply did not open: {e}")))?;
     let text = String::from_utf8(plaintext)
         .map_err(|e| CallError::Protocol(format!("the sealed reply is not text: {e}")))?;
@@ -240,6 +240,8 @@ pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, C
 /// no arguments, changes nothing, and answers the question "is there an agent
 /// here" with a fact rather than an inference from whether a port is open.
 pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
+    // `get` turns the bytes into text, because every reply on that path is JSON. The
+    // conversion lives there rather than here so that it happens once for every GET.
     let reply = get(address, wire::IDENTITY_PATH)?;
     let value = json::parse(&reply).map_err(|e| CallError::Protocol(e.to_string()))?;
     value
@@ -277,7 +279,8 @@ fn get(address: &AgentAddress, path: &str) -> Result<String, CallError> {
         address.text,
         authorization_line(address)
     );
-    exchange(address, &request, REPLY_ALLOWANCE)
+    let bytes = exchange(address, &request, REPLY_ALLOWANCE)?;
+    String::from_utf8(bytes).map_err(|e| CallError::Protocol(format!("the reply is not text: {e}")))
 }
 
 /// Sends one request and returns the body of the reply.
@@ -285,7 +288,7 @@ fn exchange(
     address: &AgentAddress,
     request: &str,
     read_budget: Duration,
-) -> Result<String, CallError> {
+) -> Result<Vec<u8>, CallError> {
     let mut reader = open(address, read_budget)?;
     round_trip(&mut reader, request, read_budget)
 }
@@ -324,7 +327,7 @@ fn round_trip(
     reader: &mut BufReader<TcpStream>,
     request: &str,
     read_budget: Duration,
-) -> Result<String, CallError> {
+) -> Result<Vec<u8>, CallError> {
     reader
         .get_ref()
         .set_read_timeout(Some(read_budget))
@@ -349,7 +352,7 @@ fn round_trip(
 /// until the peer decides to close, and with no read timeout that is a hang. The
 /// length is there in the reply; using it is why the client does not need to
 /// trust the server to hang up.
-fn read_reply(reader: &mut BufReader<TcpStream>) -> Result<String, CallError> {
+fn read_reply(reader: &mut BufReader<TcpStream>) -> Result<Vec<u8>, CallError> {
     let mut status_line = String::new();
     reader
         .read_line(&mut status_line)
@@ -399,7 +402,10 @@ fn read_reply(reader: &mut BufReader<TcpStream>) -> Result<String, CallError> {
     reader
         .read_exact(&mut body)
         .map_err(|e| CallError::Transport(format!("the reply body was cut short: {e}")))?;
-    let body = String::from_utf8_lossy(&body).into_owned();
+    // Bytes. This used to be `from_utf8_lossy`, which replaces anything that is not
+    // UTF-8 with U+FFFD -- a silent modification of a reply, in the place where a
+    // silent modification is least acceptable. A sealed reply is not text at all, so
+    // the lossy conversion would have corrupted exactly the bodies that matter.
 
     if status == 200 {
         return Ok(body);
@@ -410,10 +416,14 @@ fn read_reply(reader: &mut BufReader<TcpStream>) -> Result<String, CallError> {
     // the error shape to report it -- but it is not decoded further, because an
     // error body is a message and the caller quotes it rather than acting on its
     // fields.
-    let reason = json::parse(&body)
+    let reason = std::str::from_utf8(&body)
         .ok()
+        .and_then(|text| json::parse(text).ok())
         .and_then(|value| value.get_str("error").map(str::to_string))
-        .unwrap_or(body);
+        // A refusal the agent did not phrase as JSON is still a refusal, and the
+        // caller wants to read it. Lossy here is deliberate: this is a message for a
+        // person, and the alternative is discarding it for being badly encoded.
+        .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
 
     Err(CallError::Refused(format!("HTTP {status}: {reason}")))
 }
@@ -432,3 +442,7 @@ pub fn render_call_error(error: &CallError) -> String {
         CallError::Refused(problem) => format!("the agent refused the request: {problem}"),
     }
 }
+// A body that reached here is a result: `read_reply` raises on any status
+// other than 200, carrying the agent's own words. So this used to decide
+// "is it hex" to tell a sealed result from a refusal, which was a guess about
+// the shape of a body when the status line already said which it was.
