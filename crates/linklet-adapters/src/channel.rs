@@ -49,7 +49,7 @@
 //! distinguishable from a dead agent. Those are real gaps and they are listed
 //! rather than left to be discovered.
 
-use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::aead::AeadInOut;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
 use hkdf::Hkdf;
 use sha2::Sha256;
@@ -265,35 +265,34 @@ impl Session {
 }
 
 impl Sealed for Session {
-    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError> {
+    fn seal_into(&mut self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<(), ChannelError> {
         let nonce = Self::nonce(self.sent);
         // The counter is authenticated but not transmitted: both sides know it, so
         // sending it would only give an attacker something to change. Putting it in
         // the associated data is what makes a relabelled message fail to open.
         let associated = self.sent.to_be_bytes();
 
-        let ciphertext = self
-            .seal_key
-            .encrypt(
-                &nonce,
-                Payload {
-                    msg: plaintext,
-                    aad: &associated,
-                },
-            )
+        // In place, which is the point of this method. The plaintext is copied into
+        // the caller's buffer and the tag is appended to it, so a chunk of a file is
+        // in memory once rather than three times -- and the caller can hand the same
+        // buffer back for the next chunk without the allocator being involved.
+        out.clear();
+        out.extend_from_slice(plaintext);
+        self.seal_key
+            .encrypt_in_place(&nonce, &associated, out)
             .map_err(|_| ChannelError::Refused("the cipher refused to seal".to_string()))?;
 
         // Advanced only after the seal succeeded: a failed seal that had already
         // consumed a nonce would leave the two sides counting differently, and every
         // later message would fail to open with no indication of why.
         self.sent += 1;
-        Ok(ciphertext)
+        Ok(())
     }
 
-    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, ChannelError> {
+    fn open_into(&mut self, ciphertext: &[u8], out: &mut Vec<u8>) -> Result<(), ChannelError> {
         // Refused before the cipher sees it, so that a message which is one byte
-        // long reports the ordering problem rather than an authentication failure
-        // that would send a reader looking for the wrong thing.
+        // long reports the authentication problem rather than being handed to a
+        // cipher that would report the same thing less clearly.
         if ciphertext.len() < TAG_BYTES {
             return Err(ChannelError::NotAuthentic);
         }
@@ -301,22 +300,21 @@ impl Sealed for Session {
         let nonce = Self::nonce(self.received);
         let associated = self.received.to_be_bytes();
 
-        let plaintext = self
-            .open_key
-            .decrypt(
-                &nonce,
-                Payload {
-                    msg: ciphertext,
-                    aad: &associated,
-                },
-            )
+        out.clear();
+        out.extend_from_slice(ciphertext);
+        self.open_key
+            .decrypt_in_place(&nonce, &associated, out)
             // One error for every way this can fail, because the ways are
             // indistinguishable to a caller and telling them apart would tell an
             // attacker which part of a guess was closer.
             .map_err(|_| ChannelError::NotAuthentic)?;
 
+        // `decrypt_in_place` truncates the buffer to the plaintext on success, so
+        // `out` holds the message and not the message plus a tag. That is a
+        // property of the library rather than of this code, which is the right
+        // place for it to live.
         self.received += 1;
-        Ok(plaintext)
+        Ok(())
     }
 }
 

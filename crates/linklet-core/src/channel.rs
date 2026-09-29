@@ -164,29 +164,55 @@ pub enum Role {
 
 /// One direction of a sealed conversation, as the core needs to see it.
 ///
-/// `seal` produces bytes for exactly one message and `open` accepts exactly one,
-/// in order. That is a narrower contract than "encrypt this" and it is deliberate:
+/// `seal_into` produces bytes for exactly one message and `open_into` accepts
+/// exactly one, in order. That is a narrower contract than "encrypt this" and it is
+/// deliberate:
 /// a channel that accepted messages in any order would need a window and a
 /// replayed-message policy, and both are decisions that belong to a caller who
 /// knows what it is protecting.
 pub trait Sealed {
-    /// Seals one message, in order.
+    /// Seals one message into `out`, in order. `out` is cleared first.
     ///
     /// # Errors
     ///
     /// [`ChannelError::Refused`] when the implementation cannot produce a message
-    /// at all. It must not be used for "the other side sent something bad" --
-    /// that is [`Sealed::open`]'s business.
-    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError>;
+    /// at all. It must not be used for "the other side sent something bad" -- that
+    /// is [`Sealed::open_into`]'s business.
+    fn seal_into(&mut self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<(), ChannelError>;
 
-    /// Opens the next message, in order.
+    /// Opens the next message into `out`, in order. `out` is cleared first.
     ///
     /// # Errors
     ///
-    /// [`ChannelError::NotAuthentic`] for bytes that were not produced by the
-    /// other side of this session, and [`ChannelError::OutOfOrder`] for a message
-    /// that is authentic but is not the one expected next.
-    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, ChannelError>;
+    /// [`ChannelError::NotAuthentic`] for bytes that were not produced by the other
+    /// side of this session, and [`ChannelError::OutOfOrder`] for a message that is
+    /// authentic but is not the one expected next.
+    fn open_into(&mut self, ciphertext: &[u8], out: &mut Vec<u8>) -> Result<(), ChannelError>;
+
+    /// Seals one message and returns it.
+    ///
+    /// The convenience form, for a caller whose messages are small enough that a
+    /// second buffer is not a decision worth making.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sealed::seal_into`].
+    fn seal(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError> {
+        let mut out = Vec::new();
+        self.seal_into(plaintext, &mut out)?;
+        Ok(out)
+    }
+
+    /// Opens the next message and returns it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Sealed::open_into`].
+    fn open(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, ChannelError> {
+        let mut out = Vec::new();
+        self.open_into(ciphertext, &mut out)?;
+        Ok(out)
+    }
 }
 
 /// Turns a shared secret and a session identifier into a sealed conversation.
