@@ -11,6 +11,11 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
+- **The `testbed` MCP tool.** `linklet testbed check` shipped as a command and
+  was, for a while, a capability no agent could reach: the surface was never told
+  about it. An agent cannot ask for what it has not been told about.
+- **`LICENSE`.** `Cargo.toml` has claimed MIT since the first commit; a
+  declaration is not a file, and the two disagreeing is worse than neither.
 - `tools/verify.ps1` -- the four gates in one command, and the entry point every
   caller refactors through: a person, a hook, or CI. It exists because a commit
   went in red while those four commands were documented in three separate files.
@@ -19,6 +24,16 @@ to answer one question: **what can I do now that I could not do before?**
   and that every `docs/...` path either of them names exists. Two such faults
   were found by hand before this test existed, and a fault found twice by hand
   belongs in a test.
+
+### Changed
+
+- `dispatch` takes a `ToolRunner` rather than a closure per capability. With one
+  tool the closure read fine; with two it would have been two closures and a
+  signature that was the least readable thing in the file.
+- The MCP session tests set the process's working directory instead of inheriting
+  it. `cargo test` starts the binary in the crate directory, and a test that
+  assumed the repository root failed with "cannot read target/..." while the file
+  was demonstrably there.
 
 ### Fixed
 

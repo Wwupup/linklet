@@ -13,27 +13,51 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**One tool.**
+**Two tools.**
 
 | tool | question it answers |
 |---|---|
 | `check` | does each host:port accept a TCP connection |
+| `testbed` | does a machine match a testbed specification file |
 
-That is the whole list, and the size is the point. An earlier generation of this
-idea grew to seventeen tools and 13,758 characters of description, most of it
-spent telling the reader when to use a *different* tool. Nobody decided to build
-that; it accumulated one reasonable-looking addition at a time.
+The second one was added late and is the reason the count is asserted rather
+than described. `linklet testbed check` shipped as a command first, and for a
+while it existed where no agent could reach it: the capability was built and the
+surface was never told. An agent cannot ask for what it has not been told about,
+so that is a bug in the opposite direction from the usual one -- not a tool with
+nothing behind it, but something behind it and no tool.
+
+That is also the argument for why these two are separate rather than one tool
+with two argument sets. `check` needs nothing but an address; `testbed` needs a
+file on disk. Folding them together would produce a description that has to
+explain both, which is where the manual starts.
+
+The size is still the point. An earlier generation of this idea grew to
+seventeen tools and 13,758 characters of description, most of it spent telling
+the reader when to use a *different* tool. Nobody decided to build that; it
+accumulated one reasonable-looking addition at a time.
 
 The three rules that keep it from happening again are in
 `crates/linklet-core/src/tool.rs`, and `crates/linklet-core/tests/tool_surface.rs`
 enforces them: the tool count is asserted, no description may name another tool,
-and every description has a character budget.
+and every description has a character budget. Growing this list means changing
+the asserted number and saying in the commit why the new question needs its own
+tool.
 
 `exec`, `logs` and file transfer are **absent, not stubbed**. They need something
 on the far side to talk to, and there is nothing there yet. A tool that answers
 "not implemented" is worse than a missing one: the agent has spent a turn on it
 and cannot tell a missing feature from a broken one. They arrive with the agent
 that serves them.
+
+### The `spec` argument is a path, and paths are a boundary
+
+`testbed` reads a file, so it takes a path, so it is the one argument in this
+surface that can name something outside the project. It refuses an absolute path
+and it refuses `..`. The reason is not that this tool is dangerous; it is that an
+agent handed a filesystem-wide read has been given a capability nobody asked for,
+and the refusal names itself instead of surfacing later as a path error from the
+operating system.
 
 ## What a call looks like
 

@@ -17,13 +17,42 @@ use linklet_core::json::{self, Json};
 
 /// Sends each message to `linklet mcp` and returns the replies it produced.
 ///
+/// The repository root, from this crate's directory.
+///
+/// `ancestors()` yields the path itself first, so the root is two steps up from
+/// `crates/linklet-cli`.
+fn repo_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the crate directory has a repository root two levels up")
+        .to_path_buf()
+}
+
+/// Sends each message to `linklet mcp` and returns the replies it produced.
+///
+/// The working directory is set explicitly rather than inherited. `cargo test`
+/// starts the binary in the *crate* directory, not the repository root, and a
+/// test that assumed otherwise failed with "cannot read target/..." while the
+/// file was demonstrably there -- the assertion was right and the assumption was
+/// wrong. A tool whose whole job is reading relative paths should be handed a
+/// known directory by the test that drives it.
+///
 /// The whole session is written at once rather than interactively, which is
 /// enough to prove the framing: if replies were buffered until exit, they would
 /// still arrive, and if the newline framing were wrong the parse below would
 /// fail. Flushing is proven by the round trip completing at all.
 fn session(messages: &[&str]) -> Vec<Json> {
+    let root = repo_root();
+    assert!(
+        root.join("Cargo.toml").is_file(),
+        "expected the repository root at {}, and found no Cargo.toml there",
+        root.display()
+    );
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_linklet"))
         .arg("mcp")
+        .current_dir(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -129,15 +158,100 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
         .expect("a tools array")
         .to_vec();
 
-    assert_eq!(tools.len(), 1, "the surface is one tool: {tools:#?}");
+    // Two, asserted here as well as in the core. The core test checks the list
+    // and the dispatcher agree; this one checks the list survives the wire, which
+    // is the part a session can fail at and a unit test cannot.
+    assert_eq!(tools.len(), 2, "the surface is two tools: {tools:#?}");
     assert_eq!(tools[0].get_str("name"), Some("check"));
+    assert_eq!(tools[1].get_str("name"), Some("testbed"));
 
-    let description = tools[0].get_str("description").expect("a description");
+    for tool in &tools {
+        let description = tool.get_str("description").expect("a description");
+        assert!(
+            description.len() < 80,
+            "{}'s description is {} characters: {description:?}",
+            tool.get_str("name").unwrap_or("?"),
+            description.len()
+        );
+    }
+}
+
+#[test]
+fn the_testbed_tool_answers_from_a_real_file() {
+    // The end-to-end path for the second tool: a specification read from disk by
+    // the process, judged against this machine, rendered back down the pipe.
+    //
+    // The file is written under the repository's own `target/`, and `session()`
+    // sets the process's working directory to the repository root, so the
+    // relative path below names the file the tool will read. Both halves are
+    // needed: the tool refuses an absolute path on purpose, and `cargo test`
+    // starts the binary in the crate directory unless told otherwise.
+    //
+    // `target/` is gitignored, so a failure that leaves the file behind leaves
+    // nothing tracked. The artifact required is `Cargo.toml`, so the answer on a
+    // healthy checkout is READY -- which also makes this catch being run
+    // somewhere that is not the repository.
+    let repo_root = repo_root();
     assert!(
-        description.len() < 80,
-        "the description is {} characters: {description:?}",
-        description.len()
+        repo_root.join("Cargo.toml").is_file(),
+        "expected the repository root at {}, and found no Cargo.toml there",
+        repo_root.display()
     );
+
+    let spec_path = repo_root.join("target/session-smoke.testbed");
+    std::fs::write(
+        &spec_path,
+        "name session-smoke\nrequire artifact Cargo.toml present\n",
+    )
+    .expect("writing the spec");
+
+    let call = request(
+        1,
+        "tools/call",
+        r#"{"name":"testbed","arguments":{"spec":"target/session-smoke.testbed","target":"this-machine"}}"#,
+    );
+    let replies = session(&[&call]);
+
+    let _ = std::fs::remove_file(&spec_path);
+
+    let text = reply_for(&replies, 1)
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(Json::as_array)
+        .and_then(|content| content.first())
+        .and_then(|first| first.get_str("text"))
+        .expect("a text block")
+        .to_string();
+
+    assert!(
+        text.starts_with("testbed session-smoke  target this-machine"),
+        "got {text:?}"
+    );
+    assert!(
+        text.ends_with("READY 1 of 1 requirements met"),
+        "got {text:?}"
+    );
+}
+
+#[test]
+fn a_spec_path_outside_the_tree_is_refused_before_the_filesystem_sees_it() {
+    let call = request(
+        1,
+        "tools/call",
+        r#"{"name":"testbed","arguments":{"spec":"C:\\Windows\\win.ini","target":"box"}}"#,
+    );
+    let replies = session(&[&call]);
+
+    let text = reply_for(&replies, 1)
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(Json::as_array)
+        .and_then(|content| content.first())
+        .and_then(|first| first.get_str("text"))
+        .expect("a text block")
+        .to_string();
+
+    assert!(text.contains("outside the working tree"), "got {text:?}");
 }
 
 #[test]

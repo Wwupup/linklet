@@ -47,9 +47,14 @@ pub enum Action {
 
 /// The closure a tool call goes through.
 ///
+/// What a tool call goes through.
+///
 /// Named so the signature in [`handle`] stays readable, and so the integration
-/// test can supply the same closure the binary does.
-pub type RunTool<'a> = dyn Fn(&str, std::time::Duration) -> String + 'a;
+/// test can supply the same thing the binary does. It is the core's own trait
+/// rather than a closure declared here: this crate decides how to talk to a
+/// machine, not what a tool is, and a closure type defined here would put that
+/// decision on the wrong side of the line the whole layout rests on.
+pub type RunTool<'a> = dyn linklet_core::ToolRunner + 'a;
 
 /// Handles one message and says what to send back.
 ///

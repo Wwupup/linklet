@@ -14,42 +14,66 @@ use std::time::Duration;
 use linklet_core::json::Json;
 use linklet_core::object;
 use linklet_core::{
-    MAX_DESCRIPTION_CHARS, ToolError, dispatch, tool_list_json, tools, total_description_chars,
+    MAX_DESCRIPTION_CHARS, ToolError, ToolOutcome, ToolRunner, dispatch, tool_list_json, tools,
+    total_description_chars,
 };
 
-/// A stand-in for the network: records what it was asked, returns a fixed body.
+/// A stand-in for the machine: records what it was asked, returns fixed bodies.
+///
+/// Implements the same trait the binary does, so every test below exercises the
+/// argument handling and the answering without a network or a filesystem. That
+/// is the payoff of the trait: two capabilities, no closures to thread through
+/// dispatch, and one stub that answers both.
 #[derive(Default)]
 struct FakeRun {
-    calls: RefCell<Vec<(String, Duration)>>,
+    reachability_calls: RefCell<Vec<(String, Duration)>>,
+    testbed_calls: RefCell<Vec<(String, String)>>,
 }
 
 impl FakeRun {
-    fn record(&self, specs: &str, budget: Duration) -> String {
-        self.calls.borrow_mut().push((specs.to_string(), budget));
-        "live 10.0.0.5:8787 connected\n1 of 1 live".to_string()
+    fn testbed_calls(&self) -> Vec<(String, String)> {
+        self.testbed_calls.borrow().clone()
     }
 }
 
-/// The closure `dispatch` takes, bound to a recorder.
-fn runner(fake: &FakeRun) -> impl Fn(&str, Duration) -> String + '_ {
-    move |specs, budget| fake.record(specs, budget)
+impl ToolRunner for FakeRun {
+    fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome {
+        self.reachability_calls
+            .borrow_mut()
+            .push((targets.to_string(), budget));
+        ToolOutcome::ok("live 10.0.0.5:8787 connected\n1 of 1 live")
+    }
+
+    fn testbed(&self, spec_path: &str, target: &str) -> ToolOutcome {
+        self.testbed_calls
+            .borrow_mut()
+            .push((spec_path.to_string(), target.to_string()));
+        ToolOutcome::ok("testbed launch-smoke  target box\nREADY 1 of 1 requirements met")
+    }
 }
 
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_is_exactly_one_tool() {
+fn there_are_exactly_two_tools() {
+    // The count is the assertion. Growing this list is a decision, and the way
+    // to make it is to change this number and say in the commit why the new tool
+    // earns its place -- which is exactly the conversation that was never had
+    // the last time.
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
     // the last time.
     assert_eq!(
         tools().len(),
-        1,
+        2,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
-    assert_eq!(tools()[0].name, "check");
+    // Both names, so a tool cannot be swapped for another without this failing.
+    // A count alone would not notice.
+    let names: Vec<&str> = tools().iter().map(|tool| tool.name).collect();
+    assert_eq!(names, vec!["check", "testbed"]);
 }
 
 #[test]
@@ -147,7 +171,7 @@ fn the_list_and_the_dispatcher_agree_on_the_names() {
     assert_eq!(listed, known);
 
     for name in &listed {
-        let result = dispatch(name, &object! {}, &|_, _| String::new());
+        let result = dispatch(name, &object! {}, &FakeRun::default());
         // Bad arguments rather than "no such tool", which is the distinction
         // being checked: the name is recognised.
         assert!(
@@ -188,7 +212,7 @@ fn the_schema_rejects_arguments_the_tool_does_not_take() {
 
 #[test]
 fn an_unknown_tool_is_refused_by_name() {
-    let result = dispatch("nope", &object! {}, &|_, _| String::new());
+    let result = dispatch("nope", &object! {}, &FakeRun::default());
     assert_eq!(result, Err(ToolError::NoSuchTool("nope".to_string())));
     assert!(
         result
@@ -203,10 +227,10 @@ fn targets_are_joined_into_the_one_spec_the_parser_takes() {
     let fake = FakeRun::default();
     let arguments = object! { "targets" => vec![Json::str("a:1"), Json::str("b:2")] };
 
-    let outcome = dispatch("check", &arguments, &runner(&fake)).expect("a valid call");
+    let outcome = dispatch("check", &arguments, &fake).expect("a valid call");
 
     assert!(!outcome.is_error);
-    let calls = fake.calls.borrow();
+    let calls = fake.reachability_calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "a:1,b:2");
 }
@@ -218,17 +242,17 @@ fn the_timeout_defaults_and_is_passed_through() {
     dispatch(
         "check",
         &object! { "targets" => vec![Json::str("a:1")] },
-        &runner(&fake),
+        &fake,
     )
     .expect("a valid call");
     dispatch(
         "check",
         &object! { "targets" => vec![Json::str("a:1")], "timeout" => 9i64 },
-        &runner(&fake),
+        &fake,
     )
     .expect("a valid call");
 
-    let calls = fake.calls.borrow();
+    let calls = fake.reachability_calls.borrow();
     assert_eq!(calls[0].1, Duration::from_secs(5), "the default");
     assert_eq!(calls[1].1, Duration::from_secs(9), "the argument");
 }
@@ -242,7 +266,7 @@ fn a_timeout_out_of_range_is_refused_rather_than_clamped() {
         let result = dispatch(
             "check",
             &object! { "targets" => vec![Json::str("a:1")], "timeout" => value },
-            &runner(&fake),
+            &fake,
         );
         assert!(
             matches!(
@@ -256,7 +280,7 @@ fn a_timeout_out_of_range_is_refused_rather_than_clamped() {
         );
     }
     assert!(
-        fake.calls.borrow().is_empty(),
+        fake.reachability_calls.borrow().is_empty(),
         "a refused call must not reach the network"
     );
 }
@@ -293,7 +317,7 @@ fn missing_or_misshapen_arguments_are_named() {
     ];
 
     for (arguments, expected_name, expected_problem) in cases {
-        let result = dispatch("check", &arguments, &runner(&fake));
+        let result = dispatch("check", &arguments, &fake);
         match result {
             Err(ToolError::BadArgument { name, problem }) => {
                 assert_eq!(name, expected_name, "for {arguments:?}");
@@ -305,7 +329,7 @@ fn missing_or_misshapen_arguments_are_named() {
             other => panic!("{arguments:?} should be a bad argument, got {other:?}"),
         }
     }
-    assert!(fake.calls.borrow().is_empty());
+    assert!(fake.reachability_calls.borrow().is_empty());
 }
 
 #[test]
@@ -316,44 +340,145 @@ fn an_unknown_argument_is_refused_rather_than_ignored() {
     let result = dispatch(
         "check",
         &object! { "targets" => vec![Json::str("a:1")], "timout" => 5i64 },
-        &runner(&fake),
+        &fake,
     );
 
     assert_eq!(
         result,
         Err(ToolError::UnknownArgument("timout".to_string()))
     );
-    assert!(fake.calls.borrow().is_empty());
+    assert!(fake.reachability_calls.borrow().is_empty());
 }
 
 #[test]
 fn bad_news_is_not_an_error() {
     // "Three machines are down" is a successful call. Marking it an error would
     // teach the agent to retry a tool that worked.
+    //
+    // This runner answers with bad news, which is the case the distinction is
+    // about: the capability worked and the answer was unwelcome.
+    struct Down;
+    impl ToolRunner for Down {
+        fn reachability(&self, _targets: &str, _budget: Duration) -> ToolOutcome {
+            ToolOutcome::ok("dead a:1 nothing is listening on that port\n0 of 1 live")
+        }
+        fn testbed(&self, _spec_path: &str, _target: &str) -> ToolOutcome {
+            ToolOutcome::ok("NOT READY 0 of 1 requirements met")
+        }
+    }
+
     let outcome = dispatch(
         "check",
         &object! { "targets" => vec![Json::str("a:1")] },
-        &|_, _| "dead a:1 nothing is listening on that port\n0 of 1 live".to_string(),
+        &Down,
     )
     .expect("a valid call");
 
-    assert!(!outcome.is_error);
+    assert!(!outcome.is_error, "bad news is not a failed call");
     assert!(outcome.text.contains("0 of 1 live"));
 }
 
+// --- the second tool ---------------------------------------------------------
+
 #[test]
-fn the_reply_is_the_text_the_checker_produced() {
-    // The body the agent reads, carried through unchanged. Not JSON: the
-    // protocol already wraps the result in one, a second encoding would be a
-    // second thing to document, and a model reads a line of text better than an
-    // escaped string.
-    let produced = "live a:1 connected\n1 of 1 live";
+fn the_testbed_tool_passes_its_two_arguments_through() {
+    let fake = FakeRun::default();
+    let arguments =
+        object! { "spec" => Json::str("specs/launch.testbed"), "target" => Json::str("box-a") };
+
+    let outcome = dispatch("testbed", &arguments, &fake).expect("a valid call");
+
+    assert!(!outcome.is_error);
+    assert_eq!(
+        fake.testbed_calls(),
+        vec![("specs/launch.testbed".to_string(), "box-a".to_string())]
+    );
+    assert!(
+        fake.reachability_calls.borrow().is_empty(),
+        "calling one tool must not run the other"
+    );
+}
+
+#[test]
+fn a_spec_path_outside_the_working_tree_is_refused() {
+    // An agent that can read any file on the machine has been handed more than
+    // this tool is for. The refusal names the reason rather than failing later
+    // with a path error from the filesystem.
+    let fake = FakeRun::default();
+
+    for path in [
+        "C:\\Windows\\System32\\config\\SAM",
+        "/etc/passwd",
+        "\\\\server\\share\\spec.testbed",
+        "..\\..\\secret.testbed",
+        "specs/../../secret.testbed",
+    ] {
+        let arguments = object! { "spec" => Json::str(path), "target" => Json::str("box") };
+        let result = dispatch("testbed", &arguments, &fake);
+
+        assert!(
+            matches!(result, Err(ToolError::BadArgument { name: "spec", .. })),
+            "{path:?} should be refused, got {result:?}"
+        );
+    }
+
+    assert!(
+        fake.testbed_calls().is_empty(),
+        "a refused path must not reach the filesystem"
+    );
+}
+
+#[test]
+fn a_relative_spec_path_is_accepted() {
+    let fake = FakeRun::default();
+    for path in [
+        "specs/a.testbed",
+        "a.testbed",
+        "specs\\a.testbed",
+        "./a.testbed",
+    ] {
+        let arguments = object! { "spec" => Json::str(path), "target" => Json::str("box") };
+        let result = dispatch("testbed", &arguments, &fake);
+        assert!(
+            result.is_ok(),
+            "{path:?} should be accepted, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn the_testbed_tool_needs_both_of_its_arguments() {
+    let fake = FakeRun::default();
+
+    let no_spec = object! { "target" => Json::str("box") };
+    assert!(matches!(
+        dispatch("testbed", &no_spec, &fake),
+        Err(ToolError::BadArgument { name: "spec", .. })
+    ));
+
+    let no_target = object! { "spec" => Json::str("a.testbed") };
+    assert!(matches!(
+        dispatch("testbed", &no_target, &fake),
+        Err(ToolError::BadArgument { name: "target", .. })
+    ));
+}
+
+#[test]
+fn the_reply_is_the_text_the_runner_produced() {
+    // The body the agent reads is the runner's text, carried through unchanged.
+    // Not JSON: the protocol already wraps the result in one, a second encoding
+    // would be a second thing to document, and a model reads a line of text
+    // better than an escaped string.
+    let fake = FakeRun::default();
     let outcome = dispatch(
         "check",
         &object! { "targets" => vec![Json::str("a:1")] },
-        &|_, _| produced.to_string(),
+        &fake,
     )
     .expect("a valid call");
 
-    assert_eq!(outcome.text, produced);
+    assert_eq!(
+        outcome.text, "live 10.0.0.5:8787 connected\n1 of 1 live",
+        "the reply should be whatever the runner said, not something dispatch composed"
+    );
 }

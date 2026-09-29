@@ -39,6 +39,6 @@ pub use probe::{
 };
 pub use target::{Host, Port, Target, parse_targets};
 pub use tool::{
-    MAX_DESCRIPTION_CHARS, Tool, ToolError, ToolOutcome, dispatch, tool_list_json, tools,
-    total_description_chars,
+    MAX_DESCRIPTION_CHARS, Tool, ToolError, ToolOutcome, ToolRunner, dispatch, tool_list_json,
+    tools, total_description_chars,
 };

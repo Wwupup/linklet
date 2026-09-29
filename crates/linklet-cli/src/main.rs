@@ -31,8 +31,8 @@ use std::time::Duration;
 use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::{
-    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_TARGETS, Report, Summary, check_targets,
-    exit_code_for, parse_targets, render,
+    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_TARGETS, Report, Summary, ToolOutcome,
+    ToolRunner, check_targets, exit_code_for, parse_targets, render,
 };
 
 /// The usage text, printed for `--help` and for a wrong invocation.
@@ -311,23 +311,58 @@ fn tool_text(reports: &[Report]) -> String {
     out.join("\n")
 }
 
+/// The capabilities, backed by a real machine and a real filesystem.
+///
+/// The binary's implementation of the core's [`ToolRunner`]. Everything it does
+/// is I/O; everything it decides is in `check_specs` or in `linklet_core::testbed`,
+/// which is why the tool surface has twenty tests and this has none of its own
+/// beyond the sessions in `tests/mcp_session.rs`.
+#[derive(Debug, Clone, Copy, Default)]
+struct LiveRunner;
+
+impl ToolRunner for LiveRunner {
+    fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome {
+        match check_specs(targets, budget, MAX_TARGETS) {
+            Ok(reports) => ToolOutcome::ok(tool_text(&reports)),
+            // A target that does not parse is a failed call: the agent asked for
+            // something this tool cannot interpret, and it has to change the
+            // request. Bad news about a machine is the other case entirely.
+            Err(CheckFailure::BadSpec(problem)) => {
+                ToolOutcome::failed(format!("the targets do not parse: {problem}"))
+            }
+            Err(CheckFailure::Refused(error)) => {
+                ToolOutcome::failed(format!("the run was refused: {error}"))
+            }
+        }
+    }
+
+    fn testbed(&self, spec_path: &str, target: &str) -> ToolOutcome {
+        let Ok(text) = std::fs::read_to_string(spec_path) else {
+            // The path was already checked to be inside the working tree, so a
+            // failure here is a file that is genuinely not there -- which the
+            // agent fixes by writing it, not by retrying.
+            return ToolOutcome::failed(format!("cannot read {spec_path}"));
+        };
+
+        let Ok(testbed) = Testbed::parse(&text) else {
+            let problem = Testbed::parse(&text).expect_err("just failed");
+            return ToolOutcome::failed(format!("{spec_path}: {problem}"));
+        };
+
+        let verdicts = testbed.check(&SystemProber);
+        ToolOutcome::ok(testbed::render(&testbed, &verdicts, target))
+    }
+}
+
 /// Runs the MCP server on stdio until the client closes it.
 ///
 /// Returns the exit code. `serve` reports an I/O failure as an `Err`, and a
 /// broken pipe is the normal way this ends -- the client exits and stops reading
 /// -- so it is reported on stderr rather than as a crash.
 fn run_mcp() -> u8 {
-    let run_tool = |specs: &str, budget: Duration| -> String {
-        match check_specs(specs, budget, MAX_TARGETS) {
-            Ok(reports) => tool_text(&reports),
-            Err(CheckFailure::BadSpec(problem)) => format!("the targets do not parse: {problem}"),
-            Err(CheckFailure::Refused(error)) => format!("the run was refused: {error}"),
-        }
-    };
-
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    match serve(stdin.lock(), stdout.lock(), &run_tool) {
+    match serve(stdin.lock(), stdout.lock(), &LiveRunner) {
         Ok(_) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("linklet: mcp session ended: {error}");

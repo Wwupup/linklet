@@ -107,6 +107,29 @@ impl std::fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
+/// Everything the tools can do.
+///
+/// A trait rather than more closure parameters. With one tool, [`dispatch`] took
+/// one closure and read fine; with two it would take two, and every test would
+/// have to supply a stub for the capability it does not exercise. The signature
+/// would become the least readable part of this file.
+///
+/// The same inversion as [`crate::Probe`] and [`crate::testbed::Prober`]: this
+/// crate decides *what to ask*, an implementation decides *how to ask a machine*,
+/// and `tests/tool_surface.rs` supplies one made of data.
+///
+/// Returns [`ToolOutcome`] rather than `String` so a capability can report its
+/// own failure. A testbed specification that does not exist is a failed call; a
+/// machine that is not ready is a successful one, and only the implementation
+/// knows which it is holding.
+pub trait ToolRunner {
+    /// Whether each target accepts a connection.
+    fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome;
+
+    /// Whether a machine matches a testbed specification.
+    fn testbed(&self, spec_path: &str, target: &str) -> ToolOutcome;
+}
+
 /// The name of a JSON value's type, for an error message.
 fn type_name(value: &Json) -> &'static str {
     match value {
@@ -130,6 +153,46 @@ fn reject_unknown(arguments: &Json, allowed: &[&str]) -> Result<(), ToolError> {
         }
     }
     Ok(())
+}
+
+/// A required string argument.
+fn required_str(arguments: &Json, name: &'static str) -> Result<String, ToolError> {
+    match arguments.get(name) {
+        Some(Json::Str(text)) => Ok(text.clone()),
+        Some(other) => Err(ToolError::BadArgument {
+            name,
+            problem: format!("expected a string, got {}", type_name(other)),
+        }),
+        None => Err(ToolError::BadArgument {
+            name,
+            problem: "missing".to_string(),
+        }),
+    }
+}
+
+/// A path that stays inside the working tree.
+///
+/// An agent that can name any file on the machine has been handed more than this
+/// tool is for, and "read the specification at C:\Windows\..." is not a request
+/// worth serving. Rejecting the two ways out of the tree -- an absolute path and
+/// a `..` -- is cheaper than reasoning about what a caller meant, and a refusal
+/// names the reason.
+fn relative_spec_path(arguments: &Json) -> Result<String, ToolError> {
+    let path = required_str(arguments, "spec")?;
+
+    let is_absolute = path.starts_with('/')
+        || path.starts_with('\\')
+        || path.chars().nth(1).is_some_and(|c| c == ':');
+    let climbs_out = path.split(['/', '\\']).any(|part| part == "..");
+
+    if is_absolute || climbs_out {
+        return Err(ToolError::BadArgument {
+            name: "spec",
+            problem: format!("{path:?} is outside the working tree; give a path inside it"),
+        });
+    }
+
+    Ok(path)
 }
 
 /// The target list, as the one spec the parser takes.
@@ -221,33 +284,61 @@ pub const MAX_DESCRIPTION_CHARS: usize = 120;
 
 /// The tools this build offers.
 ///
-/// One. See the rules at the top.
+/// Two. Each has an argument for why it is not part of the other: `check` asks
+/// whether a port answers, which needs no configuration at all, and `testbed`
+/// asks whether a machine satisfies a written specification, which needs a file.
+/// Folding the second into the first would make `check` a tool with two
+/// mutually exclusive argument sets and a description that has to explain both.
 pub fn tools() -> Vec<Tool> {
-    vec![Tool {
-        name: "check",
-        description: "Report whether each host:port accepts a TCP connection.",
-        input_schema: json::parse(
-            r#"{
-                "type": "object",
-                "properties": {
-                    "targets": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "host:port, for example 10.0.0.5:8787"
+    vec![
+        Tool {
+            name: "check",
+            description: "Report whether each host:port accepts a TCP connection.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "targets": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "host:port, for example 10.0.0.5:8787"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "seconds to wait for each host",
+                            "minimum": 1,
+                            "maximum": 10
+                        }
                     },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "seconds to wait for each host",
-                        "minimum": 1,
-                        "maximum": 10
-                    }
-                },
-                "required": ["targets"],
-                "additionalProperties": false
-            }"#,
-        )
-        .expect("the schema above is a literal and parses"),
-    }]
+                    "required": ["targets"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
+        Tool {
+            name: "testbed",
+            description: "Report whether a machine matches a testbed specification file.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "spec": {
+                            "type": "string",
+                            "description": "path to a testbed file, inside the working tree"
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "a label for the machine being checked"
+                        }
+                    },
+                    "required": ["spec", "target"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
+    ]
 }
 
 /// The tool list in the shape `tools/list` replies with.
@@ -297,21 +388,20 @@ pub fn total_description_chars() -> usize {
 pub fn dispatch(
     name: &str,
     arguments: &Json,
-    reachability: &dyn Fn(&str, Duration) -> String,
+    runner: &dyn ToolRunner,
 ) -> Result<ToolOutcome, ToolError> {
-    if !tools().iter().any(|tool| tool.name == name) {
-        return Err(ToolError::NoSuchTool(name.to_string()));
-    }
-
     match name {
         "check" => {
             reject_unknown(arguments, &["targets", "timeout"])?;
             let specs = targets_from(arguments)?;
             let timeout = optional_int(arguments, "timeout", 5, 10)?;
-            Ok(ToolOutcome::ok(reachability(
-                &specs,
-                Duration::from_secs(timeout),
-            )))
+            Ok(runner.reachability(&specs, Duration::from_secs(timeout)))
+        }
+        "testbed" => {
+            reject_unknown(arguments, &["spec", "target"])?;
+            let spec = relative_spec_path(arguments)?;
+            let target = required_str(arguments, "target")?;
+            Ok(runner.testbed(&spec, &target))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }
