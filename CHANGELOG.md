@@ -11,6 +11,11 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
+- **The host-agent wire protocol**, in `linklet-core/src/wire.rs`. It is the one
+  place that decides what a host asks an agent and what an agent answers, so a
+  change to the protocol is a change to one file rather than to two that must
+  agree. No server and no client yet: the shapes are values this crate builds and
+  compares in a test.
 - **The `testbed` MCP tool.** `linklet testbed check` shipped as a command and
   was, for a while, a capability no agent could reach: the surface was never told
   about it. An agent cannot ask for what it has not been told about.

@@ -30,6 +30,7 @@ mod probe;
 mod target;
 pub mod testbed;
 mod tool;
+pub mod wire;
 
 pub use error::TargetError;
 pub use outcome::{ExitCode, exit_code_for, render};

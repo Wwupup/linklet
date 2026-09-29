@@ -160,6 +160,15 @@ impl ToJson for String {
     }
 }
 
+/// So that a `&String` field of a struct can go into [`object!`] without being
+/// copied into a `&str` first. The macro borrows what it is given, which makes
+/// the expression `&&String`, and without this the call site has to know that.
+impl ToJson for &String {
+    fn to_json(&self) -> Json {
+        Json::Str((*self).clone())
+    }
+}
+
 impl ToJson for &str {
     fn to_json(&self) -> Json {
         Json::Str((*self).to_string())
