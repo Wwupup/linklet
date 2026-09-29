@@ -27,6 +27,7 @@
 *.ps1   text eol=lf
 *.cmd   text eol=lf
 *.sh    text eol=lf
+*.txt   text eol=lf
 
 # Binary files: never touch them, never diff them, never try to merge them.
 *.exe   binary
