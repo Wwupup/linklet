@@ -12,9 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 linklet-core = { path = "../linklet-core" }
-# linklet-adapters will be added when the first command needs the network
-# (milestone M2). It is not listed here yet: an unused dependency in the
-# manifest is a claim that this crate talks to the machine, and it does not.
+linklet-adapters = { path = "../linklet-adapters" }
 
 [lints]
 workspace = true

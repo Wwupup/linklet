@@ -24,10 +24,12 @@
 #![forbid(unsafe_code)]
 
 mod error;
+mod outcome;
 mod probe;
 mod target;
 
 pub use error::TargetError;
+pub use outcome::{ExitCode, exit_code_for, render};
 pub use probe::{
     CheckError, DEFAULT_BUDGET_SECONDS, MAX_BUDGET_SECONDS, MAX_TARGETS, Probe, ProbeOutcome,
     Report, Status, Summary, check_targets,

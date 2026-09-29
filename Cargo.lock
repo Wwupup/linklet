@@ -13,6 +13,7 @@ dependencies = [
 name = "linklet-cli"
 version = "0.1.0"
 dependencies = [
+ "linklet-adapters",
  "linklet-core",
 ]
 
