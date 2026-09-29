@@ -13,6 +13,7 @@ the change that made it wrong.
 | Why does a rule exist? | `docs/rationale.md` |
 | Why is it built this way? | `docs/decisions.md` |
 | How does the wire format work? | `docs/framing.md` |
+| How does a file transfer work? | `docs/transfer.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |
 | What kind of test does this get? | `docs/testing.md` |
@@ -67,6 +68,7 @@ message, or nothing.
 | `docs/rationale.md` | decision | why each rule exists, read when changing one |
 | `docs/decisions.md` | decision | the choices that are not obvious from the code |
 | `docs/framing.md` | rule | the frame format, and the defences that live outside it |
+| `docs/transfer.md` | rule | moving a file: the design and its thirteen failure modes |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
 | `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
 | `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |
