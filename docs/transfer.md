@@ -182,6 +182,17 @@ of why.
 `.part` and renaming.* The rename is the only moment the real path changes, and it
 happens after every check has passed.
 
+**What this does not cover, and it was measured rather than assumed**: a receiver that is
+killed *outright* -- not failed, killed -- cannot delete its own temporary, because the
+code that deletes it does not run. A 12 MiB pull killed at 900 ms left a 3 MiB
+`<name>.part` on the host and, correctly, no file under the real name. The residue is
+harmless rather than dangerous: the next attempt to that destination truncates it with
+`File::create` before writing a byte. It is also visible, which is the part to know --
+an operator who finds a large `.part` on a target has found the evidence of an
+interrupted transfer and not a corrupted one. Nothing sweeps them up on startup, and
+that is deliberate: deleting files by a naming convention is a destructive action to take
+on someone else's machine on the strength of a convention.
+
 Two transfers to one destination at once therefore share a `.part` name, and each
 writes at its own offset. At most one of them can pass its digest check, so the other
 fails having written nothing under the real name -- **a failure rather than a
