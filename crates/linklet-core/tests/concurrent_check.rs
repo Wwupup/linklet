@@ -15,6 +15,7 @@
 //! not any threads were used. That belongs in `linklet-adapters`, with a probe
 //! that really sleeps, and it is the one measurement this file cannot make.
 
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -27,8 +28,17 @@ use linklet_core::{
 /// A probe with no machine behind it: scripted answers, and a record of the asks.
 #[derive(Default)]
 struct FakeProbe {
-    /// One entry per target, in the order the answers are handed out.
-    scripted: Vec<ProbeOutcome>,
+    /// The answer for each target, keyed by host.
+    ///
+    /// **Keyed by target and not by call order**, which is what this used to be
+    /// and was a bug: a concurrent run does not promise to call the probe in the
+    /// order the targets were listed -- the field below says so in as many words --
+    /// so handing answers out by call index attached them to whichever target
+    /// happened to be probed at that position. The test then asserted that each
+    /// answer stayed with its own target, which under that arrangement is
+    /// unsatisfiable: a correct implementation fails and a shuffling one can pass by
+    /// coincidence. It passed for months on scheduling luck.
+    scripted: BTreeMap<String, ProbeOutcome>,
     /// Every call made. Order is not asserted on -- the concurrent run cannot
     /// promise one -- but the count is.
     calls: AtomicUsize,
@@ -37,7 +47,13 @@ struct FakeProbe {
 }
 
 impl FakeProbe {
-    fn new(scripted: Vec<ProbeOutcome>) -> Self {
+    /// Pairs each target with its answer, by position in the list given.
+    fn new(targets: &[Target], scripted: Vec<ProbeOutcome>) -> Self {
+        let scripted = targets
+            .iter()
+            .map(|target| target.to_string())
+            .zip(scripted)
+            .collect();
         Self {
             scripted,
             calls: AtomicUsize::new(0),
@@ -48,16 +64,21 @@ impl FakeProbe {
 
 impl Probe for FakeProbe {
     fn probe(&self, target: &Target, _budget: Duration) -> ProbeOutcome {
-        let index = self.calls.fetch_add(1, Ordering::SeqCst);
+        // Counted, not indexed by: the count is what the assertions use, and the
+        // order the calls arrive in is nobody's business.
+        let _index = self.calls.fetch_add(1, Ordering::SeqCst);
         self.asked
             .lock()
             .expect("no panic while holding")
             .push(target.to_string());
-        self.scripted.get(index).cloned().unwrap_or_else(|| {
-            // An outcome the assertions can see, rather than a panic that hides
-            // the failure inside the harness.
-            ProbeOutcome::Error(format!("not scripted: call {index}"))
-        })
+        self.scripted
+            .get(&target.to_string())
+            .cloned()
+            .unwrap_or_else(|| {
+                // An outcome the assertions can see, rather than a panic that hides
+                // the failure inside the harness.
+                ProbeOutcome::Error(format!("not scripted: {target}"))
+            })
     }
 }
 
@@ -89,16 +110,17 @@ const BUDGET: Duration = Duration::from_secs(2);
 /// two passing tests.
 fn both_ways_agree(targets: &[Target], scripted: Vec<ProbeOutcome>, at_once: usize) -> Vec<Report> {
     // A fresh probe for each run: the recorded calls must not be shared, and the
-    // scripted answers are handed out in call order.
+    // scripted answers are keyed by target rather than handed out in call order --
+    // see `FakeProbe::scripted` for why that distinction is the whole test.
     let serial = check_targets(
-        &FakeProbe::new(scripted.clone()),
+        &FakeProbe::new(targets, scripted.clone()),
         targets,
         BUDGET,
         MAX_TARGETS,
     )
     .expect("a valid serial run");
     let concurrent = check_targets_concurrent(
-        &FakeProbe::new(scripted),
+        &FakeProbe::new(targets, scripted),
         targets,
         BUDGET,
         MAX_TARGETS,
@@ -223,7 +245,7 @@ fn every_target_is_probed_exactly_once_at_any_worker_count() {
         for count in [1usize, 2, 5, 17] {
             let targets: Vec<Target> = (0..count).map(|i| t(&format!("h{i}"), 80)).collect();
             let scripted: Vec<ProbeOutcome> = (0..count).map(|_| answer()).collect();
-            let probe = FakeProbe::new(scripted);
+            let probe = FakeProbe::new(&targets, scripted);
 
             let reports = check_targets_concurrent(&probe, &targets, BUDGET, MAX_TARGETS, at_once)
                 .expect("a valid run");
@@ -252,7 +274,7 @@ fn the_refusals_are_the_same_as_the_serial_run() {
     // Same three, decided in the same shared function, so this compares the two
     // entry points rather than restating the rules -- if `validate_run` were
     // bypassed by one of them, this fails.
-    let probe = FakeProbe::new(vec![answer()]);
+    let probe = FakeProbe::new(&[t("a", 1), t("b", 2)], vec![answer()]);
     let two = [t("a", 1), t("b", 2)];
 
     assert_eq!(
@@ -278,7 +300,7 @@ fn the_refusals_are_the_same_as_the_serial_run() {
 fn zero_at_once_is_refused_rather_than_hanging() {
     // The failure mode this prevents is a run that never finishes, which is worse
     // than an error: nothing to report, nothing to retry, and no exit.
-    let probe = FakeProbe::new(vec![answer()]);
+    let probe = FakeProbe::new(&[t("a", 1)], vec![answer()]);
     let result = check_targets_concurrent(&probe, &[t("a", 1)], BUDGET, MAX_TARGETS, 0);
 
     assert_eq!(result, Err(CheckError::ZeroAtOnce));
