@@ -190,6 +190,14 @@ impl Conversation {
         open(&mut self.session, &frame)
     }
 
+    /// Sends a pull request and returns the first reply, leaving the connection
+    /// positioned at the manifest or the refusal.
+    fn pull(&mut self, path: &str) -> Reply {
+        self.ask(&Request::Pull {
+            path: path.to_string(),
+        })
+    }
+
     /// Sends a push request, then the file it describes, and returns the reply.
     ///
     /// The manifest frame first and then one frame per chunk, which is the shape
@@ -246,6 +254,91 @@ fn reply(body: &[u8]) -> Reply {
         )
     });
     wire::reply_from_json(&value).expect("a reply shape")
+}
+
+// --- pulling a file ----------------------------------------------------------
+
+#[test]
+fn a_pull_sends_the_manifest_and_then_the_file() {
+    // The agent's half of a pull. The manifest must come **first**, because it is what
+    // tells the caller how many chunks to expect -- and the caller's message budget is
+    // set from it, so a manifest that arrived after the body would leave the body
+    // refused.
+    let agent = Agent::start();
+    let content = b"the bytes of a log file";
+    std::fs::write(agent.root.join("build.log"), content).expect("writing a file to pull");
+
+    let mut conversation = agent.sealed();
+    let first = conversation.pull(r"build.log");
+
+    let manifest = match first {
+        Reply::Result(value) => wire::manifest_from_json(&value).expect("a manifest"),
+        Reply::Refused(reason) => panic!("the agent refused the pull: {reason}"),
+    };
+    assert_eq!(manifest.bytes, content.len() as u64);
+    assert_eq!(
+        manifest.sha256,
+        linklet_adapters::digest_of_file(&agent.root.join("build.log")).expect("a digest")
+    );
+
+    // And then the body, which is one chunk for a file this size. The budget has to be
+    // raised the way the host raises it -- from the manifest -- because that is T11
+    // enforced on the reading side, and a test that skipped the step would be reading in
+    // a state no real receiver is ever in.
+    conversation
+        .connection
+        .set_message_limit(conversation.connection.messages_read() + manifest.chunks());
+    let frame = conversation
+        .connection
+        .read_frame(Kind::Sealed)
+        .expect("a chunk after the manifest");
+    let mut plaintext = Vec::new();
+    conversation
+        .session
+        .open_into(&frame, &mut plaintext)
+        .expect("opening the chunk");
+    assert_eq!(plaintext, content);
+}
+
+#[test]
+fn a_pull_of_a_file_that_is_not_there_is_refused_by_name() {
+    let agent = Agent::start();
+    let reason = refusal(agent.sealed().pull(r"logs\missing.log"));
+
+    assert!(reason.contains("missing.log"), "{reason}");
+}
+
+#[test]
+fn a_pull_that_escapes_the_root_is_refused_by_name() {
+    // The read side of T1, and it is the same rule: the root is what stops a pull from
+    // reading the machine rather than the directory the agent was pointed at. A path
+    // that must not be written must not be read either.
+    let agent = Agent::start();
+    let reason = refusal(
+        agent
+            .sealed()
+            .pull(r"..\..\Windows\System32\drivers\etc\hosts"),
+    );
+
+    assert!(
+        reason.contains("..") || reason.contains("outside"),
+        "the refusal should name what it refused: {reason}"
+    );
+}
+
+#[test]
+fn a_pull_of_something_that_is_not_a_file_is_refused_rather_than_opened() {
+    // A directory would otherwise surface as an operating-system error from `File::open`
+    // rather than as a named refusal, and `docs/transfer.md` T2 is about the same
+    // question asked of a write.
+    let agent = Agent::start();
+    std::fs::create_dir(agent.root.join("a-directory")).expect("a directory to aim at");
+
+    let reason = refusal(agent.sealed().pull("a-directory"));
+    assert!(
+        reason.contains("regular file"),
+        "the refusal should say what it is not: {reason}"
+    );
 }
 
 /// The reason out of a reply that must be a refusal.

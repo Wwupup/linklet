@@ -299,6 +299,9 @@ fn every_request_round_trips_through_the_wire() {
             bytes: 12_345,
             sha256: DIGEST.to_string(),
         }),
+        Request::Pull {
+            path: r"logs\build.log".to_string(),
+        },
     ];
 
     for request in requests {
@@ -419,6 +422,12 @@ fn the_op_values_are_pinned_by_value() {
         }))),
         r#"{"command":"echo hi","op":"run","timeout_seconds":5}"#
     );
+    assert_eq!(
+        json::write(&wire::request_to_json(&Request::Pull {
+            path: r"logs\build.log".to_string(),
+        })),
+        r#"{"op":"pull","path":"logs\\build.log"}"#
+    );
 }
 
 #[test]
@@ -429,10 +438,21 @@ fn an_unknown_op_is_refused_with_the_ones_this_version_knows() {
     let error = wire::request_from_json(&value).expect_err("not an op this version has");
     let text = error.to_string();
     assert!(text.contains("install"), "{text}");
-    assert!(
-        text.contains("identity") && text.contains("run"),
-        "the refusal should list the ops that exist: {text}"
-    );
+    for known in ["identity", "run", "push", "pull"] {
+        assert!(
+            text.contains(known),
+            "the refusal should list {known:?}, and the list is {text}"
+        );
+    }
+}
+
+#[test]
+fn a_pull_with_no_path_is_refused_by_name() {
+    // One field, and therefore one way to be wrong. A pull that defaulted its path
+    // would be a read of whatever the agent felt like reading.
+    let error =
+        wire::request_from_json(&object! { "op" => "pull" }).expect_err("a pull needs a path");
+    assert!(error.to_string().contains("path"), "{error}");
 }
 
 #[test]

@@ -20,7 +20,8 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use linklet_adapters::{
-    Connection, ConnectionError, HkdfChannel, TransferFailure, describe as describe_file, send_body,
+    Connection, ConnectionError, HkdfChannel, TransferFailure, describe as describe_file,
+    receive_body, send_body,
 };
 use linklet_core::auth::Token;
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
@@ -256,14 +257,63 @@ pub fn push(
     }
 }
 
+/// Brings one file back from a path under the agent's transfer root.
+///
+/// The agent describes the file before sending a byte of it: the reply is a manifest,
+/// with the size and the digest, and then the chunks. **The host checks that manifest
+/// itself** -- the ceiling, and the shape of the digest -- because an agent that lied
+/// about a size would otherwise be choosing how much this side agrees to receive, which
+/// is the same mistake as trusting a caller's number in the other direction.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know whether the file
+/// arrived. [`CallError::Refused`] carries the agent's own reason.
+pub fn pull(
+    address: &AgentAddress,
+    remote: &str,
+    local: &std::path::Path,
+) -> Result<wire::TransferOutcome, CallError> {
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    connection.set_budget(TRANSFER_ALLOWANCE);
+
+    send_request(
+        &mut connection,
+        session.as_mut(),
+        &Request::Pull {
+            path: remote.to_string(),
+        },
+    )?;
+
+    // The manifest first, and it is checked before any chunk is read: the size against
+    // this host's ceiling, and the digest's shape. `check_locally` and not `check`,
+    // because where the file may be written is this side's own path and has nothing to
+    // do with the agent's root.
+    let manifest = match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)? {
+        Reply::Result(value) => {
+            let manifest = wire::manifest_from_json(&value)
+                .map_err(|error| CallError::Protocol(error.to_string()))?;
+            manifest.check_locally().map_err(|error| {
+                CallError::Protocol(format!(
+                    "the agent described a transfer it may not send: {error}"
+                ))
+            })?;
+            manifest
+        }
+        Reply::Refused(reason) => return Err(CallError::Refused(reason)),
+    };
+
+    receive_body(&mut connection, session.as_mut(), &manifest, local).map_err(transfer_failure)
+}
+
 /// Turns a transfer failure into the caller's failure.
 ///
 /// A refusal by the agent arrives through [`Reply`] and not here; this is for the
-/// failures that happen on this side of the socket -- an unreadable file, a file that
-/// changed while it was being sent -- and for the ones that mean the connection went
-/// away mid-transfer. Those are [`CallError::Transport`] or [`CallError::Protocol`],
-/// because what they have in common is that the host does not know whether the file
-/// landed.
+/// failures that happen on this side of the socket -- a destination that is a
+/// directory, a digest that did not match -- and for the ones that mean the connection
+/// went away mid-transfer. Those are [`CallError::Transport`] or
+/// [`CallError::Protocol`], because what they have in common is that the host does not
+/// know whether the file landed.
 fn transfer_failure(failure: TransferFailure) -> CallError {
     match failure {
         TransferFailure::Connection(error) => transport(error),

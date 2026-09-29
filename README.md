@@ -121,12 +121,16 @@ socket or a cipher, and the arithmetic is in crates other people have attacked.
 
 ### What the channel does
 
-A sealed call is **two messages on one connection**: a handshake, then the command
-sealed under the session it produced. The handshake cannot protect itself -- the
-initiator cannot derive a key until it has the responder's public key -- so the
-exchange comes first and the command follows it. The alternative, one round trip
-with the command sealed under the token alone, leaves the command readable by
+A sealed call is **a handshake and then the message it protects**, on one connection:
+the hello, then the command sealed under the session it produced. The handshake cannot
+protect itself -- the initiator cannot derive a key until it has the responder's public
+key -- so the exchange comes first and the command follows it. The alternative, one
+round trip with the command sealed under the token alone, leaves the command readable by
 anyone who later learns the token, which is the wrong half to protect.
+
+A transfer is the same beginning and then a stream: a manifest carrying the size and the
+digest, then one sealed chunk per mebibyte. `docs/transfer.md` is the design and the
+thirteen ways it goes wrong.
 
 Both sides generate an X25519 key pair per handshake and **discard the private
 half**, so a session recorded today cannot be read by anyone who learns the token

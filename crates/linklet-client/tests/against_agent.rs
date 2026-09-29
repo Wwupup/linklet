@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use linklet_client::{AgentAddress, CallError, identity, push, render_call_error, run};
+use linklet_client::{AgentAddress, CallError, identity, pull, push, render_call_error, run};
 use linklet_core::auth::Token;
 use linklet_core::wire::{self, RunRequest};
 
@@ -452,6 +452,109 @@ fn a_push_of_a_file_that_is_not_there_is_refused_before_a_socket_is_opened() {
         "the refusal should name the file: {error}"
     );
     assert!(!agent.root.join("build.exe").exists());
+}
+
+// --- pulling a file ----------------------------------------------------------
+
+#[test]
+fn a_pulled_file_lands_where_the_host_asked_and_matches_its_digest() {
+    // The whole of the other half of M7: a file that was on the target, brought back
+    // through the sealed channel, and a digest the host computed itself.
+    let agent = Agent::start();
+    let content = b"a log file worth collecting";
+    std::fs::write(agent.root.join("build.log"), content).expect("writing a file on the target");
+
+    let destination = agent.root.join("collected.log");
+    let outcome = pull(&agent.address, "build.log", &destination).expect("the pull should work");
+
+    assert_eq!(
+        std::fs::read(&destination).expect("the file should be here"),
+        content
+    );
+    assert_eq!(outcome.bytes as usize, content.len());
+    assert_eq!(
+        outcome.sha256,
+        linklet_adapters::digest_of_file(&destination).expect("hashing what arrived"),
+        "the digest is of the file this host now has, which is the point of computing it"
+    );
+    assert!(
+        !agent.root.join("collected.log.part").exists(),
+        "a completed pull leaves no temporary behind"
+    );
+}
+
+#[test]
+fn a_pulled_file_larger_than_one_chunk_arrives_intact() {
+    // The chunk boundary in the pulling direction, which is the one where the *host* is
+    // the receiver: the agent sends the file and the message budget comes from the
+    // manifest the agent declared.
+    let agent = Agent::start();
+    let chunk = linklet_core::transfer::CHUNK_BYTES as usize;
+    let content: Vec<u8> = (0..chunk + 37).map(|index| (index % 253) as u8).collect();
+    std::fs::write(agent.root.join("big.log"), &content).expect("writing a large file");
+
+    let destination = agent.root.join("big-collected.log");
+    let outcome = pull(&agent.address, "big.log", &destination).expect("the pull should work");
+
+    assert_eq!(outcome.bytes as usize, content.len());
+    assert_eq!(
+        std::fs::read(&destination).expect("the file should be here"),
+        content
+    );
+}
+
+#[test]
+fn a_pull_of_a_path_outside_the_agents_root_is_refused() {
+    // T1 in the reading direction, over a real socket: without the root, a caller could
+    // read any file on the target, and the agent would be a file server for the machine.
+    let agent = Agent::start();
+    let destination = agent.root.join("stolen.txt");
+
+    let error = pull(
+        &agent.address,
+        r"..\..\Windows\System32\drivers\etc\hosts",
+        &destination,
+    )
+    .expect_err("a path outside the root must be refused");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    assert!(
+        !destination.exists(),
+        "nothing may be written for a pull that was refused"
+    );
+}
+
+#[test]
+fn a_pull_of_a_file_that_is_not_there_is_refused_and_writes_nothing() {
+    let agent = Agent::start();
+    let destination = agent.root.join("missing.log");
+
+    let error = pull(&agent.address, "not-here.log", &destination).expect_err("nothing is there");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    assert!(error.to_string().contains("not-here.log"), "{error}");
+    assert!(!destination.exists());
+}
+
+#[test]
+fn a_pull_onto_a_destination_that_is_a_directory_is_refused() {
+    // The host's own half of T2. The agent did its job -- it offered a real file -- and
+    // the receiving side refuses to put it somewhere that is not a file, which is a
+    // failure of *this* side and not of the network.
+    let agent = Agent::start();
+    std::fs::write(agent.root.join("build.log"), b"content").expect("writing a file");
+    let destination = agent.root.join("a-directory");
+    std::fs::create_dir(&destination).expect("a directory to aim at");
+
+    let error =
+        pull(&agent.address, "build.log", &destination).expect_err("a directory is not a file");
+
+    assert!(matches!(error, CallError::Protocol(_)), "{error:?}");
+    assert!(
+        destination.is_dir(),
+        "and the directory is still a directory"
+    );
+    assert!(!agent.root.join("a-directory.part").exists());
 }
 
 #[test]

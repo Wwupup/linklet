@@ -47,12 +47,15 @@ const OP_RUN: &str = "run";
 /// The request that sends a file to an agent.
 const OP_PUSH: &str = "push";
 
+/// The request that brings a file back from an agent.
+const OP_PULL: &str = "pull";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run, push";
+const KNOWN_OPS: &str = "identity, run, push, pull";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -178,6 +181,16 @@ pub enum Request {
     /// coming because the size is declared, which is what replaced the message-count
     /// defence a two-message protocol did not need.
     Push(Manifest),
+    /// Bring a file back from the agent.
+    ///
+    /// One path and nothing else: what comes back is a manifest and then the file, so
+    /// the answer tells the caller the size and the digest before a byte of it arrives.
+    /// The path is resolved against the agent's transfer root, which is what stops a
+    /// pull from reading the machine rather than the directory it was pointed at.
+    Pull {
+        /// The file to read, inside the agent's root.
+        path: String,
+    },
 }
 
 /// What the agent answers.
@@ -249,6 +262,7 @@ pub fn request_to_json(request: &Request) -> Json {
             entries.insert("op".to_string(), Json::str(OP_PUSH));
             Json::Object(entries)
         }
+        Request::Pull { path } => object! { "op" => OP_PULL, "path" => path },
     }
 }
 
@@ -273,6 +287,12 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
         // run request has one reader rather than two that could disagree.
         OP_RUN => Ok(Request::Run(run_request_from_json(value)?)),
         OP_PUSH => Ok(Request::Push(manifest_from_json(value)?)),
+        OP_PULL => Ok(Request::Pull {
+            path: value
+                .get_str("path")
+                .ok_or_else(|| WireError::BadRequest("path: missing or not a string".to_string()))?
+                .to_string(),
+        }),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),

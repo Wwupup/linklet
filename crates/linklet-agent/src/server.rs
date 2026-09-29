@@ -28,7 +28,9 @@
 use std::net::TcpStream;
 use std::time::Duration;
 
-use linklet_adapters::{Connection, ConnectionError, HkdfChannel, receive_body};
+use linklet_adapters::{
+    Connection, ConnectionError, HkdfChannel, describe, receive_body, send_body,
+};
 use linklet_core::auth::{self, Token};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::{FrameError, Kind};
@@ -129,6 +131,13 @@ fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>, root: &
     // Sealed with the same session, so the command's output -- the part a caller most
     // wants kept -- never crosses the network in the clear. One buffer, reused for
     // the seal rather than allocated per message: T10.
+    let Response::Sealed(reply) = reply else {
+        // The request answered itself while it was being handled, because what answers
+        // it is a stream rather than a message -- a pull sends the manifest and then the
+        // file, and there is no third thing to say afterwards.
+        return;
+    };
+
     let mut sealed = Vec::new();
     if session
         .seal_into(json::write(&reply).as_bytes(), &mut sealed)
@@ -136,6 +145,19 @@ fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>, root: &
     {
         let _ = connection.write_frame(Kind::Sealed, &sealed);
     }
+}
+
+/// What an answered request leaves to be sent.
+///
+/// An enum rather than an `Option<Json>` because the two cases are different facts and
+/// not presence and absence: a transfer's reply may already be on the wire, and a
+/// reader who saw `None` would have to guess whether that meant "nothing to say" or
+/// "already said".
+enum Response {
+    /// Seal this reply and write it.
+    Sealed(Json),
+    /// Nothing more to send: the request was answered as it was handled.
+    AlreadySent,
 }
 
 /// Answers one request.
@@ -153,17 +175,25 @@ fn answer(
     session: &mut dyn Sealed,
     plaintext: &[u8],
     root: &Destination,
-) -> Json {
+) -> Response {
     let request = wire::parse_body(plaintext).and_then(|value| wire::request_from_json(&value));
 
     match request {
-        Ok(Request::Identity) => wire::identity_to_json("linklet-agent", env!("CARGO_PKG_VERSION")),
-        Ok(Request::Run(run)) => wire::encode_run_reply(&crate::execute::run(&run)),
-        Ok(Request::Push(manifest)) => receive(connection, session, &manifest, root),
+        Ok(Request::Identity) => Response::Sealed(wire::identity_to_json(
+            "linklet-agent",
+            env!("CARGO_PKG_VERSION"),
+        )),
+        Ok(Request::Run(run)) => {
+            Response::Sealed(wire::encode_run_reply(&crate::execute::run(&run)))
+        }
+        Ok(Request::Push(manifest)) => {
+            Response::Sealed(receive(connection, session, &manifest, root))
+        }
+        Ok(Request::Pull { path }) => send(connection, session, &path, root),
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.
-        Err(error) => wire::reply_refused(&refusal_text(&error)),
+        Err(error) => Response::Sealed(wire::reply_refused(&refusal_text(&error))),
     }
 }
 
@@ -194,6 +224,60 @@ fn receive(
         Ok(outcome) => wire::encode_transfer_reply(&outcome),
         Err(failure) => wire::reply_refused(&failure.to_string()),
     }
+}
+
+/// Sends one file the caller asked for, and answers as it goes.
+///
+/// This is the one request that **answers itself**: a pull is a stream, so the manifest
+/// goes out first as a reply and the chunks follow it, and there is nothing left for
+/// `answer_one` to write when this returns.
+///
+/// The path is resolved against the root **before anything is opened**, and the root is
+/// what makes this a read of a directory rather than a read of the machine: T1 is
+/// written about writes, and the same `..\..\Windows\System32\...` that must not be
+/// written must not be read either. The file is refused if it is not a regular file,
+/// which is the read-side half of T2 -- a directory or a device would otherwise be a
+/// strange failure from `File::open` rather than a named refusal.
+///
+/// A failure *before* the manifest is a refusal, like every other request's. A failure
+/// **after** it cannot be: the caller has already been told a size and a digest, and
+/// there is no second reply in this protocol. The receiver's own defences are what make
+/// that safe -- it never renames a file that is short or whose digest differs, so a
+/// transfer that dies halfway leaves nothing behind and the caller's next pull is
+/// unremarkable.
+fn send(
+    connection: &mut Connection,
+    session: &mut dyn Sealed,
+    path: &str,
+    root: &Destination,
+) -> Response {
+    let target = match root.resolve(path) {
+        Ok(target) => target,
+        Err(error) => return Response::Sealed(wire::reply_refused(&error.to_string())),
+    };
+
+    // Describing the file hashes it, which is the pass that produces the digest the
+    // caller will check its copy against. A file that cannot be read, or is not a
+    // regular file, is refused by name here rather than after the manifest has promised
+    // something.
+    let manifest = match describe(&target, path) {
+        Ok(manifest) => manifest,
+        Err(failure) => return Response::Sealed(wire::reply_refused(&failure.to_string())),
+    };
+
+    let mut sealed = Vec::new();
+    let reply = json::write(&wire::manifest_reply(&manifest));
+    if session.seal_into(reply.as_bytes(), &mut sealed).is_err()
+        || connection.write_frame(Kind::Sealed, &sealed).is_err()
+    {
+        return Response::AlreadySent;
+    }
+
+    // The body, and a failure here is silence: the connection closes, the receiver
+    // throws its temporary away, and the caller learns that no reply came rather than a
+    // reason that would arrive after a promise.
+    let _ = send_body(connection, session, &target, &manifest);
+    Response::AlreadySent
 }
 
 /// How a wire refusal reads to a person.

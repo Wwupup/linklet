@@ -83,8 +83,25 @@ The `op` field is the one thing here that the prose above does not imply, and it
 there because a manifest and a command arrive on the same connection in the same shape.
 It rides *alongside* the manifest's three fields rather than wrapping them, so the
 message a receiver reads first **is** the manifest -- which is what the design needs,
-since the size in it is what bounds the message count. A reply that carries a manifest
-(a pull) has no `op`: it is already inside a reply envelope.
+since the size in it is what bounds the message count.
+
+**The other direction is the same shape with the manifest on the other side**, because
+the size has to come from whoever holds the file:
+
+```
+one connection:
+  frame 0      Kind::Hello  -> the handshake, in the clear
+  frame 1      Kind::Sealed -> seal(request)    { op: "pull", path }
+  frame 2      Kind::Sealed -> seal(manifest)   { path, bytes, sha256 }
+  frame 3..k   Kind::Sealed -> seal(chunk)      k = ceil(bytes / CHUNK)
+```
+
+The manifest is a *reply* here and a *request* there, and that is the whole difference
+between the two operations from the wire's point of view. Both sides therefore run the
+same receiver, and the same thirteen failures apply in both directions -- including
+T1, which is about to be read as much as about to be written: without the root a pull
+would read any file on the machine, which is a different severity of mistake and not a
+smaller one.
 
 Streaming on both ends: read 1 MiB, seal it, frame it, write it. **The file is never
 in memory whole**, on either side.
@@ -189,6 +206,12 @@ so that a failure has an obvious meaning.
 **Progress reporting.** The caller learns the outcome, and a transfer that is slow
 is indistinguishable from one that is stuck until the deadline. Worth having, not
 worth building before the thing it reports on works.
+
+**Reading a file the root does not contain.** The root bounds a pull exactly as it
+bounds a push, so collecting a log from outside it is not possible. That is the same
+decision as T1 seen from the other side: an agent that could read anywhere would be a
+file server for the machine, and the caller can configure the root to include whatever
+it needs.
 
 ## What this changes in `docs/framing.md`
 
