@@ -12,6 +12,7 @@ the change that made it wrong.
 | How do I write a commit? | `docs/COMMITS.md` |
 | Why does a rule exist? | `docs/rationale.md` |
 | Why is it built this way? | `docs/decisions.md` |
+| How does the wire format work? | `docs/framing.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |
 | What kind of test does this get? | `docs/testing.md` |
@@ -65,6 +66,7 @@ message, or nothing.
 | `docs/INDEX.md` | current | this file |
 | `docs/rationale.md` | decision | why each rule exists, read when changing one |
 | `docs/decisions.md` | decision | the choices that are not obvious from the code |
+| `docs/framing.md` | rule | the frame format, and the defences that live outside it |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
 | `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
 | `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |

@@ -26,6 +26,7 @@
 pub mod auth;
 pub mod channel;
 mod error;
+pub mod frame;
 pub mod json;
 mod outcome;
 mod probe;
