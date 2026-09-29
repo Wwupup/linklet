@@ -22,6 +22,9 @@ to answer one question: **what can I do now that I could not do before?**
   change to the protocol is a change to one file rather than to two that must
   agree. Both binaries decode the same definitions, so they cannot drift into two
   readings of one message.
+- **`linklet-client`**, the host side of the protocol. It shares `wire.rs`
+  with the agent, so the two ends of a message are decoded by the same code, and
+  its integration tests spawn the real agent and run real commands through it.
 - **The `testbed` MCP tool.** `linklet testbed check` shipped as a command and
   was, for a while, a capability no agent could reach: the surface was never told
   about it. An agent cannot ask for what it has not been told about.
@@ -48,6 +51,12 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- **A command killed by its deadline did not return.** `Child::kill` kills the
+  shell, not the program the shell started, so `cmd /C ping ...` left ping
+  holding both pipes, the agent's readers never finished, and the caller saw a
+  transport failure for a command the agent was about to describe properly. The
+  fix kills the process tree by pid. The upstream project's pitfalls file has
+  this exact lesson in it, which is where the first cost of learning it was paid.
 - **Many targets no longer take one timeout each.** 20 unreachable machines on a
   5 s budget finish in 5.0 s rather than roughly 40 s. The `check` command uses
   the concurrent run; the answers, the order and the refusals are unchanged.

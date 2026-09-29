@@ -1,0 +1,21 @@
+[package]
+name = "linklet-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The host side of the agent protocol: ask a target to run something."
+
+[dependencies]
+# The protocol, and nothing else -- the same single dependency the agent has, so
+# the two ends of a message are decoded by the same code.
+linklet-core = { path = "../linklet-core" }
+
+[dev-dependencies]
+# Not used by any code here. It is here so that `cargo test` builds the agent
+# binary, which the integration test spawns: a client and a server that cannot be
+# tested against each other are two projects that happen to share a name.
+linklet-agent = { path = "../linklet-agent" }
+
+[lints]
+workspace = true

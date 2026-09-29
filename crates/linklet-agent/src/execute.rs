@@ -81,10 +81,19 @@ pub fn run(request: &RunRequest) -> RunOutcome {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
                 if waited >= deadline {
-                    // Kill, then keep polling: the point of a deadline is that the
-                    // call returns, and returning before the process is gone
-                    // leaves an orphan holding whatever it held.
-                    let _ = child.kill();
+                    // Kill the **tree**, not just the shell.
+                    //
+                    // This was a real bug here, of exactly the kind this
+                    // repository keeps finding. `cmd /C ping -n 30 ...` makes ping
+                    // a *child* of cmd, and killing cmd leaves ping running --
+                    // holding both pipes. The reader threads then never finish,
+                    // the agent never replies, and the caller reports a transport
+                    // failure for a command the agent was about to describe
+                    // properly. The diagnosis took a timeout to even see.
+                    //
+                    // The lesson is in the upstream project's pitfalls file, which
+                    // is where the cost of learning it the first time was paid.
+                    kill_tree(child.id());
                     killed_by_deadline = true;
                 }
                 std::thread::sleep(poll);
@@ -134,6 +143,29 @@ pub fn run(request: &RunRequest) -> RunOutcome {
             reason: Some(KILLED_BY_DEADLINE.to_string()),
         },
     }
+}
+
+/// Kills a process and everything it started.
+///
+/// `taskkill /T` walks the child list and `/F` does not ask. `Child::kill` alone
+/// is not enough on Windows: a shell that has started a program leaves that
+/// program running, holding the pipes, and the caller waits for output that will
+/// never arrive because nothing is going to write it and nothing has closed it.
+///
+/// The pid rather than the name, deliberately. Killing by name would match
+/// anything else on the machine with the same name, including a process the
+/// operator started and would like to keep.
+///
+/// A failure here is ignored on purpose: it is called from a deadline that has
+/// already passed, the caller is going to be told the command was killed either
+/// way, and an error path that cannot report anything useful would only obscure
+/// that.
+fn kill_tree(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// Reads a pipe to the end as bytes, then as much text as decodes.

@@ -25,5 +25,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "linklet-client"
+version = "0.1.0"
+dependencies = [
+ "linklet-agent",
+ "linklet-core",
+]
+
+[[package]]
 name = "linklet-core"
 version = "0.1.0"

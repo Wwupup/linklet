@@ -15,6 +15,7 @@ members = [
     "crates/linklet-adapters",
     "crates/linklet-cli",
     "crates/linklet-agent",
+    "crates/linklet-client",
 ]
 
 [workspace.package]
