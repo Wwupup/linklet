@@ -31,6 +31,19 @@ to answer one question: **what can I do now that I could not do before?**
   rather than after a round trip. The token is what authenticates the handshake,
   so without one there is no call to make.
 
+### Added
+
+- **`tools/smoke.ps1`, the real-machine layer.** Seven claims against one target,
+  taking an address and knowing nothing about where it came from. It needs no
+  administrator rights, deliberately: the states that would need them are produced
+  by whoever owns the machine, once, by hand. The first version of this said that
+  adding a firewall rule needed host privileges, which was wrong -- the rule lives
+  inside the guest, and `linklet exec` is a thing that runs commands inside the
+  guest.
+- It holds all seven claims against this machine over its LAN address. **It has
+  never run against a second machine**, and the claim it exists for -- that the
+  firewall blocks the agent port on a real deployment -- is still untested.
+
 ### Changed
 
 - **The JSON codec is `serde_json`.** Six hundred and seventy-two lines of
@@ -129,6 +142,19 @@ to answer one question: **what can I do now that I could not do before?**
   rather than after a round trip. The token is what authenticates the handshake,
   so without one there is no call to make.
 
+### Added
+
+- **`tools/smoke.ps1`, the real-machine layer.** Seven claims against one target,
+  taking an address and knowing nothing about where it came from. It needs no
+  administrator rights, deliberately: the states that would need them are produced
+  by whoever owns the machine, once, by hand. The first version of this said that
+  adding a firewall rule needed host privileges, which was wrong -- the rule lives
+  inside the guest, and `linklet exec` is a thing that runs commands inside the
+  guest.
+- It holds all seven claims against this machine over its LAN address. **It has
+  never run against a second machine**, and the claim it exists for -- that the
+  firewall blocks the agent port on a real deployment -- is still untested.
+
 ### Changed
 
 - **The JSON codec is `serde_json`.** Six hundred and seventy-two lines of
@@ -219,6 +245,19 @@ skeleton and M5.
 - A sealed call needs a token, and the client says so **before opening a socket**
   rather than after a round trip. The token is what authenticates the handshake,
   so without one there is no call to make.
+
+### Added
+
+- **`tools/smoke.ps1`, the real-machine layer.** Seven claims against one target,
+  taking an address and knowing nothing about where it came from. It needs no
+  administrator rights, deliberately: the states that would need them are produced
+  by whoever owns the machine, once, by hand. The first version of this said that
+  adding a firewall rule needed host privileges, which was wrong -- the rule lives
+  inside the guest, and `linklet exec` is a thing that runs commands inside the
+  guest.
+- It holds all seven claims against this machine over its LAN address. **It has
+  never run against a second machine**, and the claim it exists for -- that the
+  firewall blocks the agent port on a real deployment -- is still untested.
 
 ### Changed
 

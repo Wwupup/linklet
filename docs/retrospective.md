@@ -204,8 +204,13 @@ Listed because a claim nobody tested is worse than an absent one.
 - **No CI.** `tools/verify.ps1` is the single entry point and has only ever been run
   by hand. There is no remote to run it from. A green check in a README that does
   not exist would be worse than the honest line in `README.md`.
-- **No second machine.** Every test either uses loopback or a real Windows socket.
-  `docs/testing.md` says what that costs. Nobody has driven a real target.
+- **No second machine has been driven.** `tools/smoke.ps1` exists and holds its
+  seven claims against this machine over its LAN address, which exercises the real
+  network stack and the sealed channel off loopback. **It has never run against a
+  second machine**, so the claim it was written for -- that Windows Firewall blocks
+  the agent port on a real deployment -- is still untested. The script was written
+  first and its first real run is deliberately left to the person who owns a
+  second machine, because a claim about a LAN cannot be self-certified.
 - **No identities.** The token authenticates the channel and says nothing about
   which caller it is, so there is no per-caller revocation and no audit trail.
 - **No cipher agility.** One curve, one cipher, one derivation, at build time.

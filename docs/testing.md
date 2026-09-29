@@ -81,10 +81,17 @@ why that distinction is the whole design. The practical consequences:
    `testbeds/*.testbed`, and a test that cannot run without one is marked
    `#[ignore]` with the reason, rather than being skipped silently or failing on
    a laptop.
-3. **The gap is stated, not implied.** At the time of writing there is no
-   automated run against a second machine. `docs/ROADMAP.md` records this as an
-   open milestone rather than a done one, because a checked-off item that was
-   quietly dropped is how a roadmap becomes fiction.
+3. **The gap is stated, not implied.** There is still no *automated* run against a
+   second machine -- it needs a machine, so it cannot be a gate. What exists is
+   `tools/smoke.ps1`, which is a script you run, and `docs/smoke.md`, which says
+   what it claims and what it cannot. `docs/ROADMAP.md` records the automated part
+   as open rather than done, because a checked-off item that was quietly dropped is
+   how a roadmap becomes fiction.
+
+**A fifth layer, and it is not a gate.** `tools/smoke.ps1` takes an address and makes
+seven claims about a machine that exists. It is a script and not part of
+`tools/verify.ps1` because it needs a machine: a gate that needs one stops being run,
+and then the behaviour it covered rots. `docs/smoke.md` is the whole argument.
 
 ## Knowing a test is worth its place
 

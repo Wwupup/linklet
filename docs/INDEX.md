@@ -19,6 +19,7 @@ the change that made it wrong.
 | How will my work be judged? | `docs/review-m1.md` |
 | Is the tool surface understandable? | `docs/tool-readability.md` |
 | What went wrong on the way here? | `docs/retrospective.md` |
+| How do I test against a real machine? | `docs/smoke.md` |
 | What is the state of the code? | below |
 
 ## What kind of document is it
@@ -67,6 +68,7 @@ message, or nothing.
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
 | `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
 | `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |
+| `docs/smoke.md` | rule | the real-machine layer: what it claims, and what it needs |
 
 ## The code
 
