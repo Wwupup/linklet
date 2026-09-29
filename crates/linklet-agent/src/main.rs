@@ -54,8 +54,8 @@ usage:
 options:
   --port <port>   the port to listen on (default 8787)
   --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
-  --root <directory>  the only directory a transfer may write in or read from
-                      (default: the working directory the agent was started in)
+  --root <directory>  the only directory a transfer may write in or read from, and it
+                      must exist (default: the directory the agent was started in)
   -h, --help      print this
 ";
 
@@ -151,6 +151,20 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // And that it is a directory that exists, checked here rather than at the first
+    // transfer. An agent that accepted a root which is not there would start happily and
+    // then fail **every** transfer with a filesystem error naming a path nobody typed --
+    // which is what happened on the first real machine this ran against. A configuration
+    // error should be loud when it is made.
+    if !root.root().is_dir() {
+        eprintln!(
+            "linklet-agent: --root {} is not a directory",
+            root.root().display()
+        );
+        eprintln!("linklet-agent: create it, or pass --root with one that exists");
+        std::process::exit(2);
+    }
 
     // Bound before the banner is printed, so that "listening on" is only said
     // once it is true. A message that claims something before trying it is the

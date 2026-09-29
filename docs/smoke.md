@@ -38,7 +38,8 @@ Nothing but a running `linklet-agent` and the same token on both sides.
 ```powershell
 # On the target, once:
 $env:LINKLET_TOKEN = '<at least sixteen bytes>'
-linklet-agent.exe --port 8787
+mkdir C:\linklet\transfers
+linklet-agent.exe --port 8787 --root C:\linklet\transfers
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 ```
@@ -46,6 +47,21 @@ New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
 The firewall rule is the step that matters and the reason this layer exists. It is
 also the one step that `linklet` deliberately does not do for you: the agent cannot
 open a port on a machine it has not been installed on yet.
+
+Three things about that block, all of them learned by doing it on a real machine:
+
+- **The root has to exist.** The agent refuses to start if `--root` is not a directory,
+  rather than starting and failing every transfer later with a filesystem error naming a
+  path nobody typed. `--root` also defaults to the directory the agent was started in,
+  which is why it is worth passing explicitly on a target.
+- **A program rule is the one that keeps working.** `-Program <the agent's path>` (any
+  port) survives a change of `--port`; a rule for one port does not. The port form above
+  is what the first version of this documented, and both are fine.
+- **8787 is a common choice and can already be taken.** On the first target this ran
+  against, a `lanlink` agent held 8787 and its own program rule, so `linklet-agent` could
+  not bind it and exited — while `linklet check` still reported the port live, because
+  something was listening. If the first claim passes and the second fails, look at which
+  process owns the port before looking at the network.
 
 ## Setting up a target once, by hand
 

@@ -811,6 +811,65 @@ fn write_source(agent: &Agent, content: &[u8]) -> std::path::PathBuf {
 }
 
 #[test]
+fn the_agent_refuses_to_start_with_a_root_that_is_not_a_directory() {
+    // A configuration error should be loud when it is made, which is the same argument the
+    // token gets one test above. Without this the agent starts happily and **every**
+    // transfer fails later with a filesystem error naming a path nobody typed -- which is
+    // what happened on the first real machine this ran against, where `--root` pointed at
+    // a directory that had not been created yet.
+    //
+    // The wait is bounded rather than `output()`, because the failure being checked for is
+    // "it kept running": a test that blocked on a process which is serving happily would
+    // hang the suite instead of failing it.
+    let missing = std::env::temp_dir().join("linklet-root-that-does-not-exist");
+    let _ = std::fs::remove_dir_all(&missing);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
+        .env("LINKLET_TOKEN", TEST_TOKEN)
+        .args(["--port", "0"])
+        .arg("--root")
+        .arg(&missing)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the agent should start");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("waiting for the agent") {
+            break Some(status);
+        }
+        if std::time::Instant::now() > deadline {
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let Some(status) = status else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the agent started with a root that does not exist, and is still running");
+    };
+
+    assert_eq!(
+        status.code(),
+        Some(2),
+        "expected a refusal to start rather than a running agent"
+    );
+
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(
+        child.stderr.as_mut().expect("stderr was piped"),
+        &mut stderr,
+    )
+    .expect("reading stderr");
+    assert!(
+        stderr.contains("linklet-root-that-does-not-exist"),
+        "the message should name the root: {stderr}"
+    );
+}
+
+#[test]
 fn the_agent_refuses_to_start_without_a_usable_token() {
     // A configuration error should be loud when it is made, not at the first
     // caller. This is the startup check, over a real process.

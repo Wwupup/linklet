@@ -3,7 +3,7 @@
 A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
-> **Status: M0-M7 done.** Five crates, 390 tests, one command that runs every
+> **Status: M0-M7 done.** Five crates, 391 tests, one command that runs every
 > gate. A host can check reachability, run a command on a target through a sealed
 > channel, read what it did, and move one file in either direction. See
 > `docs/ROADMAP.md` for what is next and what was parked, and `docs/decisions.md`
