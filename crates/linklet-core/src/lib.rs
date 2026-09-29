@@ -28,6 +28,7 @@ pub mod json;
 mod outcome;
 mod probe;
 mod target;
+pub mod testbed;
 mod tool;
 
 pub use error::TargetError;

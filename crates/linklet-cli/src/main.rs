@@ -28,7 +28,8 @@ use std::env;
 use std::process::ExitCode as ProcessExit;
 use std::time::Duration;
 
-use linklet_adapters::{TcpProbe, serve};
+use linklet_adapters::{SystemProber, TcpProbe, serve};
+use linklet_core::testbed::{self, Testbed};
 use linklet_core::{
     CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_TARGETS, Report, Summary, check_targets,
     exit_code_for, parse_targets, render,
@@ -43,6 +44,7 @@ linklet -- check whether machines on a LAN are listening
 
 usage:
   linklet check [options] <target>[,<target>...]
+  linklet testbed check <spec-file> <target>
   linklet mcp
 
 target:
@@ -125,8 +127,8 @@ fn main() -> ProcessExit {
 /// reason about, and so that the only line that touches the process is the one
 /// above.
 fn dispatch(arguments: &[String]) -> u8 {
-    // Checked before the option parser, because `mcp` takes no options and the
-    // parser would reject every one a client might pass. The subcommand is the
+    // Checked before the option parser, because these take no options and the
+    // parser would reject every one a caller might pass. A subcommand is the
     // first argument or it is not a subcommand.
     if arguments.first().map(String::as_str) == Some("mcp") {
         if arguments.len() > 1 {
@@ -134,6 +136,10 @@ fn dispatch(arguments: &[String]) -> u8 {
             return ExitCode::USAGE;
         }
         return run_mcp();
+    }
+
+    if arguments.first().map(String::as_str) == Some("testbed") {
+        return run_testbed(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -327,5 +333,70 @@ fn run_mcp() -> u8 {
             eprintln!("linklet: mcp session ended: {error}");
             ExitCode::NOT_ALL_ALIVE
         }
+    }
+}
+
+/// Whether a machine matches a testbed specification.
+///
+/// The answer is a decision rather than an opinion, and the exit code carries it
+/// so that an agent branches without reading anything: `0` every requirement was
+/// observed to hold, `1` at least one did not, `2` the invocation or the
+/// specification was wrong, `3` the run was refused.
+///
+/// The report goes to stdout even when it is bad news: "this machine is not
+/// ready" is a result, and an agent that has to merge two streams to reconstruct
+/// it will eventually not bother.
+fn run_testbed(arguments: &[String]) -> u8 {
+    let mut words = arguments.iter();
+    let command = words.next().map(String::as_str);
+
+    if command != Some("check") {
+        match command {
+            None => eprintln!("linklet: usage: linklet testbed check <spec-file> <target>"),
+            Some(other) => {
+                eprintln!("linklet: unknown testbed command {other:?}; expected check");
+            }
+        }
+        return ExitCode::USAGE;
+    }
+
+    let Some(spec_path) = words.next() else {
+        eprintln!("linklet: testbed check needs a specification file");
+        return ExitCode::USAGE;
+    };
+    let Some(target) = words.next() else {
+        eprintln!("linklet: testbed check needs a target name, even if only a label");
+        return ExitCode::USAGE;
+    };
+    if words.next().is_some() {
+        eprintln!("linklet: testbed check takes a specification file and a target, nothing else");
+        return ExitCode::USAGE;
+    }
+
+    let text = match std::fs::read_to_string(spec_path) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("linklet: cannot read {spec_path}: {error}");
+            return ExitCode::USAGE;
+        }
+    };
+
+    let testbed = match Testbed::parse(&text) {
+        Ok(testbed) => testbed,
+        Err(error) => {
+            // The specification's own line number, so the fix is a one-line edit
+            // rather than a search through the file.
+            eprintln!("linklet: {spec_path}: {error}");
+            return ExitCode::USAGE;
+        }
+    };
+
+    let verdicts = testbed.check(&SystemProber);
+    println!("{}", testbed::render(&testbed, &verdicts, target));
+
+    if verdicts.iter().all(|verdict| verdict.held) {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::NOT_ALL_ALIVE
     }
 }
