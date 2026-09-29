@@ -125,6 +125,17 @@ pub struct Target {
 /// grammar, and `"!!!"` fits it. See [`Host`] for why refusing a strange name
 /// would cost more than accepting one.
 ///
+/// Two things the bullets above leave out, both of which are decided rather
+/// than accidental:
+///
+/// - Whitespace around a spec is not part of it, so `" a:1 , b:2 "` is two
+///   targets.
+/// - A spec that is empty after trimming is an error, not a skipped entry. A
+///   trailing comma is a typo, and silently ignoring it teaches the caller that
+///   the input does not matter.
+/// - The port separator is the **last** `:`, so `::1:80` means host `::1`,
+///   port `80`.
+///
 /// # The order the rules are applied in
 ///
 /// A spec can break more than one rule at once, and then the *error* depends on
@@ -157,18 +168,6 @@ pub struct Target {
 /// except where a test says otherwise. That is deliberate: a test that breaks
 /// two rules at once is testing the order, not the rule, and should say so.
 ///
-/// - Whitespace around a spec is not part of it, so `" a:1 , b:2 "` is two
-///   targets.
-/// - A spec that is empty after trimming is an error, not a skipped entry. A
-///   trailing comma is a typo, and silently ignoring it teaches the caller
-///   that the input does not matter.
-/// - The port separator is the **last** `:`, so `::1:80` means host `::1`,
-///   port `80`.
-/// - The three ways a port can be wrong are three different errors, because a
-///   caller acts differently on each: absent ([`TargetError::PortMissing`]),
-///   not a number ([`TargetError::PortNotANumber`]), out of range
-///   ([`TargetError::PortOutOfRange`]).
-///
 /// # Errors
 ///
 /// Returns the first spec that does not fit the grammar as a [`TargetError`].
@@ -176,14 +175,80 @@ pub struct Target {
 /// stopped by the first bad one either way, and a partial success is the worst
 /// possible answer -- the caller cannot tell whether the good entries in it
 /// were all of them.
-pub fn parse_targets(_input: &str) -> Result<Vec<Target>, TargetError> {
-    // TODO(you): implement this to the grammar above.
-    //
-    // Before writing a line, answer these three for yourself:
-    //   1. Which failure do I hit first if the input is ""? What about ","?
-    //   2. Where does the port range check live, and can it be reached twice?
-    //   3. The tests in tests/target_parsing.rs are the specification. Read
-    //      them before implementing; run `cargo test -p linklet-core` and watch
-    //      them fail first.
-    unimplemented!("parse_targets is the first thing to build -- see tests/target_parsing.rs")
+pub fn parse_targets(input: &str) -> Result<Vec<Target>, TargetError> {
+    // Rule 1, against the whole input rather than against the first spec.
+    // These two cases look identical from here and mean different things to the
+    // caller: "" is "you asked for nothing", ",," is "you typed something
+    // wrong", and an empty first spec would report the second for the first.
+    if input.trim().is_empty() {
+        return Err(TargetError::EmptyInput);
+    }
+
+    let mut targets = Vec::new();
+
+    for raw in input.split(',') {
+        let spec = raw.trim();
+
+        // Rule 2.
+        if spec.is_empty() {
+            return Err(TargetError::EmptySpec);
+        }
+
+        // Rule 3, before anything is split. A spec with a space in it is one
+        // spec, and the error names all of it: reporting the fragment "1 b"
+        // would describe a string the caller never wrote.
+        if spec.chars().any(char::is_whitespace) {
+            return Err(TargetError::WhitespaceInSpec {
+                spec: spec.to_string(),
+            });
+        }
+
+        // Rule 4. `rsplit_once`, not `split_once`: an IPv6 host is full of
+        // colons, and the port is always the part after the last one.
+        let (host, port) = match spec.rsplit_once(':') {
+            Some((host, port)) => (host, port),
+            // No colon at all: the port is absent, which is rule 5's answer too.
+            None => (spec, ""),
+        };
+
+        // Rules 5 and 6 share a variant because they share a situation: no port
+        // was named. What separates them is only which half is empty, and no
+        // caller acts differently on that.
+        if port.is_empty() || host.is_empty() {
+            return Err(TargetError::PortMissing {
+                spec: spec.to_string(),
+            });
+        }
+
+        // Rule 7. Checked before parsing, so that "1 b" cannot arrive as a
+        // parse failure and be reported as one.
+        if !port.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(TargetError::PortNotANumber {
+                spec: spec.to_string(),
+                port: port.to_string(),
+            });
+        }
+
+        // Rule 8. Parsed into a wider type and saturated rather than rejected:
+        // a number too large for u64 is still a number, and the useful sentence
+        // to a caller is "that is not a port", not "that is not a number".
+        let wide = port
+            .parse::<u128>()
+            .map(|value| value.min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(u64::MAX);
+
+        if wide == 0 || wide > u64::from(u16::MAX) {
+            return Err(TargetError::PortOutOfRange {
+                spec: spec.to_string(),
+                value: wide,
+            });
+        }
+
+        targets.push(Target {
+            host: Host(host.to_string()),
+            port: Port(wide as u16),
+        });
+    }
+
+    Ok(targets)
 }
