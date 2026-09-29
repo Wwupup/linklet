@@ -660,6 +660,24 @@ pub fn parse_body(body: &[u8]) -> Result<Json, WireError> {
     json::parse(text).map_err(|error| WireError::BadRequest(error.to_string()))
 }
 
+/// Renders a transfer's outcome as the text a caller reads.
+///
+/// One line, in the order a person checks them: **where it landed, how big it is, and
+/// what it hashes to.** The digest is the whole reason a transfer reports anything --
+/// a caller that is told "done" has no way to know the file it now has is the one that
+/// was sent.
+///
+/// The destination is passed in rather than read out of the manifest. On a push it is a
+/// path on the other machine and on a pull a path on this one, and either way it is what
+/// the caller asked for -- the manifest's own `path` field is the sender's answer to a
+/// question the caller already answered.
+pub fn render_transfer(outcome: &TransferOutcome, destination: &str) -> String {
+    format!(
+        "{destination}: {} bytes, sha256 {}",
+        outcome.bytes, outcome.sha256
+    )
+}
+
 /// Renders an outcome as the text an agent reads.
 ///
 /// Fixed shape, and the first thing on every line is a fact rather than a

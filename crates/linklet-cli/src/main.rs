@@ -50,6 +50,8 @@ usage:
   linklet check [options] <target>[,<target>...]
   linklet testbed check <spec-file> <target>
   linklet exec --agent <host:port> [options] <command...>
+  linklet push --agent <host:port> --from <local> --to <remote>
+  linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
 
 target:
@@ -60,6 +62,10 @@ options for check:
   --timeout <seconds>     how long to wait for each target (default 5)
   --max-targets <count>   refuse a run larger than this (default 256)
   -h, --help              print this
+
+about transfers:
+  A path under the agent's transfer root -- the directory it was started with, or
+  --root on the agent. One file per command, and a directory is your own loop.
 
 about mcp:
   Speaks the Model Context Protocol on stdin and stdout, for an AI agent to
@@ -149,6 +155,14 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("exec") {
         return run_exec(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("push") {
+        return run_transfer(Direction::Push, &arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("pull") {
+        return run_transfer(Direction::Pull, &arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -553,6 +567,140 @@ fn run_exec(arguments: &[String]) -> u8 {
     }
 }
 
+/// Which way a transfer goes.
+///
+/// An enum rather than two near-identical functions, because the two commands take the
+/// same three options and differ in one thing. Writing them out twice is how two
+/// commands come to disagree about which of `--from` and `--to` is the local one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    /// Local to remote: `--from` is here and `--to` is there.
+    Push,
+    /// Remote to local: `--from` is there and `--to` is here.
+    Pull,
+}
+
+impl Direction {
+    /// The command's name, for messages.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::Pull => "pull",
+        }
+    }
+}
+
+/// Runs one transfer and returns the exit code.
+///
+/// The exit code follows `check` rather than `exec`: a call that could not be made is a
+/// **refusal**, which is exit 3 and goes to stderr, because there is no command whose
+/// exit status could be passed through. A pull that arrived and a push that landed are
+/// exit 0 with a line of facts on stdout.
+fn run_transfer(direction: Direction, arguments: &[String]) -> u8 {
+    let options = match parse_transfer(direction, arguments) {
+        Ok(options) => options,
+        Err(problem) => {
+            eprintln!("linklet: {problem}");
+            return ExitCode::USAGE;
+        }
+    };
+
+    let outcome = transfer_on(
+        direction,
+        &options.agent,
+        &options.from,
+        &options.to,
+        token_from_environment().as_ref(),
+    );
+
+    if outcome.is_error {
+        eprintln!("linklet: {}", outcome.text);
+        return ExitCode::REFUSED;
+    }
+
+    println!("{}", outcome.text);
+    ExitCode::SUCCESS
+}
+
+/// The three options a transfer takes, whichever way it goes.
+struct TransferOptions {
+    /// The agent's `host:port`.
+    agent: String,
+    /// Where the file is now.
+    from: String,
+    /// Where it should end up.
+    to: String,
+}
+
+/// Turns `argv` into the three options, or says which one is wrong.
+///
+/// Every flag is required and none has a default: a transfer with a guessed destination
+/// is a file written somewhere nobody asked for, and this project would rather refuse.
+fn parse_transfer(direction: Direction, arguments: &[String]) -> Result<TransferOptions, String> {
+    let mut agent: Option<String> = None;
+    let mut from: Option<String> = None;
+    let mut to: Option<String> = None;
+
+    let mut words = arguments.iter();
+    while let Some(argument) = words.next() {
+        let mut take = |flag: &str| -> Result<String, String> {
+            words
+                .next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} needs a value"))
+        };
+        match argument.as_str() {
+            "--agent" => agent = Some(take("--agent")?),
+            "--from" => from = Some(take("--from")?),
+            "--to" => to = Some(take("--to")?),
+            "-h" | "--help" => {
+                return Err("this command takes no --help; see linklet --help".into());
+            }
+            other => return Err(format!("unknown option {other:?}")),
+        }
+    }
+
+    let name = direction.name();
+    Ok(TransferOptions {
+        agent: agent.ok_or_else(|| format!("{name} needs --agent <host:port>"))?,
+        from: from.ok_or_else(|| format!("{name} needs --from"))?,
+        to: to.ok_or_else(|| format!("{name} needs --to"))?,
+    })
+}
+
+/// Moves one file and renders what happened.
+///
+/// Shared by the command and the tool, so that the two cannot disagree about what a
+/// failure looks like -- the same shape [`exec_on`] has. The distinction it keeps is the
+/// one this project is arranged around: a call that could not be made is `is_error`, and
+/// a transfer that arrived with the wrong digest is a result carrying bad news.
+fn transfer_on(
+    direction: Direction,
+    agent: &str,
+    from: &str,
+    to: &str,
+    token: Option<&Token>,
+) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    let result = match direction {
+        // `from` is the local path on a push, and `to` is the remote one.
+        Direction::Push => linklet_client::push(&address, std::path::Path::new(from), to),
+        Direction::Pull => linklet_client::pull(&address, from, std::path::Path::new(to)),
+    };
+
+    match result {
+        Ok(outcome) => ToolOutcome::ok(wire::render_transfer(&outcome, to)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
+}
+
 /// The token this host presents, from the environment.
 ///
 /// The environment rather than a flag, so that the secret does not appear in a
@@ -560,8 +708,8 @@ fn run_exec(arguments: &[String]) -> u8 {
 /// agent reads, so a bench with both ends on one machine needs it set once.
 ///
 /// An unusable token is reported and treated as absent rather than refused: the
-/// caller finds out from a 401 that names the token, which is the same thing that
-/// happens when it is wrong, and one message for one problem is better than two.
+/// caller finds out from the agent refusing the session, which is the same thing
+/// that happens when it is wrong, and one message for one problem is better than two.
 fn token_from_environment() -> Option<Token> {
     let secret = std::env::var("LINKLET_TOKEN").ok()?;
     match Token::new(secret) {

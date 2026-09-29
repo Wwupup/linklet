@@ -201,7 +201,7 @@ different shape:
 - [x] the agent receives a transfer: manifest, path, `.part`, per-chunk total,
       digest, rename
 - [x] the client sends one: stream, `seal_into`, frame
-- [ ] `pull`, and `push`/`pull` on the CLI and the MCP surface
+- [x] `pull`, and `push`/`pull` on the CLI -- the MCP surface is below
 **The agent's hand-written HTTP layer was replaced first, as this section required.**
 It is deleted, and `tiny_http` was never needed: the answer turned out to be the
 length-prefixed frame that `docs/decisions.md` D4 had already written down as the
@@ -211,8 +211,10 @@ design that fits the channel. What replaced it is
 
 - [x] `linklet push --agent <host:port> --from <local> --to <remote>` copies one
       file to a target over the sealed channel
-- [ ] `linklet pull --agent <host:port> --from <remote> --to <local>` brings one
+- [x] `linklet pull --agent <host:port> --from <remote> --to <local>` brings one
       back, for collecting a log or a result
+      -- both need `--root` on the agent, which is the one directory a transfer may
+      read or write; it defaults to the directory the agent was started in
 - [x] **the framed body carries bytes rather than hex.** It was hex because the
       framing layer was written as text, and that doubled every sealed body. Replacing
       HTTP with frames removed the text body entirely, which is stronger than making

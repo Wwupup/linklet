@@ -29,6 +29,18 @@ $ echo $?
 0
 ```
 
+```console
+$ linklet push --agent 10.0.0.5:8787 --from dist/app.exe --to app.exe
+app.exe: 4194304 bytes, sha256 9f86d081884c7d65...
+$ linklet pull --agent 10.0.0.5:8787 --from build.log --to build.log
+build.log: 18244 bytes, sha256 2c26b46b68ffc68f...
+```
+
+A transfer goes to the directory the agent was started in, or the one it was given with
+`--root`, and nowhere else -- in either direction. The digest on the line is the one the
+receiving side computed, so a caller can check it against the file it sent or the file
+it now has.
+
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`
 covers two situations and the reason is where they are told apart, because the

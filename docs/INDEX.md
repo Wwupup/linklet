@@ -114,8 +114,9 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/tests/handshake.rs` | forward secrecy and the man in the middle |
 | `crates/linklet-adapters/tests/channel_sealing.rs` | confidentiality, integrity, ordering |
 | `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |
-| `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary |
+| `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary, transfers included |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
+| `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
 
 ## Keeping this true
 
