@@ -147,6 +147,79 @@ that serves them, which is the next thing.
 
 ---
 
+## M6 -- who may run commands, and who may read them
+
+**Done, and it was not on this roadmap when the plan was written.** The parked list
+said "no security boundary beyond the caller can already reach the machine", and
+for a tool whose whole job is running commands on someone else's machine, that was
+the wrong call. It was parked, then built. The parked item is struck below rather
+than deleted, because a plan that quietly loses an item is a plan nobody can check.
+
+- **A shared token, compared in time that does not depend on how much of it was
+  right.** `==` stops at the first differing byte, so the time a reply takes depends
+  on how many leading bytes were correct, and that recovers a secret one byte at a
+  time. In `crates/linklet-core/src/auth.rs`, with a test that measures rather than
+  asserts, and a control that proves the measuring works.
+- **A sealed channel with forward secrecy.** X25519, HKDF and ChaCha20-Poly1305,
+  with both ephemeral private halves discarded, so a session recorded today cannot
+  be read by anyone who learns the token tomorrow.
+- **The token is never transmitted.** What crosses the wire is public keys and
+  sealed bodies; the token is mixed into the key derivation instead of being sent.
+  A captured request is not a credential.
+- **Two messages on one connection**: the handshake, then the command sealed under
+  the session it produced. The handshake cannot protect itself, so the exchange has
+  to come first -- and both on one connection keeps the agent stateless.
+- **Rule 1 was rewritten**, from "the core depends on no crate" to "the core depends
+  on no crate that does I/O", because the old wording was satisfied by a rule rather
+  than a reason and had been read as a rule about the whole project. See
+  `docs/decisions.md`.
+
+## M7 -- getting a build onto the machine, and the evidence back
+
+**The first milestone that is necessary rather than valuable.** The tool can check
+reachability and run commands, and it cannot put anything on a target -- which is
+the first step of the workflow it was written for. A tool that cannot deploy has not
+yet reached the point where its security model can be shown to be worth anything.
+
+- [ ] `linklet push --agent <host:port> --from <local> --to <remote>` copies one
+      file to a target over the sealed channel
+- [ ] `linklet pull --agent <host:port> --from <remote> --to <local>` brings one
+      back, for collecting a log or a result
+- [ ] **the HTTP body carries bytes rather than hex.** It is hex today because the
+      framing layer was written as text, and that doubles every sealed body. Push is
+      where the cost stops being theoretical.
+- [ ] a size limit, refused clearly rather than truncated
+- [ ] **the transfer is verified by digest**, compared by the receiving side. A
+      half-transferred file left at the destination under its real name is worse
+      than a failed transfer, because the next step believes it.
+- [ ] `push` and `pull` on the MCP surface: an agent cannot install a build it has
+      no way to send
+
+**What this milestone does not do, and says so: it does not install anything.** It
+moves a file. Whether that file is an agent, a build or a configuration is the
+caller's business. "Install automation" stays parked -- the first copy onto a target
+is a step a person performs, and performing it by hand once is how they find out
+what a deployment actually consists of.
+
+## M8 -- did the tool actually do what you asked
+
+Parked until M7 lands. Worth writing down because a sibling project does this better
+and the gap is real: every command that reports a *result* should also report whether
+it was able to look.
+
+- how many things were examined, and whether it stopped early
+- which filters actually applied, echoed back
+- a failure to enumerate, never reported as an empty result
+
+`linklet` has one instance of this pattern -- exit 1 against exit 3 -- and it needs
+several more before its answers can be trusted on a machine it does not control.
+
+## M9 -- identities, and being able to change the cipher
+
+Parked. The token authenticates the channel and says nothing about *which* caller it
+is, so there is no per-caller revocation and no audit trail. There is also one curve,
+one cipher and one derivation, chosen at build time. Neither is needed to use this on
+a network you control, and both are needed before it is used on one you do not.
 ## Parked deliberately
 
 Written down so they can be refused on purpose rather than discovered by
@@ -155,8 +228,10 @@ accident. None of these is planned:
 - a job/session model with a lifecycle (the honest version of this is M4)
 - a configuration file (flags until there is a proven need for persistence)
 - a daemon or service on the host
-- encryption, authentication, or any security boundary beyond "the caller can
-  already reach the machine"
+~~- encryption, authentication, or any security boundary beyond "the caller can
+  already reach the machine"~~ -- **struck at M6.** It was the wrong call, and it
+  is left visible because the plan was believed for several milestones while it was
+  wrong.
 - install automation for the first copy onto a target
 
 ## A rule about this file
