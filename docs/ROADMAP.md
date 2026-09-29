@@ -176,24 +176,34 @@ than deleted, because a plan that quietly loses an item is a plan nobody can che
 
 ## M7 -- getting a build onto the machine, and the evidence back
 
-**The first milestone that is necessary rather than valuable.** The tool can check
-reachability and run commands, and it cannot put anything on a target -- which is
-the first step of the workflow it was written for. A tool that cannot deploy has not
-yet reached the point where its security model can be shown to be worth anything.
+**Done.** `linklet push` puts one file on a target and `linklet pull` brings one
+back, over the sealed channel, with the receiving side verifying the digest before
+the real path is touched -- so a transfer that did not arrive intact leaves nothing
+behind under the name the next step would believe. Both are on the MCP surface too,
+because an agent cannot install a build it has no way to send.
 
-**Already in place, all in `linklet-core` and all tested.** Written down because a
-reader who has to work out what exists will either rebuild it or build on a
-different shape:
+**Why this one was necessary rather than valuable**, which is what the plan said
+before it was built: the tool could check reachability and run commands, and it
+could not put anything on a target -- which is the first step of the workflow it was
+written for. A tool that cannot deploy has not yet reached the point where its
+security model can be shown to be worth anything.
+
+**What was already in place before any I/O was written**, all in `linklet-core` and
+all tested. Written down then because a reader who has to work out what exists will
+either rebuild it or build on a different shape; kept now because it is still where
+the design lives:
 
 - [x] `src/frame.rs` -- the wire format, with the ten ways a length-prefixed
       protocol goes wrong listed and defended, and a test per failure mode
 - [x] `src/transfer.rs` -- T1 path validation against a root (the Windows rules a
-      `..` check does not cover), and T3/T11: the manifest checked before any chunk
-      is read, and the chunk arithmetic as a function with tests
+      `..` check does not cover), T3/T11: the manifest checked before any chunk is
+      read, and the chunk arithmetic as a function with tests. The running total
+      (T4), the end-of-transfer and digest checks (T5, T6, T7) arrived with the
+      receiving side and are tested in the same place, in microseconds
 - [x] `Sealed::seal_into` / `open_into` -- T10, so a chunk of a file is in memory
       once rather than three times
 
-**What is left is I/O**, in `adapters`, `agent` and `client`:
+**What it took**, in `adapters`, `agent` and `client`:
 
 - [x] the connection loop reads frames instead of HTTP: a read timeout on every
       read, one chunk at a time so the desynchronisation defence keeps holding, and
@@ -201,7 +211,6 @@ different shape:
 - [x] the agent receives a transfer: manifest, path, `.part`, per-chunk total,
       digest, rename
 - [x] the client sends one: stream, `seal_into`, frame
-- [x] `pull`, and `push`/`pull` on the CLI -- the MCP surface is below
 **The agent's hand-written HTTP layer was replaced first, as this section required.**
 It is deleted, and `tiny_http` was never needed: the answer turned out to be the
 length-prefixed frame that `docs/decisions.md` D4 had already written down as the
@@ -232,11 +241,19 @@ caller's business. "Install automation" stays parked -- the first copy onto a ta
 is a step a person performs, and performing it by hand once is how they find out
 what a deployment actually consists of.
 
+**What it left open, rather than quietly not doing.** A transfer has no progress
+reporting: a slow one and a stuck one look the same until the deadline, which is
+`docs/transfer.md`'s own parked list. There is no resumption, deliberately, and one
+transfer moves one file -- a directory is the caller's loop. And nothing in the
+smoke layer covers a transfer: `docs/smoke.md` says which claims it does and does
+not make.
+
 ## M8 -- did the tool actually do what you asked
 
-Parked until M7 lands. Worth writing down because a sibling project does this better
-and the gap is real: every command that reports a *result* should also report whether
-it was able to look.
+**No longer waiting on anything.** M7 landed, so this is the next one and it is not
+started. Worth writing down because a sibling project does this better and the gap is
+real: every command that reports a *result* should also report whether it was able to
+look.
 
 - how many things were examined, and whether it stopped early
 - which filters actually applied, echoed back

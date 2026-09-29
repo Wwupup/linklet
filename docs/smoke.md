@@ -100,6 +100,13 @@ turned out not to exist.
   one budget) is tested against fakes in `tests/concurrent_check.rs`. A real test
   would need twenty real addresses, and the claim is about arithmetic rather than
   about the network.
+- **A transfer.** `push` and `pull` are tested against a real filesystem over a real
+  socket on one machine -- `crates/linklet-adapters/tests/transfer.rs` for the bytes
+  and the `.part`, `crates/linklet-client/tests/against_agent.rs` for the whole chain
+  with a real agent. What none of that shows is a **large** file crossing a **real
+  link**, which is the one thing a second machine would add and the one thing this
+  script does not yet claim. It is named here rather than left to be assumed from the
+  absence of a failure.
 - **Anything about different Windows versions.** One target is one data point.
 
 ## Running it against one machine

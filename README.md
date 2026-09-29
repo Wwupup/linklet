@@ -3,10 +3,11 @@
 A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
-> **Status: M0-M6 done.** Five crates, 259 tests, one command that runs every
+> **Status: M0-M7 done.** Five crates, 356 tests, one command that runs every
 > gate. A host can check reachability, run a command on a target through a sealed
-> channel, and read what it did. See `docs/ROADMAP.md` for what was parked, and
-> `docs/decisions.md` for the choices that are not obvious from the code.
+> channel, read what it did, and move one file in either direction. See
+> `docs/ROADMAP.md` for what is next and what was parked, and `docs/decisions.md`
+> for the choices that are not obvious from the code.
 
 ## What it does
 
