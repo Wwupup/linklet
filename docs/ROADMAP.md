@@ -83,12 +83,26 @@ tests.
 
 ## M4 -- one call instead of five
 
-- [ ] concurrency across targets, with per-target timeouts
-- [ ] a single invocation that reports on many machines
-- [ ] the decision of what to do about partial failure, written down and tested
+- [x] concurrency across targets, with per-target timeouts
+- [x] a single invocation that reports on many machines
+- [x] the decision of what to do about partial failure, written down and tested
 
 *What you learn here:* where concurrency belongs (the adapter) and where it
 must not live (the decision).
+
+**What actually happened, and what it says about the plan.** The third item
+needed no decision at all. Partial failure had already been decided in M2: one
+machine being down is an ordinary result carrying bad news, not a failure of the
+run. Concurrency did not make it a special case, and the only work it needed was
+a test asserting that the concurrent run agrees with the serial one about it.
+
+That is the useful shape of this milestone. Two of the three items were about
+*when* the waiting happens; the third was already answered. "We will decide that
+later" sometimes means "it was decided already and nobody wrote it down".
+
+The measurement: 20 unreachable targets on a 5 s budget finish in 5.0 s, against
+roughly 40 s serial. `docs/testing.md` records which layer each of these tests
+belongs in, and why the overlap itself cannot be tested in the core.
 
 ## M5 -- being useful from an agent, and being honest about it
 

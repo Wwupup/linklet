@@ -37,19 +37,22 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- **Many targets no longer take one timeout each.** 20 unreachable machines on a
+  5 s budget finish in 5.0 s rather than roughly 40 s. The `check` command uses
+  the concurrent run; the answers, the order and the refusals are unchanged.
 - `docs/testing.md` was named in neither the index nor the routing table, so a
   reader starting from either place could not find it.
 
 ### Known gaps
 
-- **M4, concurrency**, is still not implemented: targets are checked one after
-  another, so ten unreachable machines take ten timeouts. Deferred in two
-  consecutive milestones, which is where a deferral starts becoming permanent.
 - No automated run against a second machine. `docs/testing.md` says what that
   costs and what it does not cover.
 - The MCP surface has never been read by a model with no other context. The tests
-  check that the description is short; they cannot check that it is
+  check that the descriptions are short; they cannot check that they are
   understandable, and that is the claim the milestone rests on.
+- `--at-once` is a constant rather than a flag. Ten unreachable machines and
+  sixty behave the same way, so nobody has wanted a different value yet; a flag
+  added before anyone asks is how a command line grows arguments nobody uses.
 
 ## [0.1.0]
 
