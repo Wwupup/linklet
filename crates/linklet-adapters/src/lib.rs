@@ -18,6 +18,8 @@
 
 #![forbid(unsafe_code)]
 
+mod mcp;
 mod tcp;
 
+pub use mcp::{FALLBACK_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION, serve};
 pub use tcp::{MIN_BUDGET, TcpProbe, effective_budget};

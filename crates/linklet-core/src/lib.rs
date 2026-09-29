@@ -28,6 +28,7 @@ pub mod json;
 mod outcome;
 mod probe;
 mod target;
+mod tool;
 
 pub use error::TargetError;
 pub use outcome::{ExitCode, exit_code_for, render};
@@ -36,3 +37,7 @@ pub use probe::{
     Report, Status, Summary, check_targets,
 };
 pub use target::{Host, Port, Target, parse_targets};
+pub use tool::{
+    MAX_DESCRIPTION_CHARS, Tool, ToolError, ToolOutcome, dispatch, tool_list_json, tools,
+    total_description_chars,
+};

@@ -28,10 +28,10 @@ use std::env;
 use std::process::ExitCode as ProcessExit;
 use std::time::Duration;
 
-use linklet_adapters::TcpProbe;
+use linklet_adapters::{TcpProbe, serve};
 use linklet_core::{
-    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_TARGETS, check_targets, exit_code_for,
-    parse_targets, render,
+    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_TARGETS, Report, Summary, check_targets,
+    exit_code_for, parse_targets, render,
 };
 
 /// The usage text, printed for `--help` and for a wrong invocation.
@@ -43,15 +43,20 @@ linklet -- check whether machines on a LAN are listening
 
 usage:
   linklet check [options] <target>[,<target>...]
+  linklet mcp
 
 target:
   host:port            for example 10.0.0.5:8787
   several may be given, separated by commas or by spaces
 
-options:
+options for check:
   --timeout <seconds>     how long to wait for each target (default 5)
   --max-targets <count>   refuse a run larger than this (default 256)
   -h, --help              print this
+
+about mcp:
+  Speaks the Model Context Protocol on stdin and stdout, for an AI agent to
+  call. See docs/MCP.md.
 ";
 
 /// Why the invocation was wrong.
@@ -120,6 +125,17 @@ fn main() -> ProcessExit {
 /// reason about, and so that the only line that touches the process is the one
 /// above.
 fn dispatch(arguments: &[String]) -> u8 {
+    // Checked before the option parser, because `mcp` takes no options and the
+    // parser would reject every one a client might pass. The subcommand is the
+    // first argument or it is not a subcommand.
+    if arguments.first().map(String::as_str) == Some("mcp") {
+        if arguments.len() > 1 {
+            eprintln!("linklet: mcp takes no arguments");
+            return ExitCode::USAGE;
+        }
+        return run_mcp();
+    }
+
     match parse_arguments(arguments) {
         Ok(None) => {
             // `--help`: asked for, so it is not an error, but it is also not a
@@ -203,45 +219,113 @@ fn parse_arguments(arguments: &[String]) -> Result<Option<Options>, CliError> {
 
 /// Parses the targets, checks them, prints the report, and returns the code.
 fn run(options: &Options) -> u8 {
-    let targets = match parse_targets(&options.specs) {
-        Ok(targets) => targets,
-        Err(error) => {
-            eprintln!("linklet: {error}");
-            return ExitCode::USAGE;
-        }
-    };
-
-    // Unused in this build on purpose: the concurrency that would earn it is
-    // milestone M4. Named here rather than left out so that the parameter list
-    // does not have to change when it arrives.
-    let probe = TcpProbe;
-
-    match check_targets(&probe, &targets, options.budget, options.max_targets) {
+    match check_specs(&options.specs, options.budget, options.max_targets) {
         Ok(reports) => {
             for report in &reports {
                 println!("{}", render(report));
             }
             exit_code_for(&reports)
         }
-        Err(error) => {
-            // Refusals are printed with their numbers as the core words them, so
-            // there is one place that decides what "900 targets, at most 256" is
-            // called.
-            eprintln!("linklet: {error}");
-            refused_code(&error)
+        Err(failure) => {
+            // Printed with the numbers as the core words them, so there is one
+            // place that decides what "900 targets, at most 256" is called.
+            eprintln!("linklet: {failure}");
+            failure.exit_code()
         }
     }
 }
 
-/// The exit code for a refused run.
+/// The whole of a check, from text to reports.
 ///
-/// Every [`CheckError`] is a refusal, so this is a constant with an exhaustive
-/// match over it: if a future variant means something else, this stops compiling
-/// instead of silently returning the wrong code.
-fn refused_code(error: &CheckError) -> u8 {
-    match error {
-        CheckError::NoTargets | CheckError::TooManyTargets { .. } | CheckError::ZeroLimit => {
-            ExitCode::REFUSED
+/// Two callers now: the `check` command and the `check` MCP tool. They differ
+/// only in how they print and in what they return, so the parsing and the run
+/// live here rather than being written twice -- two copies of "what a target is"
+/// would eventually disagree.
+///
+/// # Errors
+///
+/// [`CliError`] for a spec that does not parse, [`CheckError`] for a run that is
+/// refused before it starts. The two are kept apart because the first blames the
+/// argument and the second blames the request.
+fn check_specs(
+    specs: &str,
+    budget: Duration,
+    max_targets: usize,
+) -> Result<Vec<Report>, CheckFailure> {
+    let targets = parse_targets(specs).map_err(|error| CheckFailure::BadSpec(error.to_string()))?;
+    check_targets(&TcpProbe, &targets, budget, max_targets).map_err(CheckFailure::Refused)
+}
+
+/// Why a check did not produce reports.
+enum CheckFailure {
+    /// A target specification did not parse.
+    BadSpec(String),
+    /// The run was refused before anything was probed.
+    Refused(CheckError),
+}
+
+impl CheckFailure {
+    /// The exit code this failure produces.
+    ///
+    /// The whole reason the two variants are kept apart: a bad spec is a bad
+    /// invocation, and a refused run is a refused run. An agent branches on that
+    /// difference, so it is decided in one place instead of at each call site.
+    fn exit_code(&self) -> u8 {
+        match self {
+            Self::BadSpec(_) => ExitCode::USAGE,
+            // Every `CheckError` is a refusal. The match is exhaustive, so a
+            // future variant that means something else stops this compiling
+            // rather than silently returning the wrong code.
+            Self::Refused(
+                CheckError::NoTargets | CheckError::TooManyTargets { .. } | CheckError::ZeroLimit,
+            ) => ExitCode::REFUSED,
+        }
+    }
+}
+
+impl std::fmt::Display for CheckFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadSpec(problem) => f.write_str(problem),
+            Self::Refused(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+/// The line format the MCP `check` tool replies with.
+///
+/// Deliberately the same facts as [`render`] and a different layout: the command
+/// line prints one line per target because a person reads it, and the tool wants
+/// a count at the end because an agent acts on it. Both are pinned by tests, so
+/// neither drifts silently.
+fn tool_text(reports: &[Report]) -> String {
+    let mut out: Vec<String> = reports.iter().map(render).collect();
+    let summary = Summary::of(reports);
+    out.push(format!("{} of {} live", summary.alive, summary.total()));
+    out.join("\n")
+}
+
+/// Runs the MCP server on stdio until the client closes it.
+///
+/// Returns the exit code. `serve` reports an I/O failure as an `Err`, and a
+/// broken pipe is the normal way this ends -- the client exits and stops reading
+/// -- so it is reported on stderr rather than as a crash.
+fn run_mcp() -> u8 {
+    let run_tool = |specs: &str, budget: Duration| -> String {
+        match check_specs(specs, budget, MAX_TARGETS) {
+            Ok(reports) => tool_text(&reports),
+            Err(CheckFailure::BadSpec(problem)) => format!("the targets do not parse: {problem}"),
+            Err(CheckFailure::Refused(error)) => format!("the run was refused: {error}"),
+        }
+    };
+
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    match serve(stdin.lock(), stdout.lock(), &run_tool) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("linklet: mcp session ended: {error}");
+            ExitCode::NOT_ALL_ALIVE
         }
     }
 }
