@@ -1,0 +1,1 @@
+the box at 10.0.0.5 should be serving our debug port, is it up

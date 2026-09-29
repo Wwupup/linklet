@@ -1,0 +1,1 @@
+run the build script on the target

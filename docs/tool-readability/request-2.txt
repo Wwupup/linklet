@@ -1,0 +1,1 @@
+before I run the launch test on this machine I want to know the exe is there and no old copy is still running

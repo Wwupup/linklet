@@ -109,15 +109,28 @@ belongs in, and why the overlap itself cannot be tested in the core.
 - [x] the MCP surface, deliberately **few and coarse**: one call per intent,
       not one call per endpoint
 - [x] the whole tool description fits in a paragraph, without caveats
-- [ ] a check on the process itself: hand the tool list to a model that has not
-      seen this repository and see whether it can pick the right call -- **not
-      done, and it is the one that tests the claim.** The other two check the
-      surface; this one checks whether the surface works on a reader with no
-      other context, which is the only question that matters and the one a test
-      cannot answer.
+- [x] a check on the process itself: hand the tool list to a model that has not
+      seen this repository and see whether it can pick the right call
 
 *What you learn here:* why a tool description that needs a manual is a symptom
 of a bad interface, which is where this project came from.
+
+**What the experiment found.** Run and recorded in
+`docs/tool-readability.md`, with its method, its result and two flaws in how it
+was run. The short version: four of five readers refused to fabricate rather
+than guessing an argument, and every refusal named the missing thing. That was
+not the property the experiment was designed to test, and it is the more valuable
+one -- a plausible guess that looks like progress is how an agent causes damage,
+and this surface did not produce one.
+
+The failure is narrower and more interesting than the success. One reader,
+asked to confirm two preconditions before a test, reached for `exec` and composed
+`dir /b *.exe & tasklist ...`, which answers the question just as well. Nothing in
+`testbed`'s description says why it beats typing the equivalent command, and
+saying so is a sentence about *when* to use a tool -- which is the kind of
+sentence the M5 rules exist to keep out. So the open question is not how to
+describe that tool better; it is whether a surface should have fewer tools rather
+than better-described ones.
 
 **What actually happened.** The surface is one tool, `check`, with a
 sixty-character description. Three rules keep it there, and they are enforced

@@ -16,6 +16,7 @@ the change that made it wrong.
 | What kind of test does this get? | `docs/testing.md` |
 | How do I call this from an agent? | `docs/MCP.md` |
 | How will my work be judged? | `docs/review-m1.md` |
+| Is the tool surface understandable? | `docs/tool-readability.md` |
 | What is the state of the code? | below |
 
 ## What kind of document is it
@@ -61,6 +62,7 @@ message, or nothing.
 | `docs/INDEX.md` | current | this file |
 | `docs/rationale.md` | decision | why each rule exists, read when changing one |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
+| `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
 
 ## The code
 
