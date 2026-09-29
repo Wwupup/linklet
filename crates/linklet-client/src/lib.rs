@@ -27,6 +27,7 @@ use linklet_core::auth::Token;
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
 use linklet_core::json;
+use linklet_core::transfer::TransferError;
 use linklet_core::wire::{self, Reply, Request, RunOutcome, RunRequest, WireError};
 
 /// Why a call could not be completed.
@@ -53,6 +54,16 @@ pub enum CallError {
     },
     /// The reply was not a message this client understands.
     Protocol(String),
+    /// The transfer could not happen for a reason on **this** side of the socket.
+    ///
+    /// Distinct from [`CallError::Transport`] and [`CallError::Protocol`], which are about
+    /// the agent, and from [`CallError::Refused`], which is the agent saying no. A local
+    /// path was not there, was not a file, was empty, or changed while it was being sent --
+    /// and the message is that reason with **no prefix claiming to know where it came
+    /// from**. The first real-machine run reported an empty local file as "the agent's
+    /// reply was not understood: a transfer of no bytes is not one this protocol sends",
+    /// which sends the reader to the network for a mistake in their own tree.
+    Local(String),
     /// The agent answered, and the answer was no.
     Refused(String),
 }
@@ -64,6 +75,7 @@ impl std::fmt::Display for CallError {
             Self::Transport(problem) => write!(f, "{problem}"),
             Self::NoReply { millis } => write!(f, "no reply within {millis} ms"),
             Self::Protocol(problem) => write!(f, "protocol: {problem}"),
+            Self::Local(problem) => write!(f, "{problem}"),
             Self::Refused(problem) => write!(f, "the agent refused: {problem}"),
         }
     }
@@ -338,22 +350,31 @@ pub fn pull(
 
 /// Turns a transfer failure into the caller's failure.
 ///
-/// A refusal by the agent arrives through [`Reply`] and not here; this is for the
-/// failures that happen on this side of the socket -- a destination that is a
-/// directory, a digest that did not match -- and for the ones that mean the connection
-/// went away mid-transfer. Those are [`CallError::Transport`] or
-/// [`CallError::Protocol`], because what they have in common is that the host does not
-/// know whether the file landed.
+/// A refusal by the agent arrives through [`Reply`] and not here. What is left is the
+/// question of **whose side the failure is on**, because that is what decides where the
+/// person reading it should look next.
 fn transfer_failure(failure: TransferFailure) -> CallError {
     match failure {
         TransferFailure::Connection(error) => transport(error),
+
+        // A fact about a file on this side: it was not there, was not a file, was empty,
+        // was past the ceiling, or was shorter than the digest that was taken of it. The
+        // agent is not in question and the message must not suggest it is.
         TransferFailure::Filesystem { .. }
         | TransferFailure::Unsendable(_)
-        | TransferFailure::Refused(_)
-        | TransferFailure::Channel(_)
-        | TransferFailure::NotAFile { .. } => CallError::Protocol(failure.to_string()),
+        | TransferFailure::NotAFile { .. }
+        | TransferFailure::Refused(TransferError::Short { .. }) => {
+            CallError::Local(failure.to_string())
+        }
+
+        // And these are about the other end: a message that would not open, a running total
+        // that did not add up, or bytes that do not hash to what it declared.
+        TransferFailure::Channel(_) | TransferFailure::Refused(_) => {
+            CallError::Protocol(failure.to_string())
+        }
     }
 }
+
 /// Opens a connection and completes a handshake on it.
 ///
 /// The initiator's half of the handshake is dropped inside this function, and that
@@ -531,6 +552,10 @@ pub fn render_call_error(error: &CallError) -> String {
         CallError::Transport(problem) => format!("could not reach the agent: {problem}"),
         CallError::NoReply { millis } => format!("no reply within {millis} ms"),
         CallError::Protocol(problem) => format!("the agent's reply was not understood: {problem}"),
+        // No prefix: the reason already names the file and the problem, and any prefix here
+        // would be a claim about where the failure came from -- which is the mistake this
+        // variant exists to stop making.
+        CallError::Local(problem) => problem.clone(),
         CallError::Refused(problem) => format!("the agent refused the request: {problem}"),
     }
 }

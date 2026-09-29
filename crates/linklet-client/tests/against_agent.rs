@@ -442,14 +442,23 @@ fn a_push_that_escapes_the_agents_root_is_refused_by_the_agent() {
 fn a_push_of_a_file_that_is_not_there_is_refused_before_a_socket_is_opened() {
     // The failure is local, and reporting it as a network failure would send the reader
     // to look at the wrong machine. The agent is never asked.
+    //
+    // `CallError::Local` rather than `Protocol`: this used to be a protocol error, which
+    // rendered as "the agent's reply was not understood" for a file that was missing on
+    // *this* side, before any socket existed.
     let agent = Agent::start();
     let missing = agent.root.join("not-here.bin");
 
     let error = push(&agent.address, &missing, "build.exe").expect_err("nothing is there");
-    assert!(matches!(error, CallError::Protocol(_)), "{error:?}");
+    assert!(matches!(error, CallError::Local(_)), "{error:?}");
     assert!(
         error.to_string().contains("not-here.bin"),
         "the refusal should name the file: {error}"
+    );
+    let text = render_call_error(&error);
+    assert!(
+        !text.contains("the agent"),
+        "a local mistake must not be reported as the agent's: {text}"
     );
     assert!(!agent.root.join("build.exe").exists());
 }
@@ -549,7 +558,13 @@ fn a_pull_onto_a_destination_that_is_a_directory_is_refused() {
     let error =
         pull(&agent.address, "build.log", &destination).expect_err("a directory is not a file");
 
-    assert!(matches!(error, CallError::Protocol(_)), "{error:?}");
+    // `Local`, because it is: the reason names the destination this side chose, and the
+    // agent had already offered a perfectly good file.
+    assert!(matches!(error, CallError::Local(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("a-directory"),
+        "the reason should name the destination: {error}"
+    );
     assert!(
         destination.is_dir(),
         "and the directory is still a directory"

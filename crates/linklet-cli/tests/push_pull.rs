@@ -276,6 +276,45 @@ fn a_transfer_of_a_file_that_is_not_there_is_a_refusal_and_not_a_crash() {
 // --- a wrong invocation ------------------------------------------------------
 
 #[test]
+fn a_local_mistake_is_not_reported_as_a_problem_with_the_agent() {
+    // Found by reading the output of the first real-machine run, which is the only place
+    // the rendered sentence is ever seen: an empty local file produced
+    //
+    //   the agent's reply was not understood: this transfer cannot be sent: a transfer of
+    //   no bytes is not one this protocol sends
+    //
+    // Nothing had been sent and no socket had been opened, so every clause of that blamed
+    // the wrong machine. The message is the whole of what a caller gets, and this project
+    // exists because it decides where they look next.
+    let agent = Agent::start();
+    let empty = agent.under_root("empty.bin");
+    std::fs::write(&empty, b"").expect("an empty file");
+
+    let output = linklet(&[
+        "push",
+        "--agent",
+        &agent.address,
+        "--from",
+        empty.to_str().expect("a UTF-8 path"),
+        "--to",
+        "build.exe",
+    ]);
+
+    assert_eq!(code(&output), ExitCode::REFUSED);
+    let text = stderr(&output);
+    assert!(
+        text.contains("no bytes"),
+        "the reason should be in the message: {text}"
+    );
+    for wrong in ["not understood", "could not reach", "refused", "the agent"] {
+        assert!(
+            !text.contains(wrong),
+            "the message blames somewhere else ({wrong:?}) for a local mistake: {text}"
+        );
+    }
+}
+
+#[test]
 fn a_transfer_without_a_destination_is_a_usage_error() {
     // Every option is required and none has a default: a transfer with a guessed
     // destination is a file written where nobody asked for it.
