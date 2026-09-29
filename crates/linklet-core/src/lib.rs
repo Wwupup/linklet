@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 pub mod auth;
+pub mod channel;
 mod error;
 pub mod json;
 mod outcome;

@@ -9,6 +9,15 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+### Changed
+
+- **The project may now depend on vetted crates, in the adapters.** The rule that
+  kept `linklet-core` dependency-free was being read as a rule about the whole
+  project, and it was applied past the point where its reason held: a SHA-256 was
+  hand-written while the registry looked unreachable, and was wrong three times out
+  of three in its padding. The registry was reachable -- a stale proxy address in a
+  git config was the whole problem. `docs/decisions.md` records it.
+
 ### Added
 
 - **A shared token is required to run anything.** The agent refuses a request
@@ -96,6 +105,15 @@ to answer one question: **what can I do now that I could not do before?**
 
 The first version with a shape. Everything below landed between the initial
 skeleton and M5.
+
+### Changed
+
+- **The project may now depend on vetted crates, in the adapters.** The rule that
+  kept `linklet-core` dependency-free was being read as a rule about the whole
+  project, and it was applied past the point where its reason held: a SHA-256 was
+  hand-written while the registry looked unreachable, and was wrong three times out
+  of three in its padding. The registry was reachable -- a stale proxy address in a
+  git config was the whole problem. `docs/decisions.md` records it.
 
 ### Added
 
