@@ -31,8 +31,8 @@ use std::time::Duration;
 use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::{
-    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_TARGETS, Report, Summary, ToolOutcome,
-    ToolRunner, check_targets, exit_code_for, parse_targets, render,
+    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_AT_ONCE, MAX_TARGETS, Report, Summary,
+    ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for, parse_targets, render,
 };
 
 /// The usage text, printed for `--help` and for a wrong invocation.
@@ -259,7 +259,12 @@ fn check_specs(
     max_targets: usize,
 ) -> Result<Vec<Report>, CheckFailure> {
     let targets = parse_targets(specs).map_err(|error| CheckFailure::BadSpec(error.to_string()))?;
-    check_targets(&TcpProbe, &targets, budget, max_targets).map_err(CheckFailure::Refused)
+
+    // The concurrent run, not the serial one. Both are tested and both agree;
+    // this is the one whose waits overlap, and ten unreachable machines taking
+    // one timeout instead of ten is the whole point of the milestone.
+    check_targets_concurrent(&TcpProbe, &targets, budget, max_targets, MAX_AT_ONCE)
+        .map_err(CheckFailure::Refused)
 }
 
 /// Why a check did not produce reports.
@@ -281,9 +286,14 @@ impl CheckFailure {
             Self::BadSpec(_) => ExitCode::USAGE,
             // Every `CheckError` is a refusal. The match is exhaustive, so a
             // future variant that means something else stops this compiling
-            // rather than silently returning the wrong code.
+            // rather than silently returning the wrong code -- which is exactly
+            // what happened when `ZeroAtOnce` was added, and the reason the
+            // pattern is spelled out instead of written as `Refused(_)`.
             Self::Refused(
-                CheckError::NoTargets | CheckError::TooManyTargets { .. } | CheckError::ZeroLimit,
+                CheckError::NoTargets
+                | CheckError::TooManyTargets { .. }
+                | CheckError::ZeroLimit
+                | CheckError::ZeroAtOnce,
             ) => ExitCode::REFUSED,
         }
     }

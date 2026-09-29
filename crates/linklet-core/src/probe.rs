@@ -19,6 +19,8 @@
 //! network stops being run.
 
 use crate::Target;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// What one look at one target observed.
@@ -88,6 +90,16 @@ pub trait Probe {
 /// has made a mistake, and an error naming the limit is more useful than a
 /// command that appears to work for four minutes.
 pub const MAX_TARGETS: usize = 256;
+
+/// The ceiling on how many probes may be in flight at once.
+///
+/// Separate from [`MAX_TARGETS`] and smaller than it, because the two bound
+/// different things: how much work is asked for, and how much of the machine is
+/// spent doing it. A caller allowed to name 256 machines has not thereby asked
+/// for 256 sockets at the same instant -- on a LAN, that many simultaneous
+/// connects is a burst that can look like a scan to whatever is watching the
+/// network.
+pub const MAX_AT_ONCE: usize = 64;
 
 /// The ceiling a single probe may be given, in seconds.
 ///
@@ -187,6 +199,13 @@ pub enum CheckError {
     },
     /// The run was allowed zero targets, which can only refuse everything.
     ZeroLimit,
+    /// The run was allowed zero probes at once, which can never finish.
+    ///
+    /// Separate from [`CheckError::ZeroLimit`] because the two numbers mean
+    /// different things: one bounds how much work is asked for, the other how
+    /// much of the machine is spent doing it. A caller that confused them would
+    /// have one of the two silently ignored.
+    ZeroAtOnce,
 }
 
 impl std::fmt::Display for CheckError {
@@ -200,6 +219,7 @@ impl std::fmt::Display for CheckError {
                 )
             }
             Self::ZeroLimit => write!(f, "a limit of zero targets would refuse every run"),
+            Self::ZeroAtOnce => write!(f, "checking zero targets at once would never finish"),
         }
     }
 }
@@ -228,6 +248,120 @@ pub fn check_targets(
     budget: Duration,
     max_targets: usize,
 ) -> Result<Vec<Report>, CheckError> {
+    validate_run(targets, max_targets)?;
+
+    let mut reports = Vec::with_capacity(targets.len());
+    for target in targets {
+        reports.push(judge(probe, target, budget));
+    }
+    Ok(reports)
+}
+
+/// Looks at every target **at once**, and reports what was observed.
+///
+/// The same contract as [`check_targets`] -- same order, same budget per target,
+/// same refusals -- with the waits overlapped instead of added up. Ten
+/// unreachable machines take one timeout rather than ten, which is the difference
+/// between a tool someone uses on a rack and a tool they stop using.
+///
+/// # What concurrency does not change
+///
+/// Nothing about the answer. That is the property the tests are written around:
+/// a caller must not be able to tell from the result which function produced it.
+/// Concurrency is a change to *when* the waiting happens, and the moment it
+/// starts changing *what* is reported, it has become a feature with its own bugs
+/// rather than a faster way to compute the same thing.
+///
+/// In particular, **partial failure is not a special case here.** One machine
+/// being down has always been an ordinary result carrying bad news, and it stays
+/// one. The refusal cases are the same three as [`check_targets`] and are decided
+/// before any thread exists.
+///
+/// # `at_once`
+///
+/// How many probes may be in flight at once. It is a separate limit from
+/// `max_targets` on purpose: one bounds **how much work** is asked for, the
+/// other bounds **how much of the machine** is spent doing it. A caller allowed
+/// to name 256 machines has not thereby asked for 256 sockets at the same
+/// instant.
+///
+/// A worker rather than a thread per target: each thread takes the next unclaimed
+/// index when it finishes, so a fast target does not wait behind a slow one the
+/// way it would with a fixed slice of the list.
+///
+/// # Errors
+///
+/// The same refusals as [`check_targets`], plus [`CheckError::ZeroAtOnce`].
+///
+/// # Why this one needs `Send + Sync` and the serial one does not
+///
+/// The bound is on this function rather than on the [`Probe`] trait, so that a
+/// single-threaded caller is not made to promise thread safety it never uses. It
+/// is also the honest place for it: "may be called from several threads at once"
+/// is a property of *this* run, and putting it on the trait would rule out
+/// implementations that are perfectly good for one thread.
+pub fn check_targets_concurrent(
+    probe: &(dyn Probe + Send + Sync),
+    targets: &[Target],
+    budget: Duration,
+    max_targets: usize,
+    at_once: usize,
+) -> Result<Vec<Report>, CheckError> {
+    validate_run(targets, max_targets)?;
+    if at_once == 0 {
+        return Err(CheckError::ZeroAtOnce);
+    }
+
+    // One slot per target, filled by index. Pre-sized so that the order of the
+    // answers is the order of the questions by construction, rather than by
+    // sorting afterwards.
+    //
+    // Behind a mutex because the borrow checker cannot see what the atomic
+    // counter guarantees. The workers do write disjoint slots, but "these indices
+    // never collide" is knowledge inside this function, not something the
+    // compiler can check, and a lock is how that gets stated rather than assumed.
+    //
+    // What the lock costs: nothing worth measuring. It is held for the store,
+    // never across the probe, and the probe is a network round trip. A contended
+    // lock among eight threads writing one pointer each is not a cost next to a
+    // millisecond of waiting on a socket.
+    let slots: Mutex<Vec<Option<Report>>> = Mutex::new((0..targets.len()).map(|_| None).collect());
+    let next = AtomicUsize::new(0);
+    let workers = at_once.min(targets.len());
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= targets.len() {
+                        break;
+                    }
+                    let report = judge(probe, &targets[index], budget);
+                    slots.lock().expect("no panic while holding")[index] = Some(report);
+                }
+            });
+        }
+    });
+
+    // Every slot is filled: the workers only stop when the counter has handed out
+    // every index, and each index is handed out exactly once. The `flatten` is a
+    // belt on a brace, kept because a silently missing report would be a lie
+    // about a machine rather than a crash.
+    Ok(slots
+        .into_inner()
+        .expect("no panic while holding")
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+/// The checks every run makes before looking at anything.
+///
+/// Extracted so the serial and concurrent paths cannot drift. A rule enforced in
+/// one of them and remembered in the other is the shape of bug this project keeps
+/// finding.
+fn validate_run(targets: &[Target], max_targets: usize) -> Result<(), CheckError> {
     if max_targets == 0 {
         return Err(CheckError::ZeroLimit);
     }
@@ -240,37 +374,38 @@ pub fn check_targets(
             limit: max_targets,
         });
     }
+    Ok(())
+}
 
-    let mut reports = Vec::with_capacity(targets.len());
+/// Turns one observation into one report.
+///
+/// A free function so that both run functions agree by construction rather than
+/// by having been written twice.
+fn judge(probe: &dyn Probe, target: &Target, budget: Duration) -> Report {
+    let (status, reason) = match probe.probe(target, budget) {
+        ProbeOutcome::Answered => (Status::Alive, "connected".to_string()),
+        ProbeOutcome::Refused => (
+            Status::Refused,
+            "the machine refused the connection".to_string(),
+        ),
+        // Both mean "we could not talk to it", which is the same news to the
+        // caller and therefore the same status. They stay separate outcomes
+        // because the adapter needs the difference -- see the variant's
+        // documentation -- not because the caller does.
+        ProbeOutcome::TimedOut => (
+            Status::Unreachable,
+            "the machine did not answer in time".to_string(),
+        ),
+        ProbeOutcome::NoAnswer => (
+            Status::Unreachable,
+            format!("no answer within {} s", budget.as_secs()),
+        ),
+        ProbeOutcome::Error(message) => (Status::Unknown(message.clone()), message),
+    };
 
-    for target in targets {
-        let (status, reason) = match probe.probe(target, budget) {
-            ProbeOutcome::Answered => (Status::Alive, "connected".to_string()),
-            ProbeOutcome::Refused => (
-                Status::Refused,
-                "the machine refused the connection".to_string(),
-            ),
-            // Both mean "we could not talk to it", which is the same news to
-            // the caller and therefore the same status. They stay separate
-            // outcomes because the adapter needs the difference -- see the
-            // variant's documentation -- not because the caller does.
-            ProbeOutcome::TimedOut => (
-                Status::Unreachable,
-                "the machine did not answer in time".to_string(),
-            ),
-            ProbeOutcome::NoAnswer => (
-                Status::Unreachable,
-                format!("no answer within {} s", budget.as_secs()),
-            ),
-            ProbeOutcome::Error(message) => (Status::Unknown(message.clone()), message),
-        };
-
-        reports.push(Report {
-            target: target.clone(),
-            status,
-            reason,
-        });
+    Report {
+        target: target.clone(),
+        status,
+        reason,
     }
-
-    Ok(reports)
 }
