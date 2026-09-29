@@ -9,6 +9,7 @@ the change that made it wrong.
 |---|---|
 | What is this, and what does it not do? | `README.md` |
 | What are the rules? | `AGENTS.md` |
+| How do I write a commit? | `docs/COMMITS.md` |
 | Why does a rule exist? | `docs/rationale.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |

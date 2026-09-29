@@ -46,10 +46,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 ## 4. Commits
 
-One logical change per commit. `<type>: <what, imperative>`, then why if it is
-not obvious. Types: `feat` `fix` `refactor` `test` `docs` `chore`.
-
-If the message needs the word "also", it is two commits.
+One logical change per commit -- write the revert message, and if it needs the
+word "and", it is two commits. `<type>: <what, imperative>`, under 72
+characters, then why if it is not obvious. Types: `feat` `fix` `refactor`
+`test` `docs` `chore`. English, ASCII. The rest, with worked examples, is in
+`docs/COMMITS.md`. Checked by `tests/commit_message.rs`.
 
 ## 5. Never commit
 

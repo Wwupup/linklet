@@ -65,7 +65,15 @@ without reverting two things you wanted, and its message has to be vague enough
 to cover all three.
 
 "If the message needs the word 'also', it is two commits" is a test, not a
-style note -- the word is a reliable symptom.
+style note -- the word is a reliable symptom. So is the sharper version in
+`docs/COMMITS.md`: write the revert message, and if it needs the word "and",
+the commit is not atomic.
+
+This rule was in `AGENTS.md` from the first commit and was broken anyway: every
+message was written in Chinese while rule 7 said English, and nothing noticed.
+That is why the mechanical half now lives in
+`crates/linklet-core/tests/commit_message.rs`. A rule nothing enforces is a
+wish, and this repository has the receipt.
 
 ## 5. Never commit
 
