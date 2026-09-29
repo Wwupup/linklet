@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 mod error;
+pub mod json;
 mod outcome;
 mod probe;
 mod target;
