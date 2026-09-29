@@ -31,6 +31,7 @@
 
 use crate::json::{self, Json};
 use crate::object;
+use crate::transfer::Manifest;
 use std::collections::BTreeMap;
 
 /// The request that asks which agent is there.
@@ -43,12 +44,15 @@ const OP_IDENTITY: &str = "identity";
 /// The request that runs a command.
 const OP_RUN: &str = "run";
 
+/// The request that sends a file to an agent.
+const OP_PUSH: &str = "push";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run";
+const KNOWN_OPS: &str = "identity, run, push";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -158,14 +162,22 @@ pub struct RunRequest {
 /// What the host asks an agent for.
 ///
 /// The list is short on purpose. Every request is a question someone has, and the
-/// two here are "is there an agent" and "run this" -- see `crate::tool` for the same
-/// rule applied to the agent-facing surface.
+/// three here are "is there an agent", "run this" and "here is a file" -- see
+/// `crate::tool` for the same rule applied to the agent-facing surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     /// Which agent this is, and which version.
     Identity,
     /// Run a command.
     Run(RunRequest),
+    /// Send a file to the agent.
+    ///
+    /// **The manifest is the whole of this request**, and what follows it on the
+    /// connection is the file, in chunks, with no further request in between. That is
+    /// the design `docs/transfer.md` describes: the receiver knows how many chunks are
+    /// coming because the size is declared, which is what replaced the message-count
+    /// defence a two-message protocol did not need.
+    Push(Manifest),
 }
 
 /// What the agent answers.
@@ -232,6 +244,11 @@ pub fn request_to_json(request: &Request) -> Json {
             "command" => run.command,
             "timeout_seconds" => run.timeout_seconds as i64,
         },
+        Request::Push(manifest) => {
+            let mut entries = manifest_fields(manifest);
+            entries.insert("op".to_string(), Json::str(OP_PUSH));
+            Json::Object(entries)
+        }
     }
 }
 
@@ -255,10 +272,136 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
         // The command's own fields are parsed by the function that owns them, so a
         // run request has one reader rather than two that could disagree.
         OP_RUN => Ok(Request::Run(run_request_from_json(value)?)),
+        OP_PUSH => Ok(Request::Push(manifest_from_json(value)?)),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),
     }
+}
+
+/// The three fields of a manifest, as JSON.
+///
+/// A map rather than a [`Json`] because two messages carry a manifest and only one of
+/// them also carries an operation: a push request is the manifest with `op` flattened
+/// into it, and the reply to a pull is the manifest alone. Returning the map is what
+/// lets those two share one writer of the field names.
+///
+/// `bytes` is an `i64` because JSON numbers are, and it is safe here rather than by
+/// luck: a manifest is refused above four gibibytes before it is ever encoded.
+fn manifest_fields(manifest: &Manifest) -> BTreeMap<String, Json> {
+    let mut entries = BTreeMap::new();
+    entries.insert("path".to_string(), Json::str(&manifest.path));
+    entries.insert("bytes".to_string(), Json::Int(manifest.bytes as i64));
+    entries.insert("sha256".to_string(), Json::str(&manifest.sha256));
+    entries
+}
+
+/// A manifest from JSON.
+///
+/// Ignores every field it does not know, which is what lets a push request carry `op`
+/// alongside these three without a second reader for the same shape. **The size and
+/// the digest are checked here; the path is not** -- whether a digest is well formed
+/// is a fact about this message, and whether a path may be written to is a question
+/// for the receiving machine. [`Manifest::check_locally`] is the second half.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field that is wrong or missing.
+pub fn manifest_from_json(value: &Json) -> Result<Manifest, WireError> {
+    let path = value
+        .get_str("path")
+        .ok_or_else(|| WireError::BadRequest("path: missing or not a string".to_string()))?
+        .to_string();
+
+    let bytes = match value.get("bytes") {
+        Some(Json::Int(bytes)) if *bytes > 0 => *bytes as u64,
+        Some(Json::Int(bytes)) => {
+            return Err(WireError::BadRequest(format!(
+                "bytes: {bytes} is not a positive number of bytes"
+            )));
+        }
+        Some(_) => return Err(WireError::BadRequest("bytes: not a number".to_string())),
+        None => return Err(WireError::BadRequest("bytes: missing".to_string())),
+    };
+
+    let sha256 = value
+        .get_str("sha256")
+        .ok_or_else(|| WireError::BadRequest("sha256: missing or not a string".to_string()))?
+        .to_string();
+
+    Ok(Manifest {
+        path,
+        bytes,
+        sha256,
+    })
+}
+
+/// What a receiver did with a transfer.
+///
+/// **The digest it computed**, which is the evidence that T7 passed: a caller told
+/// only "done" has no way to know that the file now on the disk is the one that was
+/// sent, and the whole point of comparing digests is that somebody else can check it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferOutcome {
+    /// How many bytes were written.
+    pub bytes: u64,
+    /// The digest of what is now at the destination, lowercase hex.
+    pub sha256: String,
+}
+
+/// A transfer result as JSON.
+pub fn transfer_outcome_to_json(outcome: &TransferOutcome) -> Json {
+    object! {
+        "bytes" => outcome.bytes as i64,
+        "sha256" => outcome.sha256,
+    }
+}
+
+/// A transfer result from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field that is wrong or missing.
+pub fn transfer_outcome_from_json(value: &Json) -> Result<TransferOutcome, WireError> {
+    let bytes = match value.get("bytes") {
+        Some(Json::Int(bytes)) if *bytes >= 0 => *bytes as u64,
+        Some(_) => {
+            return Err(WireError::BadRequest(
+                "bytes: missing or negative".to_string(),
+            ));
+        }
+        None => return Err(WireError::BadRequest("bytes: missing".to_string())),
+    };
+    let sha256 = value
+        .get_str("sha256")
+        .ok_or_else(|| WireError::BadRequest("sha256: missing or not a string".to_string()))?
+        .to_string();
+
+    Ok(TransferOutcome { bytes, sha256 })
+}
+
+/// The result of a transfer, wrapped as a reply.
+pub fn encode_transfer_reply(outcome: &TransferOutcome) -> Json {
+    reply_result(transfer_outcome_to_json(outcome))
+}
+
+/// The result of a transfer, out of a reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal -- a caller that wants the
+/// reason should match on [`Reply`] instead -- or when the result is not a transfer
+/// result.
+pub fn transfer_outcome_from_reply(reply: &Reply) -> Result<TransferOutcome, WireError> {
+    match reply {
+        Reply::Result(value) => transfer_outcome_from_json(value),
+        Reply::Refused(reason) => Err(WireError::BadRequest(reason.clone())),
+    }
+}
+
+/// The reply to a pull: the manifest of what is about to arrive.
+pub fn manifest_reply(manifest: &Manifest) -> Json {
+    reply_result(Json::Object(manifest_fields(manifest)))
 }
 
 /// A reply that carries an answer.

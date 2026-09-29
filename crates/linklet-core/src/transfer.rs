@@ -396,6 +396,239 @@ pub fn chunks_for(bytes: u64, chunk: u64) -> u64 {
     bytes.div_ceil(chunk)
 }
 
+/// Why a transfer could not be carried through.
+///
+/// One variant per numbered failure in `docs/transfer.md`, because a caller that has
+/// to act differently on "the sender lied" and "the disk filled" needs to be able to
+/// tell them apart, and every variant carries the numbers involved: this error is
+/// read by whoever is pushing a build, and "too large" does not say whether the
+/// sender is broken or the file changed underneath it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferError {
+    /// A chunk would take the running total past the declared size. T4.
+    TooMuch {
+        /// What the manifest declared.
+        declared: u64,
+        /// What had already been accepted.
+        written: u64,
+        /// What this chunk carried.
+        chunk: u64,
+    },
+    /// A chunk arrived after the declared size had been reached. T5.
+    PastTheEnd {
+        /// What the manifest declared, which is already in hand.
+        declared: u64,
+    },
+    /// The transfer ended before the declared size arrived. T6.
+    Short {
+        /// What the manifest declared.
+        declared: u64,
+        /// What actually arrived.
+        written: u64,
+    },
+    /// What arrived is not what was sent. T7.
+    Digest {
+        /// The digest the sender declared.
+        expected: String,
+        /// The digest of what was received.
+        got: String,
+    },
+}
+
+impl std::fmt::Display for TransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooMuch {
+                declared,
+                written,
+                chunk,
+            } => write!(
+                f,
+                "{chunk} more bytes would take this transfer to {} of the {declared} it \
+                 declared",
+                written + chunk
+            ),
+            Self::PastTheEnd { declared } => write!(
+                f,
+                "the transfer of {declared} bytes is complete and something followed it"
+            ),
+            Self::Short { declared, written } => write!(
+                f,
+                "the transfer ended {written} bytes into the {declared} it declared"
+            ),
+            Self::Digest { expected, got } => write!(
+                f,
+                "what arrived hashes to {got}, and the sender declared {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TransferError {}
+
+/// A transfer being received: the declared size and the running total.
+///
+/// `docs/transfer.md` T4 is the item most likely to be missed, because the declared
+/// number *was* checked -- at the start, before any chunk. This is the check that it
+/// is still respected as the chunks arrive, and it is a value rather than an
+/// expression inside a loop so that the arithmetic can be tested in microseconds
+/// while the loop it belongs to needs a socket.
+///
+/// It is also where T5 is enforced: a chunk after the declared size has arrived is a
+/// protocol error and not merely an overflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Receiving {
+    declared: u64,
+    written: u64,
+}
+
+impl Receiving {
+    /// Starts a transfer of `declared` bytes.
+    pub fn new(declared: u64) -> Self {
+        Self {
+            declared,
+            written: 0,
+        }
+    }
+
+    /// Accounts for one chunk **before it is written**.
+    ///
+    /// Before, not after: a caller that wrote first and checked afterwards has already
+    /// put the bytes on the disk it was trying not to fill.
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::PastTheEnd`] when the declared size has already been reached,
+    /// and [`TransferError::TooMuch`] when this chunk would pass it.
+    pub fn accept(&mut self, chunk: usize) -> Result<(), TransferError> {
+        let chunk = chunk as u64;
+
+        if self.is_complete() {
+            return Err(TransferError::PastTheEnd {
+                declared: self.declared,
+            });
+        }
+        if self.written + chunk > self.declared {
+            return Err(TransferError::TooMuch {
+                declared: self.declared,
+                written: self.written,
+                chunk,
+            });
+        }
+
+        self.written += chunk;
+        Ok(())
+    }
+
+    /// How many bytes the manifest declared.
+    pub fn declared(&self) -> u64 {
+        self.declared
+    }
+
+    /// How many bytes have been accepted.
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// Whether the declared size has arrived, which is the condition for renaming.
+    ///
+    /// T6: a caller that renamed without asking would put a short file at the real
+    /// path, and a short file is worse than no file because the next step believes it.
+    pub fn is_complete(&self) -> bool {
+        self.written >= self.declared
+    }
+}
+
+/// A transfer being sent: the declared size and what has been handed over.
+///
+/// The mirror of [`Receiving`], and it exists for the same reason from the other
+/// side: **the sender never offers a chunk it has not declared**. The last chunk is
+/// where that goes wrong, because a fixed-size read past the remainder would offer
+/// bytes the receiver has already refused to accept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sending {
+    declared: u64,
+    sent: u64,
+}
+
+impl Sending {
+    /// Starts a transfer of `declared` bytes.
+    pub fn new(declared: u64) -> Self {
+        Self { declared, sent: 0 }
+    }
+
+    /// The most the next chunk may carry, or `None` when nothing is owed.
+    ///
+    /// `None` rather than zero: a caller looping on a length would spin forever on a
+    /// zero, and the difference between "send nothing" and "you are finished" is the
+    /// difference between a hung push and a completed one.
+    pub fn next_chunk(&self) -> Option<usize> {
+        if self.is_complete() {
+            return None;
+        }
+        Some((self.declared - self.sent).min(CHUNK_BYTES) as usize)
+    }
+
+    /// Accounts for a chunk handed to the connection.
+    ///
+    /// # Errors
+    ///
+    /// [`TransferError::TooMuch`] when the chunk is longer than what was declared.
+    /// The caller reads a file, and a file can grow between being hashed and being
+    /// sent -- so this is a check on the sender's own loop and not on a peer.
+    pub fn account(&mut self, chunk: usize) -> Result<(), TransferError> {
+        let chunk = chunk as u64;
+        if self.sent + chunk > self.declared {
+            return Err(TransferError::TooMuch {
+                declared: self.declared,
+                written: self.sent,
+                chunk,
+            });
+        }
+        self.sent += chunk;
+        Ok(())
+    }
+
+    /// How many bytes have been handed over.
+    ///
+    /// For the error a sender reports when the file it is reading turns out to be
+    /// shorter than the digest it took said it was.
+    pub fn sent(&self) -> u64 {
+        self.sent
+    }
+
+    /// Whether everything declared has been handed over.
+    pub fn is_complete(&self) -> bool {
+        self.sent >= self.declared
+    }
+}
+
+/// Compares the digest a sender declared with the one a receiver computed.
+///
+/// `docs/transfer.md` T7. The AEAD already authenticates the bytes as they cross, so
+/// this catches the layers above it: a framing bug, a write that silently
+/// short-wrote, and a `.part` that something else overwrote between the write and the
+/// check.
+///
+/// Case-sensitive, and that is a consequence rather than a preference: the manifest
+/// requires lowercase hex, so there is one form of a digest in this protocol and the
+/// comparison does not have to think about the other.
+///
+/// # Errors
+///
+/// [`TransferError::Digest`] with both values. The person reading it needs to see
+/// whether the difference looks like a truncation, a different file, or a case
+/// difference that should not be possible.
+pub fn verify_digest(expected: &str, got: &str) -> Result<(), TransferError> {
+    if expected == got {
+        return Ok(());
+    }
+    Err(TransferError::Digest {
+        expected: expected.to_string(),
+        got: got.to_string(),
+    })
+}
+
 /// What a transfer says about itself before any of it arrives.
 ///
 /// Checked in full **before the first chunk is read**, which is the defence for T3
@@ -460,16 +693,21 @@ impl From<PathError> for ManifestError {
 }
 
 impl Manifest {
-    /// Checks a manifest and resolves where it goes.
+    /// Checks the parts of a manifest that do not depend on the receiving side.
     ///
-    /// Does the whole check in one call on purpose: a caller that could check the
-    /// size without checking the path, or the reverse, is a caller that will do one
-    /// of them and believe it did both.
+    /// The sender runs this **before the first chunk**, so a transfer that cannot be
+    /// accepted is refused locally rather than after a gigabyte has crossed the
+    /// network -- the same argument the framing module makes for refusing an
+    /// unacceptable frame at the sender.
     ///
     /// # Errors
     ///
-    /// [`ManifestError`] for every rule above.
-    pub fn check(&self, destination: &Destination) -> Result<PathBuf, ManifestError> {
+    /// [`ManifestError::Empty`], [`ManifestError::TooLarge`] and
+    /// [`ManifestError::BadDigest`]. **Not the path**: the path in a manifest the
+    /// sender holds names a place on someone else's machine, and this side cannot
+    /// resolve it. Splitting the check is what stops the two ends disagreeing about
+    /// who validates what.
+    pub fn check_locally(&self) -> Result<(), ManifestError> {
         if self.bytes == 0 {
             return Err(ManifestError::Empty);
         }
@@ -481,6 +719,20 @@ impl Manifest {
                 got: self.sha256.clone(),
             });
         }
+        Ok(())
+    }
+
+    /// Checks a manifest and resolves where it goes.
+    ///
+    /// Does the whole check in one call on purpose: a caller that could check the
+    /// size without checking the path, or the reverse, is a caller that will do one
+    /// of them and believe it did both.
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestError`] for every rule above.
+    pub fn check(&self, destination: &Destination) -> Result<PathBuf, ManifestError> {
+        self.check_locally()?;
         Ok(destination.resolve(&self.path)?)
     }
 

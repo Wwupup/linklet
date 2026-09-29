@@ -28,11 +28,12 @@
 use std::net::TcpStream;
 use std::time::Duration;
 
-use linklet_adapters::{Connection, ConnectionError, HkdfChannel};
+use linklet_adapters::{Connection, ConnectionError, HkdfChannel, receive_body};
 use linklet_core::auth::{self, Token};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::{FrameError, Kind};
 use linklet_core::json::{self, Json};
+use linklet_core::transfer::{Destination, Manifest};
 use linklet_core::wire::{self, Request, WireError};
 
 /// How long the agent waits for the first message of a connection.
@@ -61,7 +62,7 @@ const MESSAGE_BUDGET: Duration = Duration::from_secs(30);
 /// connection is closed otherwise. Nothing is logged and dropped: a peer that gets
 /// nothing back has to guess whether the agent is slow, dead or refusing, and
 /// guessing is what this project exists to remove.
-pub fn serve_connection(stream: TcpStream, expected: &Token) {
+pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination) {
     let mut connection = Connection::with_budget(stream, HELLO_BUDGET);
 
     let hello = match connection.read_frame(Kind::Hello) {
@@ -95,16 +96,16 @@ pub fn serve_connection(stream: TcpStream, expected: &Token) {
     };
 
     connection.set_budget(MESSAGE_BUDGET);
-    answer_one(&mut connection, session);
+    answer_one(&mut connection, session, root);
 }
 
 /// Reads the one sealed request on a connection and answers it.
 ///
 /// One request, because a connection that carried a second would give the reader a
 /// reason to hold state across them -- `docs/transfer.md` T12. The connection's own
-/// message budget is what enforces it: two messages is the default, and this reads
-/// exactly two.
-fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>) {
+/// message budget is what enforces it: two messages is the default, and a request that
+/// carries a transfer raises it by exactly the number of chunks the manifest declares.
+fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>, root: &Destination) {
     let Ok(body) = connection.read_frame(Kind::Sealed) else {
         return;
     };
@@ -123,7 +124,7 @@ fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>) {
         return;
     }
 
-    let reply = answer(&plaintext);
+    let reply = answer(connection, session.as_mut(), &plaintext, root);
 
     // Sealed with the same session, so the command's output -- the part a caller most
     // wants kept -- never crosses the network in the clear. One buffer, reused for
@@ -142,16 +143,56 @@ fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>) {
 /// Takes the plaintext rather than a parsed request so that the two ways a message
 /// can be unusable -- not JSON, and JSON of the wrong shape -- are refused here, in
 /// one place, with the field named.
-fn answer(plaintext: &[u8]) -> Json {
+///
+/// It takes the connection and the session too, and only a transfer needs them. The
+/// alternative is a second dispatcher for the requests that stream, and a router split
+/// in two is a router that eventually disagrees with itself about which request is
+/// which.
+fn answer(
+    connection: &mut Connection,
+    session: &mut dyn Sealed,
+    plaintext: &[u8],
+    root: &Destination,
+) -> Json {
     let request = wire::parse_body(plaintext).and_then(|value| wire::request_from_json(&value));
 
     match request {
         Ok(Request::Identity) => wire::identity_to_json("linklet-agent", env!("CARGO_PKG_VERSION")),
         Ok(Request::Run(run)) => wire::encode_run_reply(&crate::execute::run(&run)),
+        Ok(Request::Push(manifest)) => receive(connection, session, &manifest, root),
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.
         Err(error) => wire::reply_refused(&refusal_text(&error)),
+    }
+}
+
+/// Receives one pushed file.
+///
+/// The manifest is checked **in full, before a chunk is read**: the size against the
+/// ceiling (T3, and half of T11), the shape of the digest, and the path against the
+/// configured root (T1, the most severe item in the document). Only then does the
+/// receiving start, and `linklet_adapters`' transfer module is where the rest of the
+/// numbered failures are defended -- the `.part`, the running total, the digest
+/// comparison, and the rename.
+///
+/// Every failure is a **refusal** rather than a closed connection: the caller learns
+/// which check failed, and by the time this returns a failure the `.part` has been
+/// deleted and the real path was never touched.
+fn receive(
+    connection: &mut Connection,
+    session: &mut dyn Sealed,
+    manifest: &Manifest,
+    root: &Destination,
+) -> Json {
+    let target = match manifest.check(root) {
+        Ok(target) => target,
+        Err(error) => return wire::reply_refused(&error.to_string()),
+    };
+
+    match receive_body(connection, session, manifest, &target) {
+        Ok(outcome) => wire::encode_transfer_reply(&outcome),
+        Err(failure) => wire::reply_refused(&failure.to_string()),
     }
 }
 

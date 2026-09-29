@@ -100,6 +100,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
+| `crates/linklet-adapters/src/transfer.rs` | moving a file: the `.part`, the running total, the digest, the rename |
 | `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
 | `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
@@ -109,6 +110,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/tests/architecture.rs` | the layer rule and the dependency allowlist, checked not trusted |
 | `crates/linklet-core/tests/auth_secret.rs` | the token rules, and a timing test for the comparison |
 | `crates/linklet-adapters/tests/connection.rs` | the four framing defences that need a socket, over real sockets |
+| `crates/linklet-adapters/tests/transfer.rs` | a real file over a real socket, and what a failure may leave |
 | `crates/linklet-adapters/tests/handshake.rs` | forward secrecy and the man in the middle |
 | `crates/linklet-adapters/tests/channel_sealing.rs` | confidentiality, integrity, ordering |
 | `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |

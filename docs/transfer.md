@@ -34,25 +34,57 @@ constant. Its replacement is a **declared total size plus a policy ceiling**: th
 count is bounded because the size is. That ceiling is now the number that decides
 whether `push` is useful at all, which makes it a decision rather than a constant.
 
-**Item 2 -- no pipelining -- survives, conditionally.** It holds if chunks are
-strictly one at a time, so the reader never holds unread bytes it did not ask for.
-It dies the moment throughput is bought by writing several chunks before reading
-anything, because then a reader can be holding surplus bytes when it finishes a
-message, and that is the shape that allows a boundary to be reinterpreted.
+**Item 2 -- no pipelining -- survives, and the condition it was written with is
+narrower than it needs to be.**
 
-> **One chunk at a time is the choice, and it is chosen here rather than inherited.**
-> The cost is round-trip latency per megabyte on a LAN; the thing bought is that the
-> desynchronisation defence keeps holding.
+As written it holds only "if chunks are strictly one at a time, so the reader never
+holds unread bytes it did not ask for", and it "dies the moment throughput is bought
+by writing several chunks before reading anything". The second half does not survive
+contact with the implementation, and the reason is worth stating because the
+conclusion reached is **stronger** than the one written here.
+
+**The defence is about the reader, and it is a property of the reader, not of the
+sender.** The failure it prevents is a message boundary being reinterpreted, and a
+boundary can only be reinterpreted by something holding bytes it did not ask for.
+`linklet-adapters`' connection holds none: there is no buffered reader anywhere in
+it, so every read is `read_exact` for exactly the six-byte header and then exactly the
+declared payload. When a frame is finished, the next read begins at the next frame's
+magic byte -- which is where the sender put it, however far ahead the sender has run.
+
+So the sender does write ahead: a push fills the socket as fast as the disk and the
+network allow, **one whole frame per write**, and the operating system's own flow
+control bounds what is in flight. What it never does is write a partial frame and then
+something else, and what the reader never does is read a byte it did not ask for.
+
+**The defence therefore holds unconditionally rather than conditionally**, and it is
+checked rather than asserted: `crates/linklet-adapters/tests/connection.rs` writes two
+frames back to back and requires two back, and requires a connection that failed a
+read to refuse to be read again rather than resynchronise on what arrived.
+
+The cost claim above -- "round-trip latency per megabyte on a LAN" -- is wrong too, and
+it was wrong when it was written: the design block below has never had an
+acknowledgement in it, and without one there is no round trip per chunk. What the
+choice actually costs is **one chunk of memory per direction per connection**, and what
+it buys is that the desynchronisation defence does not depend on the sender's behaviour
+at all.
 
 ## The design
 
 ```
 one connection:
-  frame 1      Kind::Sealed -> seal(manifest)      { path, bytes, sha256 }
-  frame 2..k   Kind::Sealed -> seal(chunk)         k = ceil(bytes / CHUNK)
+  frame 0      Kind::Hello  -> the handshake, in the clear
+  frame 1      Kind::Sealed -> seal(manifest)   { op: "push", path, bytes, sha256 }
+  frame 2..k   Kind::Sealed -> seal(chunk)      k = ceil(bytes / CHUNK)
 
 CHUNK = 1 MiB, well under MAX_PAYLOAD, so a chunk never meets the frame ceiling
 ```
+
+The `op` field is the one thing here that the prose above does not imply, and it is
+there because a manifest and a command arrive on the same connection in the same shape.
+It rides *alongside* the manifest's three fields rather than wrapping them, so the
+message a receiver reads first **is** the manifest -- which is what the design needs,
+since the size in it is what bounds the message count. A reply that carries a manifest
+(a pull) has no `op`: it is already inside a reply envelope.
 
 Streaming on both ends: read 1 MiB, seal it, frame it, write it. **The file is never
 in memory whole**, on either side.
@@ -117,6 +149,13 @@ of why.
 **T9. A failed transfer leaves a file under the real name.** *Stopped by writing to
 `.part` and renaming.* The rename is the only moment the real path changes, and it
 happens after every check has passed.
+
+Two transfers to one destination at once therefore share a `.part` name, and each
+writes at its own offset. At most one of them can pass its digest check, so the other
+fails having written nothing under the real name -- **a failure rather than a
+corruption**, which is the property that matters. A per-attempt temporary name would
+turn that failure into two successful transfers racing to rename over one another,
+which is a worse thing to have on someone else's disk.
 
 **T10. The file exists three times in memory.** `seal(&[u8]) -> Vec<u8>`, then the
 framed copy, then the file buffer: a 500 MB file does not fit. **This is a channel

@@ -19,7 +19,9 @@
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use linklet_adapters::{Connection, ConnectionError, HkdfChannel};
+use linklet_adapters::{
+    Connection, ConnectionError, HkdfChannel, TransferFailure, describe as describe_file, send_body,
+};
 use linklet_core::auth::Token;
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
@@ -89,6 +91,14 @@ const HANDSHAKE_ALLOWANCE: Duration = Duration::from_secs(10);
 /// report a timeout for a command the agent was about to kill and describe, which
 /// would be a lie about what happened.
 const REPLY_ALLOWANCE: Duration = Duration::from_secs(10);
+
+/// The budget for each message of a transfer.
+///
+/// **Per message, not for the whole transfer.** Four gibibytes is several thousand
+/// chunks, so one deadline covering all of them would either be hours long -- and
+/// therefore useless -- or would fail a large file on a slow link. What a stalled
+/// transfer needs is for *a* chunk to be late, and that is what this bounds.
+const TRANSFER_ALLOWANCE: Duration = Duration::from_secs(30);
 
 /// An agent's address, as the caller wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,14 +189,15 @@ pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, C
 }
 
 /// Asks an agent which agent it is.
+/// Asks an agent which agent it is.
 ///
-/// The cheapest call in the protocol and the one a caller makes first: it needs
-/// no arguments, changes nothing, and answers the question "is there an agent
-/// here" with a fact rather than an inference from whether a port is open.
+/// The cheapest call in the protocol and the one a caller makes first: it needs no
+/// arguments, changes nothing, and answers the question "is there an agent here" with
+/// a fact rather than an inference from whether a port is open.
 ///
 /// It is sealed and it needs a token, which is worth being explicit about: the
-/// expensive part is the handshake, and a plaintext version of this question would
-/// be a version an unauthenticated caller could ask.
+/// expensive part is the handshake, and a plaintext version of this question would be a
+/// version an unauthenticated caller could ask.
 pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
     let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
     let reply = ask(
@@ -197,6 +208,71 @@ pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
     )?;
 
     wire::identity_from_json(&reply).map_err(|error| CallError::Protocol(error.to_string()))
+}
+
+/// Copies one local file to a path under the agent's transfer root.
+///
+/// The file is hashed first, and the digest goes in the manifest: the receiving side
+/// compares what it wrote against it before the file is renamed into place, so a
+/// transfer that did not arrive intact leaves nothing behind under the real name. The
+/// digest that comes back is the one the receiver computed, which is the evidence that
+/// the comparison happened.
+///
+/// # One transfer per connection
+///
+/// The request **is** the manifest, and what follows it is the file. A connection that
+/// carried a second request would give the reader a reason to hold state across them,
+/// which is the shape `docs/transfer.md` T12 refuses.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know whether the file
+/// landed. [`CallError::Refused`] carries the agent's own reason, and it is a refusal
+/// rather than a transport failure: the transfer was made and the answer was no.
+pub fn push(
+    address: &AgentAddress,
+    local: &std::path::Path,
+    remote: &str,
+) -> Result<wire::TransferOutcome, CallError> {
+    // Described and checked before a socket is opened: a file that is empty, past the
+    // ceiling, or unreadable is a local mistake, and making it look like a network one
+    // would send the reader to the wrong machine.
+    let manifest = describe_file(local, remote).map_err(transfer_failure)?;
+
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    connection.set_budget(TRANSFER_ALLOWANCE);
+
+    send_request(
+        &mut connection,
+        session.as_mut(),
+        &Request::Push(manifest.clone()),
+    )?;
+    send_body(&mut connection, session.as_mut(), local, &manifest).map_err(transfer_failure)?;
+
+    match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)? {
+        Reply::Result(value) => wire::transfer_outcome_from_json(&value)
+            .map_err(|error| CallError::Protocol(error.to_string())),
+        Reply::Refused(reason) => Err(CallError::Refused(reason)),
+    }
+}
+
+/// Turns a transfer failure into the caller's failure.
+///
+/// A refusal by the agent arrives through [`Reply`] and not here; this is for the
+/// failures that happen on this side of the socket -- an unreadable file, a file that
+/// changed while it was being sent -- and for the ones that mean the connection went
+/// away mid-transfer. Those are [`CallError::Transport`] or [`CallError::Protocol`],
+/// because what they have in common is that the host does not know whether the file
+/// landed.
+fn transfer_failure(failure: TransferFailure) -> CallError {
+    match failure {
+        TransferFailure::Connection(error) => transport(error),
+        TransferFailure::Filesystem { .. }
+        | TransferFailure::Unsendable(_)
+        | TransferFailure::Refused(_)
+        | TransferFailure::Channel(_)
+        | TransferFailure::NotAFile { .. } => CallError::Protocol(failure.to_string()),
+    }
 }
 
 /// Opens a connection and completes a handshake on it.
@@ -264,6 +340,16 @@ fn ask(
     request: &Request,
     budget: Duration,
 ) -> Result<Reply, CallError> {
+    send_request(connection, session, request)?;
+    read_reply(connection, session, budget)
+}
+
+/// Writes one sealed request.
+fn send_request(
+    connection: &mut Connection,
+    session: &mut dyn Sealed,
+    request: &Request,
+) -> Result<(), CallError> {
     let body = json::write(&wire::request_to_json(request));
 
     let mut sealed = Vec::new();
@@ -272,8 +358,15 @@ fn ask(
         .map_err(|error| CallError::Protocol(format!("cannot seal the request: {error}")))?;
     connection
         .write_frame(Kind::Sealed, &sealed)
-        .map_err(transport)?;
+        .map_err(transport)
+}
 
+/// Reads one sealed reply, or a refusal that arrived unsealed.
+fn read_reply(
+    connection: &mut Connection,
+    session: &mut dyn Sealed,
+    budget: Duration,
+) -> Result<Reply, CallError> {
     connection.set_budget(budget);
     let frame = connection.read_frame(Kind::Sealed).map_err(transport)?;
 

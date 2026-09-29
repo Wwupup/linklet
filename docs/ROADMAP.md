@@ -195,28 +195,30 @@ different shape:
 
 **What is left is I/O**, in `adapters`, `agent` and `client`:
 
-- [ ] the connection loop reads frames instead of HTTP: a read timeout on every
+- [x] the connection loop reads frames instead of HTTP: a read timeout on every
       read, one chunk at a time so the desynchronisation defence keeps holding, and
       the message count bounded by the declared size
-- [ ] the agent receives a transfer: manifest, path, `.part`, per-chunk total,
+- [x] the agent receives a transfer: manifest, path, `.part`, per-chunk total,
       digest, rename
-- [ ] the client sends one: stream, `seal_into`, frame
-- [ ] `push` and `pull` on the CLI and the MCP surface
-**Before the first line of this: the agent's hand-written HTTP layer gets replaced.**
-The body already carries bytes, which was the first prerequisite. The second is that
-the surface facing attackers stops being hand-written -- `tiny_http` for the agent,
-with the client half left open and the constraint recorded in `docs/decisions.md` D4.
-Writing a transfer on top of a layer that is about to go is writing it twice.
+- [x] the client sends one: stream, `seal_into`, frame
+- [ ] `pull`, and `push`/`pull` on the CLI and the MCP surface
+**The agent's hand-written HTTP layer was replaced first, as this section required.**
+It is deleted, and `tiny_http` was never needed: the answer turned out to be the
+length-prefixed frame that `docs/decisions.md` D4 had already written down as the
+design that fits the channel. What replaced it is
+`crates/linklet-adapters/src/connection.rs` for the socket and
+`crates/linklet-agent/src/server.rs` for the protocol, and D4 records what that cost.
 
-- [ ] `linklet push --agent <host:port> --from <local> --to <remote>` copies one
+- [x] `linklet push --agent <host:port> --from <local> --to <remote>` copies one
       file to a target over the sealed channel
 - [ ] `linklet pull --agent <host:port> --from <remote> --to <local>` brings one
       back, for collecting a log or a result
-- [ ] **the HTTP body carries bytes rather than hex.** It is hex today because the
-      framing layer was written as text, and that doubles every sealed body. Push is
-      where the cost stops being theoretical.
-- [ ] a size limit, refused clearly rather than truncated
-- [ ] **the transfer is verified by digest**, compared by the receiving side. A
+- [x] **the framed body carries bytes rather than hex.** It was hex because the
+      framing layer was written as text, and that doubled every sealed body. Replacing
+      HTTP with frames removed the text body entirely, which is stronger than making
+      the body binary: there is no longer a body that could be text.
+- [x] a size limit, refused clearly rather than truncated
+- [x] **the transfer is verified by digest**, compared by the receiving side. A
       half-transferred file left at the destination under its real name is worse
       than a failed transfer, because the next step believes it.
 - [ ] `push` and `pull` on the MCP surface: an agent cannot install a build it has

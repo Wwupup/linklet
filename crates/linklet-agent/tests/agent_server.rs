@@ -23,7 +23,11 @@ use linklet_adapters::{Connection, ConnectionError, HkdfChannel};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
 use linklet_core::json;
+use linklet_core::transfer::{CHUNK_BYTES, Manifest};
 use linklet_core::wire::{self, Reply, Request, RunOutcome, RunRequest};
+
+/// One chunk, as a `usize`, for slicing a body into messages.
+const CHUNK: usize = CHUNK_BYTES as usize;
 
 /// The token these tests configure the agent with.
 ///
@@ -43,17 +47,23 @@ const TEST_BUDGET: Duration = Duration::from_secs(30);
 struct Agent {
     child: Child,
     port: u16,
+    /// The one directory this agent's transfers may touch, removed with the agent.
+    root: std::path::PathBuf,
 }
 
 impl Agent {
     /// Starts the agent on a port the OS picks, and waits until it is listening.
     fn start() -> Self {
+        let root = scratch_dir();
         let mut child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
             // Through the environment rather than --token, which exercises the
             // path a deployment actually uses and keeps a secret out of the
             // process command line.
             .env("LINKLET_TOKEN", TEST_TOKEN)
-            .args(["--port", "0"])
+            .arg("--port")
+            .arg("0")
+            .arg("--root")
+            .arg(&root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -66,11 +76,12 @@ impl Agent {
             .read_line(&mut banner)
             .expect("the agent prints a banner when it is listening");
 
-        // "linklet-agent listening on 0.0.0.0:51234"
+        // "linklet-agent listening on 0.0.0.0:51234 transfers under C:\somewhere", so
+        // the port is the word that starts with the bound address -- not the last thing
+        // after a colon, which is wrong the moment a Windows path shares the line.
         let port = banner
-            .trim()
-            .rsplit(':')
-            .next()
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("0.0.0.0:"))
             .and_then(|text| text.parse().ok())
             .unwrap_or_else(|| panic!("cannot read a port from the banner: {banner:?}"));
 
@@ -79,7 +90,7 @@ impl Agent {
         // exit for a reason unrelated to the test.
         std::mem::forget(reader);
 
-        Self { child, port }
+        Self { child, port, root }
     }
 
     /// Opens a connection and completes a handshake on it with this token.
@@ -128,7 +139,22 @@ impl Drop for Agent {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// A directory under the system temporary directory that no other test is using.
+fn scratch_dir() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    let path = std::env::temp_dir().join(format!(
+        "linklet-agent-server-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&path).expect("a scratch directory");
+    path
 }
 
 /// A handshake that is done and a connection that can carry a request.
@@ -161,6 +187,38 @@ impl Conversation {
             .connection
             .read_frame(Kind::Sealed)
             .expect("the agent answers every request");
+        open(&mut self.session, &frame)
+    }
+
+    /// Sends a push request, then the file it describes, and returns the reply.
+    ///
+    /// The manifest frame first and then one frame per chunk, which is the shape
+    /// `docs/transfer.md` describes. The body is sent from memory rather than through
+    /// `linklet_adapters`' sender on purpose: that function reads a file, and this test
+    /// is about what the *agent* does with the messages.
+    fn push(&mut self, manifest: &Manifest, body: &[u8]) -> Reply {
+        let request = json::write(&wire::request_to_json(&wire::Request::Push(
+            manifest.clone(),
+        )));
+        let sealed = self
+            .session
+            .seal(request.as_bytes())
+            .expect("sealing the manifest");
+        self.connection
+            .write_frame(Kind::Sealed, &sealed)
+            .expect("writing the manifest");
+
+        for chunk in body.chunks(CHUNK) {
+            let sealed = self.session.seal(chunk).expect("sealing a chunk");
+            self.connection
+                .write_frame(Kind::Sealed, &sealed)
+                .expect("writing a chunk");
+        }
+
+        let frame = self
+            .connection
+            .read_frame(Kind::Sealed)
+            .expect("the agent answers a push");
         open(&mut self.session, &frame)
     }
 }
@@ -490,6 +548,103 @@ fn a_frame_of_the_wrong_kind_is_refused_with_the_reason_in_it() {
         reason.contains("hello") && reason.contains("sealed"),
         "the refusal should name both kinds: {reason}"
     );
+}
+
+// --- pushing a file ----------------------------------------------------------
+
+#[test]
+fn a_pushed_file_lands_under_the_root_and_the_agent_reports_its_digest() {
+    // The agent's half of a push, over a real socket and a real disk: the manifest
+    // arrives, the chunks follow, and the answer carries the digest of what is now
+    // there. `linklet-client`'s test is the same trip from the other end; this one can
+    // look at the file the agent wrote, which is what the client cannot do.
+    let agent = Agent::start();
+    let content = b"the bytes of a build artifact";
+    let digest = linklet_adapters::digest_of_file(&write_source(&agent, content))
+        .expect("hashing the source");
+
+    let manifest = Manifest {
+        path: "build.exe".to_string(),
+        bytes: content.len() as u64,
+        sha256: digest.clone(),
+    };
+
+    let result = wire::transfer_outcome_from_reply(&agent.sealed().push(&manifest, content))
+        .expect("a transfer result");
+    assert_eq!(result.bytes, content.len() as u64);
+    assert_eq!(result.sha256, digest);
+
+    assert_eq!(
+        std::fs::read(agent.root.join("build.exe")).expect("the file should be there"),
+        content
+    );
+    assert!(
+        !agent.root.join("build.exe.part").exists(),
+        "a completed push leaves no temporary behind"
+    );
+}
+
+#[test]
+fn a_push_whose_path_escapes_the_root_is_refused_before_a_chunk_is_read() {
+    // T1 at the agent's own layer: the path is checked against the configured root
+    // before the temporary file exists, so a `..` costs nothing and writes nothing.
+    let agent = Agent::start();
+    let content = b"payload";
+    let digest = linklet_adapters::digest_of_file(&write_source(&agent, content))
+        .expect("hashing the source");
+
+    let manifest = Manifest {
+        path: r"..\..\escaped.exe".to_string(),
+        bytes: content.len() as u64,
+        sha256: digest,
+    };
+
+    let reason = refusal(agent.sealed().push(&manifest, content));
+    assert!(
+        reason.contains("..") || reason.contains("escaped"),
+        "the refusal should name what it refused: {reason}"
+    );
+    assert!(
+        !agent.root.join("escaped.exe").exists(),
+        "nothing may be written outside the root"
+    );
+}
+
+#[test]
+fn a_push_of_more_bytes_than_it_declared_is_refused_and_leaves_nothing() {
+    // T4 at the agent's layer, and the one most likely to be missed because the
+    // declared number *was* checked. The refusal arrives after the first chunk, and the
+    // real path is never touched.
+    let agent = Agent::start();
+    let content = vec![9u8; 4096];
+    let digest = linklet_adapters::digest_of_file(&write_source(&agent, &content))
+        .expect("hashing the source");
+
+    let manifest = Manifest {
+        path: "build.exe".to_string(),
+        // Understated on purpose: the sender then keeps sending.
+        bytes: 100,
+        sha256: digest,
+    };
+
+    let reason = refusal(agent.sealed().push(&manifest, &content));
+    assert!(
+        reason.contains("100"),
+        "the refusal should name the declared size: {reason}"
+    );
+    assert!(!agent.root.join("build.exe").exists());
+    assert!(!agent.root.join("build.exe.part").exists());
+}
+
+/// Writes the bytes these push tests send, and returns the local path.
+///
+/// The file is written so that `digest_of_file` can hash it the way the host would --
+/// through the same function, so the digest in the manifest is the one the host would
+/// have put there rather than one this test invented.
+fn write_source(agent: &Agent, content: &[u8]) -> std::path::PathBuf {
+    let path = agent.root.join("source.bin");
+    std::fs::write(&path, content).expect("writing the source");
+    path
 }
 
 #[test]

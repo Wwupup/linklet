@@ -23,9 +23,11 @@ mod connection;
 mod mcp;
 mod system;
 mod tcp;
+mod transfer;
 
 pub use channel::{HkdfChannel, OVERHEAD_BYTES, new_session_id};
 pub use connection::{Connection, ConnectionError};
 pub use mcp::{FALLBACK_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION, serve};
 pub use system::SystemProber;
 pub use tcp::{MIN_BUDGET, TcpProbe, effective_budget};
+pub use transfer::{TransferFailure, describe, digest_of_file, part_path, receive_body, send_body};

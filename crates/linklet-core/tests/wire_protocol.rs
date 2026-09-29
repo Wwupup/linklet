@@ -16,10 +16,18 @@
 
 use linklet_core::json::{self, Json};
 use linklet_core::object;
+use linklet_core::transfer::Manifest;
 use linklet_core::wire::{
     self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, Reply, Request, RunOutcome, RunRequest,
     WireError,
 };
+
+/// A digest of the right shape, for the messages that carry one.
+///
+/// Deliberately not all zeros: digits have no case, so a digest made of them cannot be
+/// used to check that the comparison is case-sensitive -- which is a mistake that was
+/// made once in `tests/transfer_paths.rs`.
+const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 /// Reads a run outcome out of a reply body, the way the host has to.
 ///
@@ -279,12 +287,17 @@ fn a_result_of_the_wrong_shape_is_refused_naming_the_field() {
 }
 
 #[test]
-fn both_requests_round_trip_through_the_wire() {
+fn every_request_round_trips_through_the_wire() {
     let requests = [
         Request::Identity,
         Request::Run(RunRequest {
             command: "build.cmd --release".to_string(),
             timeout_seconds: 600,
+        }),
+        Request::Push(Manifest {
+            path: r"artifacts\build.exe".to_string(),
+            bytes: 12_345,
+            sha256: DIGEST.to_string(),
         }),
     ];
 
@@ -294,6 +307,100 @@ fn both_requests_round_trip_through_the_wire() {
             .expect("its own output should decode");
         assert_eq!(decoded, request);
     }
+}
+
+#[test]
+fn a_push_request_is_the_manifest_with_the_operation_flattened_into_it() {
+    // `docs/transfer.md` describes the first frame of a transfer as the manifest
+    // itself, and this is that: the operation rides along with the three fields rather
+    // than wrapping them in a second object. Pinned by value, because the two ends
+    // agreeing about a nesting level is exactly the sort of thing that is obvious until
+    // it is not.
+    let encoded = json::write(&wire::request_to_json(&Request::Push(Manifest {
+        path: "build.exe".to_string(),
+        bytes: 3,
+        sha256: DIGEST.to_string(),
+    })));
+
+    assert_eq!(
+        encoded,
+        format!(r#"{{"bytes":3,"op":"push","path":"build.exe","sha256":"{DIGEST}"}}"#)
+    );
+}
+
+#[test]
+fn a_manifest_field_that_is_missing_or_impossible_is_refused_by_name() {
+    let digest = DIGEST.to_string();
+    let cases: [(Json, &str); 5] = [
+        (
+            object! { "bytes" => 1i64, "sha256" => digest.clone() },
+            "path",
+        ),
+        (
+            object! { "path" => "a", "sha256" => digest.clone() },
+            "bytes",
+        ),
+        (
+            object! { "path" => "a", "bytes" => 0i64, "sha256" => digest.clone() },
+            "positive",
+        ),
+        (
+            object! { "path" => "a", "bytes" => -1i64, "sha256" => digest.clone() },
+            "positive",
+        ),
+        (object! { "path" => "a", "bytes" => 1i64 }, "sha256"),
+    ];
+
+    for (value, expected) in cases {
+        let error = wire::manifest_from_json(&value).expect_err("this manifest should be refused");
+        assert!(
+            error.to_string().contains(expected),
+            "for {value:?}, expected {expected:?} in {error}"
+        );
+    }
+}
+
+#[test]
+fn a_manifest_does_not_check_the_path_because_the_path_is_not_its_business() {
+    // A digest and a size are facts about this message. Whether a path may be written
+    // to is a question for the machine that owns the directory, and it is asked by
+    // `Manifest::check`, which is why the two are separate functions.
+    let value = object! {
+        "path" => r"..\..\Windows\System32\drivers\etc\hosts",
+        "bytes" => 1i64,
+        "sha256" => DIGEST,
+    };
+
+    let manifest = wire::manifest_from_json(&value).expect("a readable manifest");
+    assert_eq!(manifest.path, r"..\..\Windows\System32\drivers\etc\hosts");
+}
+
+#[test]
+fn a_transfer_result_carries_the_digest_the_receiver_computed() {
+    // The point of the comparison is that somebody can check it, so the result is the
+    // digest rather than a flag that says the comparison happened.
+    let outcome = wire::TransferOutcome {
+        bytes: 4096,
+        sha256: DIGEST.to_string(),
+    };
+
+    let reply = wire::encode_transfer_reply(&outcome);
+    let decoded = wire::reply_from_json(&reply).expect("a reply");
+    assert_eq!(
+        wire::transfer_outcome_from_reply(&decoded).expect("a result"),
+        outcome
+    );
+}
+
+#[test]
+fn a_refusal_is_not_a_transfer_result() {
+    // A refusal holds a sentence and no digest, so reading one as a result has to fail
+    // rather than produce a zero-byte transfer that never happened.
+    let reply = wire::reply_refused("the disk is full");
+    let decoded = wire::reply_from_json(&reply).expect("a reply");
+
+    let error = wire::transfer_outcome_from_reply(&decoded).expect_err("a refusal");
+    assert!(error.to_string().contains("disk is full"), "{error}");
 }
 
 #[test]

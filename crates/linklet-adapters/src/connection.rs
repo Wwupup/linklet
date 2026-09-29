@@ -200,6 +200,17 @@ impl Connection {
         self.read_exact(&mut head)?;
         let (kind, declared) = frame::decode_header(&head)?;
         if kind != expected {
+            // **The refused frame's payload is still on the socket, and it has to be
+            // consumed before this connection can be closed cleanly.** Windows sends a
+            // reset for a socket closed with unread bytes in its queue, and a reset can
+            // discard the answer this side just wrote -- so a caller that refused a
+            // frame and then explained why would sometimes deliver only the refusal's
+            // absence. That is a race, it was observed, and it looked exactly like the
+            // agent ignoring the request.
+            //
+            // Bounded by `MAX_PAYLOAD`, which `decode_header` has already checked, and
+            // by the read budget on each piece.
+            self.discard(declared)?;
             return Err(ConnectionError::WrongKind {
                 expected,
                 found: kind,
@@ -247,6 +258,21 @@ impl Connection {
             .and_then(|()| self.stream.flush())
         {
             return Err(self.failed("writing", error));
+        }
+        Ok(())
+    }
+
+    /// Reads and throws away a payload this side is refusing.
+    ///
+    /// A fixed scratch buffer rather than one allocation the size of the payload: the
+    /// number came from a peer, and reserving sixteen mebibytes in order to discard
+    /// them is an allocation an attacker chose.
+    fn discard(&mut self, mut length: usize) -> Result<(), ConnectionError> {
+        let mut scratch = [0u8; 8 * 1024];
+        while length > 0 {
+            let want = length.min(scratch.len());
+            self.read_exact(&mut scratch[..want])?;
+            length -= want;
         }
         Ok(())
     }

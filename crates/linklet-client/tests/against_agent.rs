@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use linklet_client::{AgentAddress, CallError, identity, render_call_error, run};
+use linklet_client::{AgentAddress, CallError, identity, push, render_call_error, run};
 use linklet_core::auth::Token;
 use linklet_core::wire::{self, RunRequest};
 
@@ -58,13 +58,24 @@ const TEST_TOKEN: &str = "test-token-0123456789";
 struct Agent {
     child: Child,
     address: AgentAddress,
+    /// The one directory this agent's transfers may touch.
+    ///
+    /// Passed with `--root` rather than inferred from the working directory, because a
+    /// test that wrote wherever the agent happened to be started would be writing into
+    /// the repository.
+    root: PathBuf,
 }
 
 impl Agent {
     fn start() -> Self {
+        let root = scratch_dir();
+
         let mut child = Command::new(agent_binary())
             .env("LINKLET_TOKEN", TEST_TOKEN)
-            .args(["--port", "0"])
+            .arg("--port")
+            .arg("0")
+            .arg("--root")
+            .arg(&root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -79,10 +90,12 @@ impl Agent {
         // Kept alive so the child's stdout is not closed under it.
         std::mem::forget(reader);
 
+        // "linklet-agent listening on 0.0.0.0:51234 transfers under C:\somewhere", so the
+        // port is the word that starts with the bound address -- not the last thing after
+        // a colon, which the root path made wrong the moment the root was on the banner.
         let port = banner
-            .trim()
-            .rsplit(':')
-            .next()
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("0.0.0.0:"))
             .and_then(|text| text.parse::<u16>().ok())
             .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"));
 
@@ -90,9 +103,21 @@ impl Agent {
             .expect("the banner port is a valid address")
             .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
 
-        Self { child, address }
+        Self {
+            child,
+            address,
+            root,
+        }
     }
 
+    /// Writes a local file this test can push.
+    fn local(&self, name: &str, content: &[u8]) -> PathBuf {
+        let path = self.root.join(name);
+        std::fs::write(&path, content).expect("writing a local file");
+        path
+    }
+
+    /// Runs a command on this agent.
     fn run(&self, command: &str) -> wire::RunOutcome {
         run(
             &self.address,
@@ -109,7 +134,22 @@ impl Drop for Agent {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// A directory under the system temporary directory that no other test is using.
+fn scratch_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+
+    let path = std::env::temp_dir().join(format!(
+        "linklet-against-agent-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&path).expect("a scratch directory");
+    path
 }
 
 // --- the shape of an address -------------------------------------------------
@@ -336,4 +376,140 @@ fn a_host_with_no_token_against_a_secured_agent_is_refused_too() {
     assert!(matches!(error, CallError::BadAddress(_)), "{error:?}");
     let text = render_call_error(&error);
     assert!(text.contains("token"), "{text}");
+}
+
+// --- pushing a file ----------------------------------------------------------
+
+#[test]
+fn a_pushed_file_lands_under_the_agents_root() {
+    // The whole of M7 in one test: a host process, an agent process, a sealed channel,
+    // a file that crossed it, and a digest that says the file on the far side is the one
+    // that was sent.
+    let agent = Agent::start();
+    let source = agent.local("source.bin", b"a build artifact of some length");
+
+    let outcome = push(&agent.address, &source, "build.exe").expect("the push should work");
+
+    let landed = agent.root.join("build.exe");
+    assert_eq!(
+        std::fs::read(&landed).expect("the file should be there"),
+        b"a build artifact of some length"
+    );
+    assert_eq!(
+        outcome.bytes as usize,
+        b"a build artifact of some length".len()
+    );
+    assert_eq!(
+        outcome.sha256,
+        linklet_adapters::digest_of_file(&source).expect("hashing the source"),
+        "the digest that comes back is the receiver's, and it is the sender's too \
+         because the bytes are the same"
+    );
+    assert!(
+        !agent.root.join("build.exe.part").exists(),
+        "a completed transfer leaves no temporary behind"
+    );
+}
+
+#[test]
+fn a_push_that_escapes_the_agents_root_is_refused_by_the_agent() {
+    // T1, end to end, over a real socket: the most severe item in the transfer
+    // document. The path is the caller's, so a caller that is confused about who it is
+    // talking to would otherwise be writing anywhere on someone else's machine.
+    let agent = Agent::start();
+    let source = agent.local("source.bin", b"payload");
+
+    let error = push(&agent.address, &source, r"..\..\escaped.exe")
+        .expect_err("a path outside the root must be refused");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    let text = render_call_error(&error);
+    assert!(
+        text.contains("..") || text.contains("escaped"),
+        "the refusal should name what it refused: {text}"
+    );
+    assert!(
+        !agent.root.join("escaped.exe").exists(),
+        "nothing may be written outside the root"
+    );
+    assert!(
+        !agent.root.join(r"..\..\escaped.exe.part").exists(),
+        "and no temporary may be left either"
+    );
+}
+
+#[test]
+fn a_push_of_a_file_that_is_not_there_is_refused_before_a_socket_is_opened() {
+    // The failure is local, and reporting it as a network failure would send the reader
+    // to look at the wrong machine. The agent is never asked.
+    let agent = Agent::start();
+    let missing = agent.root.join("not-here.bin");
+
+    let error = push(&agent.address, &missing, "build.exe").expect_err("nothing is there");
+    assert!(matches!(error, CallError::Protocol(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("not-here.bin"),
+        "the refusal should name the file: {error}"
+    );
+    assert!(!agent.root.join("build.exe").exists());
+}
+
+#[test]
+fn pushing_twice_over_the_same_path_replaces_it() {
+    // T13: the operation is declared idempotent rather than transactional, because a
+    // crash between the rename and the reply would otherwise need a caller to guess.
+    // Retrying overwrites, which is safe.
+    let agent = Agent::start();
+
+    let first = agent.local("first.bin", b"the first build");
+    push(&agent.address, &first, "build.exe").expect("the first push");
+    assert_eq!(
+        std::fs::read(agent.root.join("build.exe")).expect("the file"),
+        b"the first build"
+    );
+
+    let second = agent.local("second.bin", b"the second build, which is longer");
+    let outcome = push(&agent.address, &second, "build.exe").expect("the second push");
+
+    assert_eq!(
+        std::fs::read(agent.root.join("build.exe")).expect("the file"),
+        b"the second build, which is longer"
+    );
+    assert_eq!(
+        outcome.bytes as usize,
+        b"the second build, which is longer".len()
+    );
+    assert!(!agent.root.join("build.exe.part").exists());
+}
+
+#[test]
+fn a_push_that_the_agent_refuses_says_so_and_is_not_a_transport_failure() {
+    // The distinction the whole protocol is arranged around, over the transfer: the
+    // file was offered, the agent answered, and the answer was no. A caller must not
+    // have to work out from prose whether anything was written.
+    let agent = Agent::start();
+    let source = agent.local("source.bin", b"payload");
+
+    // An empty file cannot be described, so the local refusal is the one to check here;
+    // the *agent's* refusal is the escape test above. What this adds is that a refusal
+    // carries the agent's own words rather than being flattened into "the call failed".
+    let empty = agent.local("empty.bin", b"");
+    let error = push(&agent.address, &empty, "build.exe").expect_err("no bytes to send");
+    assert!(
+        error.to_string().contains("no bytes"),
+        "the refusal should say what is wrong with the transfer: {error}"
+    );
+
+    // And a real one: the agent's root, asked to receive a file whose path is a
+    // directory that does not exist, refuses rather than failing halfway.
+    let error = push(&agent.address, &source, r"no\such\directory\build.exe")
+        .expect_err("the directory does not exist");
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    assert!(
+        !agent
+            .root
+            .join(r"no\such\directory\build.exe.part")
+            .exists(),
+        "a refused transfer must not leave a temporary behind"
+    );
 }

@@ -1,4 +1,4 @@
-//! The specification for where a transfer may write.
+//! The specification for the decisions a transfer makes before it touches anything.
 //!
 //! `docs/transfer.md` T1 is the most severe item in that document: the destination
 //! is the caller's, so a path the caller chooses is a path an attacker chooses if
@@ -6,11 +6,20 @@
 //! SYSTEM on someone else's machine. **It is more severe than anything in the
 //! framing list, because a framing bug is a refusal and this is a write.**
 //!
-//! Every rule in `src/transfer.rs` has a test here. The Windows-specific ones get
-//! more than one, because they are the ones a reader is most likely to think are
+//! Every rule in `src/transfer.rs` has a test here: the paths it refuses (T1), the
+//! sizes it refuses before a chunk is read (T3), and the arithmetic it keeps while
+//! the chunks arrive (T4, T5, T6, T7, T11). The Windows-specific path rules get more
+//! than one test each, because they are the ones a reader is most likely to think are
 //! already handled by the `..` check.
+//!
+//! What is *not* here is anything that needs a file or a socket: whether the
+//! destination is a symlink, what is on disk, and the rename. Those are
+//! `linklet-adapters`' business and are tested against a real filesystem.
 
-use linklet_core::transfer::{Destination, MAX_TRANSFER_BYTES, PathError};
+use linklet_core::transfer::{
+    Destination, MAX_TRANSFER_BYTES, Manifest, ManifestError, PathError, Receiving, Sending,
+    TransferError, verify_digest,
+};
 
 /// A root these tests can use on Windows.
 const ROOT: &str = r"C:\linklet";
@@ -481,3 +490,258 @@ fn a_manifest_reports_which_chunks_it_takes() {
     };
     assert_eq!(manifest.chunks(), 3);
 }
+
+// --- the running total (T4, T5) ----------------------------------------------
+
+#[test]
+fn a_chunk_that_fits_is_accepted_and_the_total_grows() {
+    let mut receiving = Receiving::new(10);
+    receiving.accept(4).expect("four of ten");
+    receiving.accept(3).expect("seven of ten");
+    assert_eq!(receiving.written(), 7);
+    assert_eq!(receiving.declared(), 10);
+    assert!(!receiving.is_complete());
+}
+
+#[test]
+fn the_boundary_is_exactly_the_declared_size() {
+    // One byte less is short, one byte more is too much, exactly equal is finished.
+    // This is the whole of T4 and T6 in one test, because an off-by-one at the
+    // boundary is the version of this that ships.
+    let mut receiving = Receiving::new(3);
+    receiving.accept(3).expect("exactly the declared size");
+    assert!(receiving.is_complete());
+
+    let mut short = Receiving::new(3);
+    short.accept(2).expect("two of three");
+    assert!(!short.is_complete());
+}
+
+#[test]
+fn a_chunk_is_checked_after_the_one_before_it_and_not_only_at_the_start() {
+    // T4, and the reason it is stated as "after every chunk": the declared number
+    // *was* checked, at the start. A sender that declares 100 and keeps sending is the
+    // one this catches, so the refusal has to happen with the total already spent.
+    let mut receiving = Receiving::new(10);
+    receiving.accept(6).expect("six of ten");
+    let error = receiving
+        .accept(6)
+        .expect_err("twelve is past the ten that was declared");
+
+    assert_eq!(
+        error,
+        TransferError::TooMuch {
+            declared: 10,
+            written: 6,
+            chunk: 6
+        }
+    );
+    // And the total did not move, so a caller that caught this and carried on would
+    // still be refusing the next chunk.
+    assert_eq!(receiving.written(), 6);
+}
+
+#[test]
+fn a_chunk_after_completion_is_told_apart_from_one_that_is_simply_too_big() {
+    // T5. The transfer is over, and a frame after completion is a protocol error
+    // rather than a chunk that happens to overflow: a reader that treated it as the
+    // latter would describe a completed transfer as a failed one.
+    let mut receiving = Receiving::new(4);
+    receiving.accept(4).expect("all of it");
+    assert!(receiving.is_complete());
+
+    let error = receiving
+        .accept(1)
+        .expect_err("the declared size has been reached");
+    assert_eq!(error, TransferError::PastTheEnd { declared: 4 });
+}
+
+#[test]
+fn the_refusals_say_which_numbers_were_involved() {
+    // A transfer's error is read by whoever is pushing a build, and "too large" does
+    // not say whether the sender is broken or the file changed underneath it.
+    let text = TransferError::TooMuch {
+        declared: 10,
+        written: 6,
+        chunk: 6,
+    }
+    .to_string();
+    for number in ["10", "6"] {
+        assert!(text.contains(number), "{text:?} should mention {number}");
+    }
+
+    let text = TransferError::Short {
+        declared: 100,
+        written: 40,
+    }
+    .to_string();
+    assert!(text.contains("100") && text.contains("40"), "{text}");
+
+    let text = TransferError::Digest {
+        expected: "aa".repeat(32),
+        got: "bb".repeat(32),
+    }
+    .to_string();
+    assert!(text.contains(&"aa".repeat(32)), "{text}");
+    assert!(text.contains(&"bb".repeat(32)), "{text}");
+}
+
+#[test]
+fn a_zero_length_chunk_changes_nothing() {
+    // A frame cannot be empty -- the framing refuses it -- so this cannot arrive over
+    // a connection. It is defined rather than left to fall out of the comparison,
+    // because "it cannot happen" is how an off-by-one ships.
+    let mut receiving = Receiving::new(4);
+    receiving.accept(0).expect("nothing at all");
+    assert_eq!(receiving.written(), 0);
+    assert!(!receiving.is_complete());
+}
+
+// --- the same arithmetic from the sending side (T4, T11) ----------------------
+
+#[test]
+fn a_sender_runs_out_of_chunks_exactly_at_the_declared_size() {
+    // T11 on the sending side, and the reason it is here as well as on the receiving
+    // side: the message count of a transfer is bounded by the declared size, and one
+    // end of that bound is "the sender never offers a chunk it has not declared".
+    let mut sending = Sending::new(CHUNK);
+    assert_eq!(sending.next_chunk(), Some(CHUNK as usize));
+    sending
+        .account(CHUNK as usize)
+        .expect("the whole first chunk");
+
+    assert_eq!(sending.next_chunk(), None, "the declared size is spent");
+    assert!(sending.is_complete());
+}
+
+#[test]
+fn a_sender_never_offers_more_than_the_declared_remainder() {
+    // The last chunk is the one that goes wrong: a fixed-size read past the declared
+    // size would offer bytes the receiver has already refused to accept.
+    let mut sending = Sending::new(CHUNK + 10);
+    assert_eq!(sending.next_chunk(), Some(CHUNK as usize));
+    sending.account(CHUNK as usize).expect("a full chunk");
+
+    assert_eq!(sending.next_chunk(), Some(10), "only the remainder is owed");
+    sending.account(10).expect("the remainder");
+    assert!(sending.is_complete());
+}
+
+#[test]
+fn a_sender_that_is_handed_more_than_it_offered_refuses() {
+    // Belt as well as braces, because the caller reads a file and the file may have
+    // grown: a sender that trusted its own read loop would send a chunk the receiver
+    // has already been told to refuse.
+    let mut sending = Sending::new(5);
+    let error = sending
+        .account(6)
+        .expect_err("six bytes were never declared");
+    assert_eq!(
+        error,
+        TransferError::TooMuch {
+            declared: 5,
+            written: 0,
+            chunk: 6
+        }
+    );
+}
+
+// --- the digest (T7) ---------------------------------------------------------
+
+#[test]
+fn a_digest_that_does_not_match_is_refused_and_names_both() {
+    // T7. The AEAD already authenticates the bytes, so this catches the layers above
+    // it: a framing bug, a write that silently short-wrote, a `.part` that something
+    // else overwrote.
+    verify_digest(DIGEST, DIGEST).expect("a digest matches itself");
+
+    let error = verify_digest(DIGEST, &"0".repeat(64)).expect_err("these differ");
+    assert_eq!(
+        error,
+        TransferError::Digest {
+            expected: DIGEST.to_string(),
+            got: "0".repeat(64),
+        }
+    );
+}
+
+#[test]
+fn the_digest_comparison_is_case_sensitive() {
+    // Both cases cannot be right: two digests differing only in case compare unequal as
+    // strings and equal as digests, so accepting both would mean the comparison has to
+    // be case-insensitive and every reader has to know it. The manifest requires
+    // lowercase, so this is the comparison that matches it.
+    assert!(verify_digest(DIGEST, &DIGEST.to_uppercase()).is_err());
+}
+
+// --- what a sender can tell about its own manifest (T3, T11) ------------------
+
+#[test]
+fn the_sender_refuses_a_transfer_the_receiver_would_refuse() {
+    // A sender that would produce an unacceptable transfer learns so locally, instead
+    // of after a gigabyte has crossed the network. This is the part of a manifest that
+    // does not depend on the receiving side; where it may land is the receiver's
+    // question, answered by `check`.
+    let cases = [
+        (
+            Manifest {
+                path: "build.exe".to_string(),
+                bytes: 0,
+                sha256: DIGEST.to_string(),
+            },
+            "no bytes",
+        ),
+        (
+            Manifest {
+                path: "build.exe".to_string(),
+                bytes: MAX_TRANSFER_BYTES + 1,
+                sha256: DIGEST.to_string(),
+            },
+            "larger than",
+        ),
+        (
+            Manifest {
+                path: "build.exe".to_string(),
+                bytes: 1,
+                sha256: "nonsense".to_string(),
+            },
+            "64 lowercase hex",
+        ),
+    ];
+
+    for (manifest, expected) in cases {
+        let error = manifest
+            .check_locally()
+            .expect_err("this manifest should not be sendable");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?} in {error}"
+        );
+    }
+}
+
+#[test]
+fn the_senders_own_check_does_not_look_at_the_path() {
+    // Deliberately: the path in a manifest the *sender* holds names a place on someone
+    // else's machine, and this side cannot resolve it. Splitting the check is what
+    // stops the two ends from disagreeing about who validates what.
+    let manifest = Manifest {
+        path: r"..\..\Windows\System32\drivers\etc\hosts".to_string(),
+        bytes: 1,
+        sha256: DIGEST.to_string(),
+    };
+
+    manifest
+        .check_locally()
+        .expect("the path is not this check's business");
+    assert!(
+        matches!(
+            manifest.check(&destination()),
+            Err(ManifestError::Path(PathError::Parent { .. }))
+        ),
+        "and the receiver still refuses it"
+    );
+}
+
+/// One chunk, for the sender tests.
+const CHUNK: u64 = linklet_core::transfer::CHUNK_BYTES;

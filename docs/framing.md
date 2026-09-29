@@ -42,18 +42,28 @@ pretend to know why.
 
 ## 2. No pipelining (item 2)
 
-The protocol is one request, one reply, in that order, and the reader never has
-unread bytes it did not ask for.
+The protocol is a sequence of completed messages, and **the reader never has unread
+bytes it did not ask for**: there is no buffered reader anywhere in the connection, so
+each read is `read_exact` for exactly the header and then exactly the declared payload.
 
-This is the defence against desynchronisation, and it is a property of the
-connection rather than of a frame: if a reader can be holding surplus bytes when it
-finishes a message, then a boundary can be reinterpreted, and that is the smuggling
-shape. Refusing to pipeline means the question never arises -- there is no state in
-which surplus bytes exist.
+This is the defence against desynchronisation, and it is a property of the connection
+rather than of a frame: if a reader can be holding surplus bytes when it finishes a
+message, then a boundary can be reinterpreted, and that is the smuggling shape.
+Refusing to buffer means the question never arises -- there is no state in which
+surplus bytes exist, however far ahead the sender has run.
 
-A connection carries at most **two** messages: the hello, and one sealed request
-that answers it. The count is the defence for item 9, and it is two rather than
-"some" because the handshake exists to establish one session for one request.
+A connection carries at most **two** messages -- the hello, and one sealed request that
+answers it -- **unless that request is a transfer.** A transfer is a manifest plus one
+chunk per mebibyte, so its message count is not a protocol constant and item 9's
+constant is gone. What replaces it is `docs/transfer.md` T11: the count is bounded by
+the declared size, enforced by a budget on the connection itself and raised by exactly
+`chunks_for(bytes)` once the manifest has been read. A chunk that arrives after the
+declared size is past that budget and is refused rather than written.
+
+Item 9's replacement is therefore a number that depends on the request, which is why it
+belongs to the connection and not to the frame format: two messages for a command,
+`2 + chunks_for(bytes)` for a transfer, and the transfer's number is the declared size
+written down as a count.
 
 ## 3. The magic byte (item 7)
 
@@ -98,7 +108,16 @@ carries a localised message that would otherwise be the sentence a user reads.
   the same gap the channel module records from the other direction.
 - **A frame is read into memory in full.** `MAX_PAYLOAD` is 16 MiB and the real
   ceiling is that multiplied by the number of connections. Streaming is what would
-  remove the limit, and it is not done.
+  remove the limit, and it is not done. A *transfer* does not meet this ceiling,
+  because a chunk is 1 MiB and the file is never whole in memory -- but that is a
+  property of the transfer's chunk size and not of the frame format, so the ceiling
+  itself still stands for anything else that uses a frame.
+- **The whole connection is not bounded in time, only each read.** A peer that sends
+  one byte just inside the budget holds a thread for as long as it likes, because
+  every individual read succeeds. A transfer makes this worse in proportion to its
+  size: `chunks_for(bytes)` reads, each of which may take the full budget. A
+  whole-connection deadline is what would close it, and it needs a number this project
+  has not chosen.
 - **No rate limiting.** A peer that connects, is refused, and reconnects in a loop
   costs the agent a thread each time. Bounded by the operating system's backlog and
   nothing this project controls.

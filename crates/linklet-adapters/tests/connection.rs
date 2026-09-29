@@ -299,6 +299,39 @@ fn the_wrong_kind_is_refused_by_name_and_not_as_a_bad_message() {
     );
 }
 
+#[test]
+fn the_payload_of_a_refused_frame_is_consumed_so_the_connection_can_close_cleanly() {
+    // Not on the documented list, and found by a test that failed once in a handful of
+    // runs. Windows resets a socket that is closed with unread bytes in its receive
+    // queue, and a reset discards the answer the refusing side just wrote -- so a peer
+    // that sent the wrong kind and was told so would sometimes see silence instead,
+    // which looks exactly like an agent ignoring the request.
+    //
+    // The refused payload is therefore read and thrown away, and this shows it: the
+    // next read begins at the next frame rather than in the middle of the one that was
+    // refused.
+    let (mut sender, mut receiver) = connections();
+    sender
+        .write_frame(Kind::Sealed, b"the payload of the refused frame")
+        .expect("the refused frame");
+    sender
+        .write_frame(Kind::Sealed, b"the one after it")
+        .expect("the next frame");
+
+    assert!(matches!(
+        receiver.read_frame(Kind::Hello),
+        Err(ConnectionError::WrongKind { .. })
+    ));
+    assert_eq!(
+        receiver
+            .read_frame(Kind::Sealed)
+            .expect("the frame after the refused one"),
+        b"the one after it",
+        "a reader that had left the refused payload on the socket would find its \
+         bytes where this frame's header should be"
+    );
+}
+
 // --- T11: the message count is bounded by the declared size -------------------
 
 #[test]

@@ -37,6 +37,7 @@ mod server;
 use std::net::TcpListener;
 
 use linklet_core::auth::Token;
+use linklet_core::transfer::Destination;
 
 /// The port the agent listens on when it is not told.
 ///
@@ -48,11 +49,13 @@ const USAGE: &str = "\
 linklet-agent -- run a command on this machine when a host asks
 
 usage:
-  linklet-agent [--port <port>]
+  linklet-agent [--port <port>] [--root <directory>]
 
 options:
   --port <port>   the port to listen on (default 8787)
   --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
+  --root <directory>  the only directory a transfer may write in or read from
+                      (default: the working directory the agent was started in)
   -h, --help      print this
 ";
 
@@ -60,6 +63,7 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     let mut port = DEFAULT_PORT;
+    let mut root: Option<String> = None;
     let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
@@ -81,6 +85,13 @@ fn main() {
                     }
                 }
             }
+            "--root" => match iterator.next() {
+                Some(value) => root = Some(value.clone()),
+                None => {
+                    eprintln!("linklet-agent: --root needs a directory");
+                    std::process::exit(2);
+                }
+            },
             "--token" => match iterator.next() {
                 Some(value) => token = Some(value.clone()),
                 None => {
@@ -114,6 +125,33 @@ fn main() {
         }
     };
 
+    // The one directory a transfer may touch. Checked here, before the port is bound,
+    // for the same reason the token is: a configuration error should be loud when it is
+    // made rather than at the first caller who tries to push a file.
+    //
+    // The default is the directory the operator started the agent in, made absolute.
+    // That is a decision rather than a convenience: it means the agent can write
+    // *somewhere* the moment it runs, and it is somewhere the operator chose by being
+    // there. Printing it in the banner is what turns that into something they can see.
+    let root = match root {
+        Some(text) => text,
+        None => match std::env::current_dir() {
+            Ok(directory) => directory.to_string_lossy().into_owned(),
+            Err(error) => {
+                eprintln!("linklet-agent: cannot read the working directory: {error}");
+                eprintln!("linklet-agent: pass --root <directory> to say where transfers go");
+                std::process::exit(2);
+            }
+        },
+    };
+    let root = match Destination::new(&root) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("linklet-agent: --root: {error}");
+            std::process::exit(2);
+        }
+    };
+
     // Bound before the banner is printed, so that "listening on" is only said
     // once it is true. A message that claims something before trying it is the
     // failure mode this whole project is a reaction to.
@@ -140,7 +178,13 @@ fn main() {
         }
     };
 
-    println!("linklet-agent listening on 0.0.0.0:{bound}");
+    // The root is on the banner because it is the answer to "what can this agent write
+    // to", which is the first question a person who is about to push a build should be
+    // able to answer without reading a manual.
+    println!(
+        "linklet-agent listening on 0.0.0.0:{bound} transfers under {}",
+        root.root().display()
+    );
 
     for stream in listener.incoming() {
         match stream {
@@ -149,7 +193,8 @@ fn main() {
                 // at a time and each one is a command the caller asked for; a
                 // pool would be machinery bought with nothing.
                 let token = token.clone();
-                std::thread::spawn(move || server::serve_connection(stream, &token));
+                let root = root.clone();
+                std::thread::spawn(move || server::serve_connection(stream, &token, &root));
             }
             // One failed accept is not a reason to stop serving. The listener is
             // still bound and the next caller may be fine.
