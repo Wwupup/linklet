@@ -92,6 +92,32 @@ fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Json> {
         .collect()
 }
 
+/// A directory under the system temporary directory that removes itself.
+///
+/// A guard rather than a call at the end of the test, because the end of the test is
+/// exactly what does not run when an assertion fails -- and a failing test is when a
+/// leaked directory is most likely. The other transfer tests use the same shape; this
+/// one leaked a directory until it did.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(name: String) -> Self {
+        let path = std::env::temp_dir().join(name);
+        std::fs::create_dir_all(&path).expect("a scratch directory");
+        Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Where the agent binary is, worked out the way `push_pull.rs` does.
 ///
 /// `CARGO_BIN_EXE_linklet-agent` does not exist in this package: that variable is defined
@@ -474,8 +500,7 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
     // root, so `target/...` is where it has to go. `target/` is gitignored, so a failure
     // that leaves it behind leaves nothing tracked.
     let token = "test-token-0123456789";
-    let root = std::env::temp_dir().join(format!("linklet-mcp-transfer-{}", std::process::id()));
-    std::fs::create_dir_all(&root).expect("a scratch directory for the agent");
+    let root = Scratch::new(format!("linklet-mcp-transfer-{}", std::process::id()));
 
     let local = repo_root().join("target/mcp-push-source.bin");
     std::fs::create_dir_all(local.parent().expect("a parent")).expect("target/ exists");
@@ -487,7 +512,7 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
         .arg("--port")
         .arg("0")
         .arg("--root")
-        .arg(&root)
+        .arg(root.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -531,7 +556,7 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
         .expect("the result is text");
 
     assert_eq!(
-        std::fs::read(root.join("landed.bin")).expect("the file should have landed"),
+        std::fs::read(root.path().join("landed.bin")).expect("the file should have landed"),
         content,
         "the tool said {text:?}"
     );
@@ -541,7 +566,6 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
     );
 
     let _ = std::fs::remove_file(&local);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
