@@ -396,6 +396,26 @@ impl ToolRunner for LiveRunner {
             token_from_environment().as_ref(),
         )
     }
+
+    fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
+        transfer_on(
+            Direction::Push,
+            agent,
+            from,
+            to,
+            token_from_environment().as_ref(),
+        )
+    }
+
+    fn pull(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
+        transfer_on(
+            Direction::Pull,
+            agent,
+            from,
+            to,
+            token_from_environment().as_ref(),
+        )
+    }
 }
 
 /// Runs a command on an agent and renders what it did.

@@ -223,7 +223,7 @@ design that fits the channel. What replaced it is
 - [x] **the transfer is verified by digest**, compared by the receiving side. A
       half-transferred file left at the destination under its real name is worse
       than a failed transfer, because the next step believes it.
-- [ ] `push` and `pull` on the MCP surface: an agent cannot install a build it has
+- [x] `push` and `pull` on the MCP surface: an agent cannot install a build it has
       no way to send
 
 **What this milestone does not do, and says so: it does not install anything.** It

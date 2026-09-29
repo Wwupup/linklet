@@ -29,6 +29,7 @@ struct FakeRun {
     reachability_calls: RefCell<Vec<(String, Duration)>>,
     testbed_calls: RefCell<Vec<(String, String)>>,
     exec_calls: RefCell<Vec<(String, String, u64)>>,
+    transfer_calls: RefCell<Vec<(String, String, String)>>,
 }
 
 impl FakeRun {
@@ -38,6 +39,14 @@ impl FakeRun {
 
     fn exec_calls(&self) -> Vec<(String, String, u64)> {
         self.exec_calls.borrow().clone()
+    }
+
+    /// Every transfer call, whichever direction, with the direction not recorded.
+    ///
+    /// Enough for the tests that check the arguments arrived: a fake that also recorded
+    /// the direction would be asserting on a value dispatch does not pass it.
+    fn transfer_calls(&self) -> Vec<(String, String, String)> {
+        self.transfer_calls.borrow().clone()
     }
 }
 
@@ -64,30 +73,48 @@ impl ToolRunner for FakeRun {
         ));
         ToolOutcome::ok("exit 0\ntook 12 ms\nstdout:\nhello")
     }
+
+    fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
+        self.transfer_calls.borrow_mut().push((
+            agent.to_string(),
+            from.to_string(),
+            to.to_string(),
+        ));
+        ToolOutcome::ok("build.exe: 16 bytes, sha256 0123456789abcdef")
+    }
+
+    fn pull(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
+        self.transfer_calls.borrow_mut().push((
+            agent.to_string(),
+            from.to_string(),
+            to.to_string(),
+        ));
+        ToolOutcome::ok("build.log: 16 bytes, sha256 0123456789abcdef")
+    }
 }
 
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_three_tools() {
+fn there_are_exactly_five_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
     // the last time.
-    // The count is the assertion. Growing this list is a decision, and the way
-    // to make it is to change this number and say in the commit why the new tool
-    // earns its place -- which is exactly the conversation that was never had
-    // the last time.
+    //
+    // The fifth and sixth additions were `push` and `pull`, and the argument is in
+    // `tools()`: an agent that cannot send a file cannot install a build, and one that
+    // cannot bring a log back has to ask for it in a command's output instead.
     assert_eq!(
         tools().len(),
-        3,
+        5,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
     // Both names, so a tool cannot be swapped for another without this failing.
     // A count alone would not notice.
     let names: Vec<&str> = tools().iter().map(|tool| tool.name).collect();
-    assert_eq!(names, vec!["check", "testbed", "exec"]);
+    assert_eq!(names, vec!["check", "testbed", "exec", "push", "pull"]);
 }
 
 #[test]
@@ -382,6 +409,12 @@ fn bad_news_is_not_an_error() {
         fn exec(&self, _agent: &str, _command: &str, _timeout_seconds: u64) -> ToolOutcome {
             ToolOutcome::ok("exit 1\\ntook 3 ms\\nstderr:\\nfailed")
         }
+        fn push(&self, _agent: &str, _from: &str, _to: &str) -> ToolOutcome {
+            ToolOutcome::failed("cannot read the local file")
+        }
+        fn pull(&self, _agent: &str, _from: &str, _to: &str) -> ToolOutcome {
+            ToolOutcome::failed("the agent refused the request")
+        }
     }
 
     let outcome = dispatch(
@@ -565,6 +598,159 @@ fn the_exec_timeout_defaults_and_is_refused_outside_the_protocol_range() {
                 })
             ),
             "{value} should be refused, got {result:?}"
+        );
+    }
+}
+
+// --- the two transfer tools ---------------------------------------------------
+
+#[test]
+fn the_push_tool_passes_its_three_arguments_through() {
+    let fake = FakeRun::default();
+    let arguments = object! {
+        "agent" => Json::str("10.0.0.5:8787"),
+        "from" => Json::str("dist/app.exe"),
+        "to" => Json::str("app.exe"),
+    };
+
+    let outcome = dispatch("push", &arguments, &fake).expect("a valid call");
+
+    assert!(!outcome.is_error);
+    assert_eq!(
+        fake.transfer_calls(),
+        vec![(
+            "10.0.0.5:8787".to_string(),
+            "dist/app.exe".to_string(),
+            "app.exe".to_string()
+        )]
+    );
+    assert!(
+        fake.exec_calls().is_empty() && fake.testbed_calls().is_empty(),
+        "calling one tool must not run another"
+    );
+}
+
+#[test]
+fn the_pull_tool_passes_its_three_arguments_through() {
+    let fake = FakeRun::default();
+    let arguments = object! {
+        "agent" => Json::str("10.0.0.5:8787"),
+        "from" => Json::str("build.log"),
+        "to" => Json::str("logs/build.log"),
+    };
+
+    dispatch("pull", &arguments, &fake).expect("a valid call");
+
+    assert_eq!(
+        fake.transfer_calls(),
+        vec![(
+            "10.0.0.5:8787".to_string(),
+            "build.log".to_string(),
+            "logs/build.log".to_string()
+        )]
+    );
+}
+
+#[test]
+fn a_transfer_refuses_a_local_path_outside_the_working_tree() {
+    // An agent that can name any file on the machine has been handed more than this
+    // tool is for, and a transfer is where that becomes two-way: copying
+    // `C:\Windows\...` to a target is a read of this machine, and writing over it is a
+    // write to it. Both directions are checked, and on the local side of each.
+    let fake = FakeRun::default();
+
+    for (tool, local_argument) in [("push", "from"), ("pull", "to")] {
+        // The file's own name, rather than the whole path: the refusal quotes the path
+        // with `{:?}`, so backslashes are doubled in it and comparing the raw text would
+        // be asserting on how a debug format escapes things.
+        for (path, name) in [
+            (r"C:\Windows\win.ini", "win.ini"),
+            ("../../secrets.txt", "secrets.txt"),
+            ("/etc/passwd", "passwd"),
+        ] {
+            let arguments = match tool {
+                "push" => object! {
+                    "agent" => Json::str("a:1"),
+                    "from" => Json::str(path),
+                    "to" => Json::str("remote.exe"),
+                },
+                _ => object! {
+                    "agent" => Json::str("a:1"),
+                    "from" => Json::str("remote.log"),
+                    "to" => Json::str(path),
+                },
+            };
+
+            let result = dispatch(tool, &arguments, &fake);
+            match result {
+                Err(ToolError::BadArgument {
+                    name: field,
+                    problem,
+                }) => {
+                    assert_eq!(field, local_argument, "{tool} named the wrong argument");
+                    assert!(
+                        problem.contains(name) && problem.contains("working tree"),
+                        "the refusal should name what it refused: {problem}"
+                    );
+                }
+                other => panic!("{tool} accepted {path:?}: {other:?}"),
+            }
+        }
+    }
+
+    assert!(
+        fake.transfer_calls().is_empty(),
+        "a refused path must not reach the machine"
+    );
+}
+
+#[test]
+fn a_transfer_does_not_check_the_other_side_path() {
+    // The remote path belongs to the agent, which owns that root. A second reading of
+    // `docs/transfer.md` T1 here would be a second answer to the same question, and two
+    // checks that disagree about what is allowed is worse than one that does not run.
+    let fake = FakeRun::default();
+
+    // An absolute path on the target is legal if the agent's root contains it, so
+    // refusing it here would refuse a request the agent would have served.
+    dispatch(
+        "push",
+        &object! {
+            "agent" => Json::str("a:1"),
+            "from" => Json::str("app.exe"),
+            "to" => Json::str(r"C:\linklet\app.exe"),
+        },
+        &fake,
+    )
+    .expect("the target's own root decides this, and it is not this side's to check");
+
+    assert_eq!(fake.transfer_calls().len(), 1);
+}
+
+#[test]
+fn a_transfer_needs_all_three_arguments() {
+    let fake = FakeRun::default();
+
+    for (arguments, expected) in [
+        (
+            object! { "from" => Json::str("a"), "to" => Json::str("b") },
+            "agent",
+        ),
+        (
+            object! { "agent" => Json::str("a:1"), "to" => Json::str("b") },
+            "from",
+        ),
+        (
+            object! { "agent" => Json::str("a:1"), "from" => Json::str("a") },
+            "to",
+        ),
+    ] {
+        assert!(
+            matches!(
+                dispatch("push", &arguments, &fake),
+                Err(ToolError::BadArgument { name, .. }) if name == expected
+            ),
+            "expected {expected:?} to be the missing argument for {arguments:?}"
         );
     }
 }

@@ -43,6 +43,15 @@ fn repo_root() -> std::path::PathBuf {
 /// still arrive, and if the newline framing were wrong the parse below would
 /// fail. Flushing is proven by the round trip completing at all.
 fn session(messages: &[&str]) -> Vec<Json> {
+    session_with_token(messages, None)
+}
+
+/// The same, with the host token in the environment.
+///
+/// One function with a token rather than two that differ in an environment variable: a
+/// copy of this that forgot the token would fail with "the agent refused" and send a
+/// reader looking at the transfer.
+fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Json> {
     let root = repo_root();
     assert!(
         root.join("Cargo.toml").is_file(),
@@ -50,14 +59,18 @@ fn session(messages: &[&str]) -> Vec<Json> {
         root.display()
     );
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_linklet"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_linklet"));
+    command
         .arg("mcp")
         .current_dir(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the binary under test should start");
+        .stderr(Stdio::piped());
+    if let Some(token) = token {
+        command.env("LINKLET_TOKEN", token);
+    }
+
+    let mut child = command.spawn().expect("the binary under test should start");
 
     {
         let stdin = child.stdin.as_mut().expect("stdin was piped");
@@ -77,6 +90,33 @@ fn session(messages: &[&str]) -> Vec<Json> {
                 .unwrap_or_else(|e| panic!("a reply was not one JSON line: {e} in {line:?}"))
         })
         .collect()
+}
+
+/// Where the agent binary is, worked out the way `push_pull.rs` does.
+///
+/// `CARGO_BIN_EXE_linklet-agent` does not exist in this package: that variable is defined
+/// only for a binary of the crate being compiled. The duplication with `push_pull.rs` is
+/// the price of two test files that both need an agent, and a shared test crate for
+/// thirty lines would be a worse trade.
+fn agent_binary() -> std::path::PathBuf {
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("the crate directory has a repository root two levels up")
+        .to_path_buf();
+
+    let target = match std::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => std::path::PathBuf::from(dir),
+        None => repository.join("target"),
+    };
+
+    let path = target.join("debug/linklet-agent.exe");
+    assert!(
+        path.is_file(),
+        "the agent binary is not at {}; run `cargo build --workspace` first",
+        path.display()
+    );
+    path
 }
 
 /// One request, shaped for readability at the call site.
@@ -158,13 +198,21 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
         .expect("a tools array")
         .to_vec();
 
-    // Two, asserted here as well as in the core. The core test checks the list
+    // Five, asserted here as well as in the core. The core test checks the list
     // and the dispatcher agree; this one checks the list survives the wire, which
     // is the part a session can fail at and a unit test cannot.
-    assert_eq!(tools.len(), 3, "the surface is three tools: {tools:#?}");
-    assert_eq!(tools[0].get_str("name"), Some("check"));
-    assert_eq!(tools[1].get_str("name"), Some("testbed"));
-    assert_eq!(tools[2].get_str("name"), Some("exec"));
+    assert_eq!(tools.len(), 5, "the surface is five tools: {tools:#?}");
+    let names: Vec<Option<&str>> = tools.iter().map(|tool| tool.get_str("name")).collect();
+    assert_eq!(
+        names,
+        vec![
+            Some("check"),
+            Some("testbed"),
+            Some("exec"),
+            Some("push"),
+            Some("pull")
+        ]
+    );
 
     for tool in &tools {
         let description = tool.get_str("description").expect("a description");
@@ -175,6 +223,41 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
             description.len()
         );
     }
+}
+
+#[test]
+fn the_push_tool_refuses_a_local_path_outside_the_working_tree() {
+    // The one decision the transfer tools make in this crate rather than handing to the
+    // agent: which half is local, and that a local half may not name the machine. The
+    // refusal has to arrive as a tool result rather than a protocol fault, because an
+    // agent that gets a transport error retries and one that gets "not that argument"
+    // changes it.
+    let replies = session(&[&request(
+        1,
+        "tools/call",
+        r#"{"name":"push","arguments":{"agent":"127.0.0.1:1","from":"C:\\Windows\\win.ini","to":"x"}}"#,
+    )]);
+
+    let result = reply_for(&replies, 1)
+        .get("result")
+        .expect("a tool result and not a protocol error")
+        .clone();
+
+    assert_eq!(
+        result.get("isError").and_then(Json::as_bool),
+        Some(true),
+        "a refused argument is a failed call: {result:?}"
+    );
+    let text = result
+        .get("content")
+        .and_then(Json::as_array)
+        .and_then(|content| content.first())
+        .and_then(|entry| entry.get_str("text"))
+        .expect("the refusal is text");
+    assert!(
+        text.contains("working tree"),
+        "the refusal should say what is wrong: {text}"
+    );
 }
 
 #[test]
@@ -377,6 +460,88 @@ fn blank_lines_are_ignored_rather_than_answered() {
     let replies = session(&["", "   ", &request(1, "tools/list", "")]);
 
     assert_eq!(replies.len(), 1, "got {replies:#?}");
+}
+
+#[test]
+fn the_push_tool_moves_a_real_file_through_a_real_agent() {
+    // The end of M7 from the surface an AI agent actually calls: a JSON-RPC request on
+    // stdin, a sealed transfer over a socket, and a file on the target. Everything below
+    // this is tested somewhere cheaper; what is only observable here is that the whole
+    // chain is joined up at all.
+    //
+    // The local file has to be inside the working tree, because that is what the tool
+    // refuses to leave -- and `session()` sets the working directory to the repository
+    // root, so `target/...` is where it has to go. `target/` is gitignored, so a failure
+    // that leaves it behind leaves nothing tracked.
+    let token = "test-token-0123456789";
+    let root = std::env::temp_dir().join(format!("linklet-mcp-transfer-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("a scratch directory for the agent");
+
+    let local = repo_root().join("target/mcp-push-source.bin");
+    std::fs::create_dir_all(local.parent().expect("a parent")).expect("target/ exists");
+    let content = b"a file that crossed two processes";
+    std::fs::write(&local, content).expect("writing the source");
+
+    let mut agent = Command::new(agent_binary())
+        .env("LINKLET_TOKEN", token)
+        .arg("--port")
+        .arg("0")
+        .arg("--root")
+        .arg(&root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the agent should start");
+
+    let port = {
+        use std::io::{BufRead, BufReader};
+        let mut banner = String::new();
+        BufReader::new(agent.stdout.take().expect("stdout was piped"))
+            .read_line(&mut banner)
+            .expect("the agent prints a banner");
+        banner
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("0.0.0.0:"))
+            .and_then(|text| text.parse::<u16>().ok())
+            .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"))
+    };
+
+    let call = request(
+        1,
+        "tools/call",
+        &format!(
+            r#"{{"name":"push","arguments":{{"agent":"127.0.0.1:{port}","from":"target/mcp-push-source.bin","to":"landed.bin"}}}}"#
+        ),
+    );
+    let replies = session_with_token(&[&call], Some(token));
+
+    let _ = agent.kill();
+    let _ = agent.wait();
+
+    let result = reply_for(&replies, 1)
+        .get("result")
+        .expect("a tool result")
+        .clone();
+    assert_eq!(result.get("isError").and_then(Json::as_bool), Some(false));
+    let text = result
+        .get("content")
+        .and_then(Json::as_array)
+        .and_then(|content| content.first())
+        .and_then(|entry| entry.get_str("text"))
+        .expect("the result is text");
+
+    assert_eq!(
+        std::fs::read(root.join("landed.bin")).expect("the file should have landed"),
+        content,
+        "the tool said {text:?}"
+    );
+    assert!(
+        text.contains(&format!("{} bytes", content.len())) && text.contains("sha256 "),
+        "the tool result should say what landed and what it hashes to: {text}"
+    );
+
+    let _ = std::fs::remove_file(&local);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

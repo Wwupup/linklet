@@ -13,13 +13,15 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Three tools.**
+**Five tools.**
 
 | tool | question it answers |
 |---|---|
 | `check` | does each host:port accept a TCP connection |
 | `testbed` | does a machine match a testbed specification file |
 | `exec` | run a command on a remote agent and return its output |
+| `push` | copy one local file to a remote agent |
+| `pull` | copy one file back from a remote agent |
 
 The second one was added late and is the reason the count is asserted rather
 than described. `linklet testbed check` shipped as a command first, and for a
@@ -28,10 +30,13 @@ surface was never told. An agent cannot ask for what it has not been told about,
 so that is a bug in the opposite direction from the usual one -- not a tool with
 nothing behind it, but something behind it and no tool.
 
-That is also the argument for why these two are separate rather than one tool
-with two argument sets. `check` needs nothing but an address; `testbed` needs a
-file on disk. Folding them together would produce a description that has to
-explain both, which is where the manual starts.
+That is also the argument for why these are separate rather than one tool with
+several argument sets. `check` needs nothing but an address; `testbed` needs a
+file on disk; `exec` needs a command. Folding them together would produce a
+description that has to explain each, which is where the manual starts. **`push`
+and `pull` are two tools and not one with a direction**, for the same reason: a
+single tool would have two mutually exclusive readings of `from` and `to`, and a
+description that has to say which one is local this time.
 
 The size is still the point. An earlier generation of this idea grew to
 seventeen tools and 13,758 characters of description, most of it spent telling
@@ -45,11 +50,10 @@ and every description has a character budget. Growing this list means changing
 the asserted number and saying in the commit why the new question needs its own
 tool.
 
-`exec`, `logs` and file transfer are **absent, not stubbed**. They need something
-on the far side to talk to, and there is nothing there yet. A tool that answers
-"not implemented" is worse than a missing one: the agent has spent a turn on it
-and cannot tell a missing feature from a broken one. They arrive with the agent
-that serves them.
+`logs` is still **absent, not stubbed**. Reading a log is reading a file, so it
+is `pull` with a path -- and a tool that answered "not implemented" would be
+worse than a missing one: the agent has spent a turn on it and cannot tell a
+missing feature from a broken one.
 
 ### The `spec` argument is a path, and paths are a boundary
 
@@ -59,6 +63,14 @@ and it refuses `..`. The reason is not that this tool is dangerous; it is that a
 agent handed a filesystem-wide read has been given a capability nobody asked for,
 and the refusal names itself instead of surfacing later as a path error from the
 operating system.
+
+**A transfer has a local half, and that half is bounded the same way.** On `push`
+it is `from`; on `pull` it is `to`. Both refuse an absolute path and both refuse
+`..`, and the refusal names the argument rather than the machine. The other half
+belongs to the agent, which resolves it against its own transfer root: checking it
+here as well would be a second answer to the question `docs/transfer.md` T1 asks,
+and two checks that disagree about what is allowed are worse than one that does
+not run.
 
 ## What a call looks like
 

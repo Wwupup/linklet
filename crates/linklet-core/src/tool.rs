@@ -136,6 +136,19 @@ pub trait ToolRunner {
     /// builds the request; whether the request is well formed is decided here,
     /// before it ever sees a socket.
     fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome;
+
+    /// Copies one local file to the agent, and reports what landed there.
+    ///
+    /// `to` is a path on the **agent's** side and is not resolved or checked here: the
+    /// agent owns that root, and a second reading of `docs/transfer.md` T1 on this side
+    /// would be a second answer to the same question -- which is how two checks come to
+    /// disagree about what is allowed.
+    fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome;
+
+    /// Copies one file back from the agent.
+    ///
+    /// The mirror of [`ToolRunner::push`], and here it is `to` that is local.
+    fn pull(&self, agent: &str, from: &str, to: &str) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -178,15 +191,16 @@ fn required_str(arguments: &Json, name: &'static str) -> Result<String, ToolErro
     }
 }
 
-/// A path that stays inside the working tree.
+/// A path that stays inside the working tree, by the name the tool calls it.
 ///
-/// An agent that can name any file on the machine has been handed more than this
-/// tool is for, and "read the specification at C:\Windows\..." is not a request
-/// worth serving. Rejecting the two ways out of the tree -- an absolute path and
-/// a `..` -- is cheaper than reasoning about what a caller meant, and a refusal
-/// names the reason.
-fn relative_spec_path(arguments: &Json) -> Result<String, ToolError> {
-    let path = required_str(arguments, "spec")?;
+/// An agent that can name any file on the machine has been handed more than this tool
+/// is for. "Read the specification at C:\Windows\..." is not a request worth serving,
+/// and neither is "copy C:\Windows\..." to a target or "write this over C:\Windows\...",
+/// which are the two directions a transfer adds. Rejecting the two ways out of the tree
+/// -- an absolute path and a `..` -- is cheaper than reasoning about what a caller meant,
+/// and the refusal names the argument it refused.
+fn relative_local_path(arguments: &Json, name: &'static str) -> Result<String, ToolError> {
+    let path = required_str(arguments, name)?;
 
     let is_absolute = path.starts_with('/')
         || path.starts_with('\\')
@@ -195,7 +209,7 @@ fn relative_spec_path(arguments: &Json) -> Result<String, ToolError> {
 
     if is_absolute || climbs_out {
         return Err(ToolError::BadArgument {
-            name: "spec",
+            name,
             problem: format!("{path:?} is outside the working tree; give a path inside it"),
         });
     }
@@ -292,11 +306,12 @@ pub const MAX_DESCRIPTION_CHARS: usize = 120;
 
 /// The tools this build offers.
 ///
-/// Two. Each has an argument for why it is not part of the other: `check` asks
-/// whether a port answers, which needs no configuration at all, and `testbed`
-/// asks whether a machine satisfies a written specification, which needs a file.
-/// Folding the second into the first would make `check` a tool with two
-/// mutually exclusive argument sets and a description that has to explain both.
+/// Five, and each has an argument for why it is not part of another. `check` asks
+/// whether a port answers, which needs no configuration at all; `testbed` asks whether a
+/// machine satisfies a written specification, which needs a file; `exec` runs something.
+/// `push` and `pull` are two tools rather than one with a direction, for the reason the
+/// first two are: a single tool would have two mutually exclusive argument sets and a
+/// description that has to explain which of `from` and `to` is local this time.
 pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
@@ -378,6 +393,58 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "push",
+            description: "Copy one local file to a remote linklet agent.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "path to the local file, inside the working tree"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "a path on the target, under the agent's transfer root"
+                        }
+                    },
+                    "required": ["agent", "from", "to"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
+        Tool {
+            name: "pull",
+            description: "Copy one file from a remote linklet agent to here.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "from": {
+                            "type": "string",
+                            "description": "a path on the target, under the agent's transfer root"
+                        },
+                        "to": {
+                            "type": "string",
+                            "description": "where to put it locally, inside the working tree"
+                        }
+                    },
+                    "required": ["agent", "from", "to"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -439,7 +506,7 @@ pub fn dispatch(
         }
         "testbed" => {
             reject_unknown(arguments, &["spec", "target"])?;
-            let spec = relative_spec_path(arguments)?;
+            let spec = relative_local_path(arguments, "spec")?;
             let target = required_str(arguments, "target")?;
             Ok(runner.testbed(&spec, &target))
         }
@@ -464,6 +531,25 @@ pub fn dispatch(
                 crate::wire::MAX_TIMEOUT_SECONDS,
             )?;
             Ok(runner.exec(&agent, &command, timeout))
+        }
+        "push" => {
+            reject_unknown(arguments, &["agent", "from", "to"])?;
+            let agent = required_str(arguments, "agent")?;
+            // `from` is the file here, so it is the one bounded by the working tree.
+            let from = relative_local_path(arguments, "from")?;
+            // `to` is a path on the agent, which owns that root. Deliberately not
+            // checked here -- see `ToolRunner::push`.
+            let to = required_str(arguments, "to")?;
+            Ok(runner.push(&agent, &from, &to))
+        }
+        "pull" => {
+            reject_unknown(arguments, &["agent", "from", "to"])?;
+            let agent = required_str(arguments, "agent")?;
+            let from = required_str(arguments, "from")?;
+            // The mirror of `push`: the local half is `to`, and it is the one that may
+            // not leave the tree.
+            let to = relative_local_path(arguments, "to")?;
+            Ok(runner.pull(&agent, &from, &to))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }
