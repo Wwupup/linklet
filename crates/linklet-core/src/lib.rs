@@ -11,11 +11,25 @@
 //!
 //! The crate has no dependencies, so this is enforced by the compiler rather
 //! than by convention. See `AGENTS.md`, rule 1.
+//!
+//! # How it asks for what it cannot do
+//!
+//! Reachability can only be observed by connecting, which is I/O, which cannot
+//! happen here. Rather than reaching for it, this crate **states what it
+//! needs**: [`Probe`] is declared here and implemented in `linklet-adapters`.
+//! The arrow points `adapters -> core`, so a rule can be tested by handing it a
+//! fake instead of a machine -- see `tests/probe_check.rs`, which covers
+//! timeouts without anything timing out. See `docs/rationale.md` rule 1.
 
 #![forbid(unsafe_code)]
 
 mod error;
+mod probe;
 mod target;
 
 pub use error::TargetError;
+pub use probe::{
+    CheckError, DEFAULT_BUDGET_SECONDS, MAX_BUDGET_SECONDS, MAX_TARGETS, Probe, ProbeOutcome,
+    Report, Status, Summary, check_targets,
+};
 pub use target::{Host, Port, Target, parse_targets};

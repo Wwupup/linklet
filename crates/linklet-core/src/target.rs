@@ -104,6 +104,20 @@ pub struct Target {
     pub port: Port,
 }
 
+/// Renders a target as `host:port`, which is how it was written.
+///
+/// One deliberate imprecision: an IPv6 host comes out unbracketed, so `::1` on
+/// port 80 prints as `::1:80`, which reads as a different address. That is the
+/// same ambiguity the *input* grammar has and resolves the same way -- the port
+/// is after the last colon -- so parsing this output back recovers the target.
+/// A bracketed form would be more conventional and would not round-trip through
+/// [`parse_targets`], which is the property worth keeping.
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.host, self.port)
+    }
+}
+
 /// Turns the caller's text into targets, or says precisely why it cannot.
 ///
 /// Grammar (the whole of it -- anything not listed is an error, never a guess):

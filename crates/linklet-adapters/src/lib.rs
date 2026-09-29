@@ -6,10 +6,18 @@
 //! about *what should happen* is written in this crate, it is in the one place
 //! that cannot be tested without that machine.
 //!
-//! Nothing is implemented yet. The first thing to arrive here is the TCP probe
-//! (milestone M2 in `docs/ROADMAP.md`), and it is shaped by the `Probe` trait
-//! that `linklet-core` will define -- the core states what it needs, this
-//! crate supplies it. That direction matters: it is what keeps the dependency
-//! arrow pointing `adapters -> core`.
+//! # Why the traits are not declared here
+//!
+//! The natural-looking arrangement is for this crate to define what a probe is
+//! and for the core to call it. That arrangement is wrong, and the reason is
+//! not stylistic: the core would then depend on this crate, so every test of a
+//! rule would link the code that opens sockets. The core would keep compiling
+//! and keep passing its tests right up until the day a network was needed.
+//!
+//! The arrow points `adapters -> core`, always. See `docs/rationale.md` rule 1.
 
 #![forbid(unsafe_code)]
+
+mod tcp;
+
+pub use tcp::{MIN_BUDGET, TcpProbe, effective_budget};
