@@ -18,6 +18,16 @@
 *.md    text eol=lf
 *.json  text eol=lf
 
+# Scripts too, and for a sharper reason than tidiness. A PowerShell script with
+# CRLF works; the same script after a clone on a machine that normalises the other
+# way does not, and the failure is a parse error on a line that looks correct.
+# Adding an extension to this list is also the moment to check whether the file
+# it covers is ASCII, which rule 7 requires and nothing else enforces for a shell
+# script.
+*.ps1   text eol=lf
+*.cmd   text eol=lf
+*.sh    text eol=lf
+
 # Binary files: never touch them, never diff them, never try to merge them.
 *.exe   binary
 *.dll   binary
