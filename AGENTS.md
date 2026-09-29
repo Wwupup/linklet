@@ -10,6 +10,9 @@ you are about to change a rule, not before.
 | `README.md` | what the tool is, and what it deliberately is not |
 | `docs/ROADMAP.md` | what to build next, and what was parked on purpose |
 | `docs/LEARNING.md` | the task loop: red, spec, smallest change, verify |
+| `docs/testing.md` | which layer a test belongs in, and what it costs |
+| `docs/MCP.md` | the agent-facing surface: what is on it, and what is not |
+| `docs/COMMITS.md` | how to write a commit, with worked examples |
 | `docs/review-m1.md` | the standard M1 is judged against, published early |
 | `docs/rationale.md` | why a rule below exists |
 | `docs/INDEX.md` | the map of this project, for keeping it current |

@@ -13,6 +13,7 @@ the change that made it wrong.
 | Why does a rule exist? | `docs/rationale.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |
+| What kind of test does this get? | `docs/testing.md` |
 | How do I call this from an agent? | `docs/MCP.md` |
 | How will my work be judged? | `docs/review-m1.md` |
 | What is the state of the code? | below |
@@ -26,7 +27,7 @@ Four kinds, distinguished by **what keeps them true**:
 | kind | kept true by | goes stale when | in this repository |
 |---|---|---|---|
 | **Spec** | the tests | the tests change | `tests/*.rs` |
-| **Rule** | being obeyed | someone changes it on purpose | `AGENTS.md`, `docs/COMMITS.md` |
+| **Rule** | being obeyed | someone changes it on purpose | `AGENTS.md`, `docs/COMMITS.md`, `docs/LEARNING.md`, `docs/testing.md` |
 | **Current** | a commit | the code moves | `README.md`, `docs/ROADMAP.md`, this file |
 | **Decision** | nothing -- it is a moment | never | `docs/rationale.md`, `docs/review-m1.md` |
 
@@ -56,6 +57,7 @@ message, or nothing.
 | `README.md` | current | what the tool is and is not |
 | `docs/ROADMAP.md` | current | what to build next, and what was parked |
 | `docs/LEARNING.md` | rule | the task loop: red, spec, smallest change, verify |
+| `docs/testing.md` | rule | which layer a test belongs in, and why |
 | `docs/INDEX.md` | current | this file |
 | `docs/rationale.md` | decision | why each rule exists, read when changing one |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
@@ -92,3 +94,5 @@ It is an index, so it goes stale silently and a stale index is worse than none:
 it sends the reader somewhere confident and wrong. The rule is the same as for
 every other document here -- **the commit that changes the code changes this
 file.** It should never need its own commit.
+
+
