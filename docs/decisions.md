@@ -214,6 +214,23 @@ implied:
 
 ## D3. `Role` and the missing handshake.
 
+**Superseded at M6 for the deployment path, and left here unedited below.** Read the
+next paragraph first: this record says there is no handshake, and there is one. It is
+kept in its own words because the reasoning is what makes the fix legible -- and
+because a decision record tidied up afterwards stops being evidence of what was
+decided.
+
+What is still true: [`linklet_core::channel::Channel::open_session`] derives both keys
+from the shared secret and nothing else, so **that path** has no forward secrecy. It is
+the path the tests drive, and it is not the path a host and an agent take.
+`Handshake` is: both sides generate an X25519 key pair per connection and discard the
+private half, so a session recorded today cannot be read by anyone who learns the token
+tomorrow. The two traits are documented separately in `crates/linklet-core/src/channel.rs`
+and `linklet-adapters/tests/handshake.rs` demonstrates the exchange rather than
+asserting it.
+
+---
+
 Two sides that share a secret derive the same keys and talk. There is **no
 handshake**, so **no forward secrecy**: an attacker who records a session and later
 learns the secret can read that session.
