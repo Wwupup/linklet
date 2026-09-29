@@ -15,6 +15,11 @@ you are about to change a rule, not before.
 | `docs/COMMITS.md` | how to write a commit, with worked examples |
 | `docs/review-m1.md` | the standard M1 is judged against, published early |
 | `docs/rationale.md` | why a rule below exists |
+| `docs/decisions.md` | before arguing with a choice that looks wrong -- it may already be recorded as wrong |
+| `docs/retrospective.md` | before starting work, so the six failures are not paid for twice |
+| `docs/framing.md` | before touching the wire format or a connection |
+| `docs/transfer.md` | before moving a file: thirteen failure modes with a defence for each |
+| `docs/smoke.md` | before claiming anything works on a real machine |
 | `docs/INDEX.md` | the map of this project, for keeping it current |
 
 ## 1. Dependency direction
@@ -75,3 +80,26 @@ caller could guess wrong. No `unwrap()` in library code.
 
 English everywhere. ASCII in every committed file; non-ASCII test data is
 written as escapes.
+
+## 8. This machine
+
+Not a rule -- the facts about this development machine that cost someone time, so
+that a fresh reader does not pay for them again. Each one produced a wrong
+conclusion before it was found.
+
+- **A stale git proxy made the crate registry look unreachable.** The real proxy
+  listens on `7890`; `~/.gitconfig` had `http.proxy = http://127.0.0.1:7892`,
+  where nothing listened. Cargo reads git's configuration because of
+  `git-fetch-with-cli`, so cargo failed while everything using the Windows system
+  proxy worked. The stale entries have been removed; if the registry looks
+  unreachable again, check `git config --global --get http.proxy` before
+  concluding anything about the network.
+- **`cargo search` cannot be used to judge the network.** It does not support the
+  `replace-with` registry replacement and fails with a message about sources, not
+  about connectivity. `cargo fetch` is the honest test. This mistake cost an hour
+  and led to a hand-written SHA-256 -- see `docs/decisions.md` D1.
+- **The toolchain is pinned to 1.95.0 MSVC, and the registry is rsproxy.** Adding
+  a dependency works; there is no reason to hand-write a library that exists.
+- **The real-machine smoke test needs no administrator rights.**
+  `pwsh tools/smoke.ps1 -Target <host:port>` against a machine running
+  `linklet-agent` with the port allowed. `docs/smoke.md` is the whole of it.

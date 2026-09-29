@@ -181,6 +181,27 @@ reachability and run commands, and it cannot put anything on a target -- which i
 the first step of the workflow it was written for. A tool that cannot deploy has not
 yet reached the point where its security model can be shown to be worth anything.
 
+**Already in place, all in `linklet-core` and all tested.** Written down because a
+reader who has to work out what exists will either rebuild it or build on a
+different shape:
+
+- [x] `src/frame.rs` -- the wire format, with the ten ways a length-prefixed
+      protocol goes wrong listed and defended, and a test per failure mode
+- [x] `src/transfer.rs` -- T1 path validation against a root (the Windows rules a
+      `..` check does not cover), and T3/T11: the manifest checked before any chunk
+      is read, and the chunk arithmetic as a function with tests
+- [x] `Sealed::seal_into` / `open_into` -- T10, so a chunk of a file is in memory
+      once rather than three times
+
+**What is left is I/O**, in `adapters`, `agent` and `client`:
+
+- [ ] the connection loop reads frames instead of HTTP: a read timeout on every
+      read, one chunk at a time so the desynchronisation defence keeps holding, and
+      the message count bounded by the declared size
+- [ ] the agent receives a transfer: manifest, path, `.part`, per-chunk total,
+      digest, rename
+- [ ] the client sends one: stream, `seal_into`, frame
+- [ ] `push` and `pull` on the CLI and the MCP surface
 **Before the first line of this: the agent's hand-written HTTP layer gets replaced.**
 The body already carries bytes, which was the first prerequisite. The second is that
 the surface facing attackers stops being hand-written -- `tiny_http` for the agent,
