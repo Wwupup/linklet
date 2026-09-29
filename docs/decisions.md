@@ -121,6 +121,63 @@ and the mirroring is by construction.
 
 ---
 
+## D4. The HTTP layer is hand-written, and the server side should not be.
+
+**Decided, not yet done.** Recorded now because the reasoning is the useful part and
+because it was pointed out by the same reader who caught the JSON codec: a second
+hand-rolled protocol, in the path that reads untrusted input from the network.
+
+Two hand-written layers exist:
+
+- `crates/linklet-agent/src/http.rs` -- a request parser and reply writer, about 450
+  lines, **facing attackers**
+- `crates/linklet-client/src/lib.rs` -- a request builder and reply parser, about 200
+  lines, talking only to this project's own agent
+
+HTTP parsing is the most attacked surface on the internet, which makes it a worse
+place to hand-roll than JSON was -- and it had already produced a bug: the body was
+built with `String::from_utf8_lossy`, which silently replaces anything that is not
+UTF-8, in the path that handles input from the network.
+
+### The choice, and the constraint that decides half of it
+
+`tiny_http` for the agent and `ureq` for the client, rather than `hyper` and `axum`:
+this project is blocking and thread-per-connection, and hyper would bring an async
+runtime and change the shape of everything around it for no gain at this size.
+
+**The client half is not settled, and here is why.** The protocol requires two
+messages on one connection: the handshake, then the request sealed under the session
+it produced. That is what keeps the agent stateless. `ureq` manages a connection
+pool and does not promise to put the second request on the same connection -- and a
+client library that reassigns it would break the protocol in a way that looks like a
+wrong token.
+
+Three ways out, in the order I would take them:
+
+1. **Prove `ureq` reuses the connection** for two sequential requests to one host, and
+   if it does, use it.
+2. **Keep the client hand-written**, because it parses replies from this project's own
+   agent rather than from strangers, and say so instead of implying symmetry.
+3. **Give the agent a session table.** Last, because a session that outlives a
+   connection needs an eviction policy, and an eviction policy is a way to be
+   exhausted.
+
+### The observation worth more than the decision
+
+**The protocol design constrains the library choice, and the two are not independent.**
+Wanting to drop a hand-written layer does not settle what replaces it: the
+two-message handshake is what makes `ureq` a question rather than an answer.
+
+Which raises the option that is not on the list because it is larger: since every
+message is sealed and both ends are this project's, **HTTP is carrying no weight**.
+Its methods, paths, headers and status codes are vocabulary nobody reads and surface
+nobody needs, and a length-prefixed frame would be about fifty lines instead of four
+hundred and fifty. That is the design that fits the channel, and it is written here
+rather than done, because replacing a working protocol is work that has to be paid
+for by something.
+
+---
+
 ## D3. `Role` and the missing handshake.
 
 Two sides that share a secret derive the same keys and talk. There is **no

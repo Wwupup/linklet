@@ -181,6 +181,12 @@ reachability and run commands, and it cannot put anything on a target -- which i
 the first step of the workflow it was written for. A tool that cannot deploy has not
 yet reached the point where its security model can be shown to be worth anything.
 
+**Before the first line of this: the agent's hand-written HTTP layer gets replaced.**
+The body already carries bytes, which was the first prerequisite. The second is that
+the surface facing attackers stops being hand-written -- `tiny_http` for the agent,
+with the client half left open and the constraint recorded in `docs/decisions.md` D4.
+Writing a transfer on top of a layer that is about to go is writing it twice.
+
 - [ ] `linklet push --agent <host:port> --from <local> --to <remote>` copies one
       file to a target over the sealed channel
 - [ ] `linklet pull --agent <host:port> --from <remote> --to <local>` brings one
