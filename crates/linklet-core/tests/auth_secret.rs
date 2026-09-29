@@ -16,10 +16,7 @@
 
 use std::time::Instant;
 
-use linklet_core::auth::{
-    MIN_TOKEN_BYTES, TOKEN_HEADER, TOKEN_SCHEME, Token, TokenError, token_from_header,
-    token_matches, unauthorized_body,
-};
+use linklet_core::auth::{MIN_TOKEN_BYTES, Token, TokenError, token_matches, unauthorized_reason};
 
 // --- what a token may be -----------------------------------------------------
 
@@ -53,48 +50,6 @@ fn a_token_exposes_its_value_and_nothing_else() {
     // it; the deliberate name is what a reader sees at every call site.
     let token = Token::new("0123456789abcdef").expect("sixteen bytes");
     assert_eq!(token.expose(), "0123456789abcdef");
-}
-
-// --- reading the header ------------------------------------------------------
-
-#[test]
-fn the_header_may_carry_the_scheme_or_not() {
-    // The bare form is accepted because the first version of anything is typed by
-    // hand at a prompt, and refusing it would make the tool harder to try than to
-    // use.
-    assert_eq!(token_from_header("Bearer secret"), Some("secret"));
-    assert_eq!(token_from_header("  Bearer secret  "), Some("secret"));
-    assert_eq!(token_from_header("secret"), Some("secret"));
-    assert_eq!(token_from_header("bearer secret"), Some("bearer secret"));
-}
-
-#[test]
-fn an_empty_header_is_no_token_rather_than_an_empty_one() {
-    // The distinction matters: an empty token must not be compared against
-    // anything, or a configuration with no token becomes a configuration that
-    // accepts nothing in particular.
-    //
-    // The two `Bearer` cases below are the rule working out: the scheme is
-    // `"Bearer "` *with the space*, so a header reading `Bearer` with nothing
-    // after it has no prefix to strip and is a bare token whose value happens to
-    // be the word. Refusing it would mean guessing at intent, and the client
-    // never sends this -- the expectation here was wrong first, not the code.
-    assert_eq!(token_from_header(""), None);
-    assert_eq!(token_from_header("   "), None);
-    // "Bearer" on its own is not the scheme plus nothing -- it has no space, so
-    // it is a bare token whose value happens to be the word. Refusing it would
-    // mean guessing at intent, and the client never sends this.
-    assert_eq!(token_from_header("Bearer"), Some("Bearer"));
-    assert_eq!(token_from_header("Bearer   "), Some("Bearer"));
-}
-
-#[test]
-fn the_scheme_is_the_standard_one() {
-    // `Authorization` rather than a made-up name: every proxy, log scrubber and
-    // reader already treats that header as a secret. A custom name would be a
-    // secret in a place nothing knows to look.
-    assert_eq!(TOKEN_HEADER, "authorization");
-    assert_eq!(TOKEN_SCHEME, "Bearer ");
 }
 
 // --- what the comparison returns ---------------------------------------------
@@ -244,13 +199,13 @@ fn the_measurement_above_can_actually_see_a_difference() {
 fn the_refusal_does_not_say_why() {
     // Whether the token was absent, wrong or too short is information a caller
     // who has the token does not need, and one who does not have it should not be
-    // given.
-    let body = linklet_core::json::write(&unauthorized_body());
-    assert!(body.contains("missing or wrong"), "{body}");
-    for hint in ["absent", "empty", "length", "expired"] {
+    // given. One sentence, and the same sentence for every version of the problem.
+    let reason = unauthorized_reason();
+    assert!(reason.contains("missing or wrong"), "{reason}");
+    for hint in ["absent", "empty", "length", "expired", "16", "bytes"] {
         assert!(
-            !body.to_lowercase().contains(hint),
-            "the refusal hints at {hint:?}: {body}"
+            !reason.to_lowercase().contains(hint),
+            "the refusal hints at {hint:?}: {reason}"
         );
     }
 }

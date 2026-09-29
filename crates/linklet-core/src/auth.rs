@@ -2,16 +2,25 @@
 //!
 //! # The shape of the scheme, and what it is not
 //!
-//! A bearer token in a header. Whoever can read one request can replay it, and
-//! whoever can read the network can read the token -- because this is plaintext
-//! HTTP. **That is a real limit and it is written down rather than implied**: the
-//! token stops a program that can reach the port but does not know the secret, and
-//! it stops nothing else. Encryption belongs next and is a separate change.
+//! **The token is never transmitted.** It is mixed into the key derivation of a
+//! sealed session, so what crosses the wire is public keys and ciphertext, and a
+//! captured request is not a credential. That is the part worth being precise about,
+//! because it is the part a reader is most likely to assume wrongly in either
+//! direction.
 //!
-//! Being honest about that matters more than the scheme. A tool whose author
-//! believes a token is encryption will be used on a network where the difference
-//! decides whether someone else can run commands on the target, and the belief is
-//! the vulnerability.
+//! What it does not do:
+//!
+//! - **It says nothing about *which* caller it is.** There is one secret and no
+//!   identity behind it, so there is no per-caller revocation and no audit trail.
+//! - **It does not stop an attacker who can reach the port from making the agent do
+//!   work.** A handshake is accepted before any token is checked -- it has to be,
+//!   because the check happens *inside* the derived session -- so a stranger can
+//!   occupy a thread for the length of one handshake. See `docs/framing.md` on what
+//!   is not defended.
+//!
+//! This documentation described a bearer token in a plaintext HTTP header until M7
+//! replaced HTTP with frames. It had been wrong since M6, which is what a limit
+//! written down in one place and changed in another looks like.
 //!
 //! # Why the comparison is written by hand
 //!
@@ -25,16 +34,6 @@
 //! That is not a theoretical concern for a LAN tool with a reply path of a few
 //! hundred microseconds. It is also the kind of bug that never shows up in a
 //! functional test, which is why the test for it measures something.
-
-/// The header the token travels in.
-///
-/// `Authorization` rather than a made-up name, because every proxy, log scrubber
-/// and reader already treats that header as a secret and handles it accordingly.
-/// A custom name would be a secret in a place nothing knows to look.
-pub const TOKEN_HEADER: &str = "authorization";
-
-/// The scheme prefix, so the header reads as a standard bearer credential.
-pub const TOKEN_SCHEME: &str = "Bearer ";
 
 /// The smallest token this will accept, in bytes.
 ///
@@ -104,19 +103,6 @@ impl Token {
     }
 }
 
-/// Pulls a token out of an `Authorization` header value.
-///
-/// Accepts `Bearer <token>` and a bare token. The bare form is accepted because
-/// the first version of anything is typed by hand at a prompt, and refusing it
-/// would make the tool harder to try than to use -- but the prefixed form is what
-/// the client sends, because a header that reads as the standard one gets treated
-/// as a secret by everything in the path.
-pub fn token_from_header(value: &str) -> Option<&str> {
-    let value = value.trim();
-    let token = value.strip_prefix(TOKEN_SCHEME).unwrap_or(value).trim();
-    if token.is_empty() { None } else { Some(token) }
-}
-
 /// Whether a presented token is the expected one, in time that does not depend on
 /// how much of it was right.
 ///
@@ -144,24 +130,12 @@ pub fn token_matches(expected: &str, presented: &str) -> bool {
     difference == 0
 }
 
-/// Renders a 401 body.
+/// The reason an agent gives when a caller's session did not hold a usable token.
 ///
 /// Deliberately says nothing about *why*. Whether the token was absent, wrong, or
 /// too short is information a caller who has the token does not need, and one who
-/// does not have it should not be given.
-pub fn unauthorized_body() -> linklet_core_json::Json {
-    linklet_core_json::Json::Object(
-        [(
-            "error".to_string(),
-            linklet_core_json::Json::str("the token is missing or wrong"),
-        )]
-        .into_iter()
-        .collect(),
-    )
+/// does not have it should not be given. One sentence for one problem, and the same
+/// sentence for every version of it.
+pub fn unauthorized_reason() -> &'static str {
+    "the token is missing or wrong"
 }
-
-/// The status an agent answers when the token does not match.
-pub const UNAUTHORIZED: u16 = 401;
-
-/// A private alias so this module reads without a long path at every use.
-use crate::json as linklet_core_json;

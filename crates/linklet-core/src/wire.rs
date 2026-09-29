@@ -1,52 +1,54 @@
 //! What the host asks an agent, and what an agent answers.
 //!
-//! The two halves of this project talk over HTTP on a LAN. This module is the
-//! only place that decides what those messages are -- the agent's server, the
-//! host's client and the tests below all read the same definitions, so a change
-//! to the protocol is a change to one file rather than to two that must agree.
+//! The two halves of this project talk in frames: `crate::frame` decides what a
+//! frame is, `linklet-adapters`' connection puts them on a socket, and this module
+//! decides what they contain. The agent's server, the host's client and the tests
+//! all read these definitions, so a change to the protocol is a change to one file
+//! rather than to two that must agree.
+//!
+//! # Two shapes, and no status code
+//!
+//! A [`Request`] is what the host asks for; a [`Reply`] is what the agent says back.
+//! **A request that could not be answered is a reply like any other**, carrying the
+//! reason as a sentence. There is no numeric status and no error shaping to infer:
+//! a refusal arrives as a refusal, so a caller never has to decode a transport-level
+//! number to find out what happened.
+//!
+//! That replaced HTTP, and the reason is in `docs/decisions.md` D4. Every message
+//! was already sealed, so methods, paths, headers and status codes were vocabulary
+//! nobody read, carried by a parser that had to be right about a grammar nobody
+//! used.
 //!
 //! # The distinction this module exists to protect
 //!
 //! **A command that ran and failed is not a request that failed.** `exit_code: 1`
 //! from a program that did its job and reported a problem is a successful call
 //! carrying bad news; a command that never started is a call that could not be
-//! made. Folding the two into one error field is the mistake that makes an agent
-//! retry a target that already answered, so they are separate types here:
-//! [`RunOutcome`] and [`WireError`].
-//!
-//! # Why hand-written JSON and not a framework
-//!
-//! The same reason as everywhere else in this project: the core may not link
-//! against anything. What it gets in exchange is that every message shape is a
-//! value this crate can build and compare in a test, with no server and no
-//! socket.
+//! made. Folding the two into one field is the mistake that makes an agent retry a
+//! target that already answered, so they are separate shapes here: a [`Reply`] is
+//! either a result or a refusal, and a result that says "the program exited 1" is
+//! the first of those.
 
 use crate::json::{self, Json};
 use crate::object;
 use std::collections::BTreeMap;
 
-/// The path the agent answers on for a command.
+/// The request that asks which agent is there.
 ///
-/// A constant rather than a literal at each call site, so the host and the agent
-/// cannot drift into two strings that differ by a slash.
-pub const RUN_PATH: &str = "/run";
+/// The cheapest question in the protocol and the one a caller asks first: is there
+/// an agent here, and which one. It carries no arguments, so a caller can send it
+/// without deciding anything.
+const OP_IDENTITY: &str = "identity";
 
-/// The path the agent answers on for its identity.
-///
-/// The cheapest question in the protocol and the one a caller asks first: is
-/// there an agent here, and which one. It is a `GET` with no arguments so that a
-/// probe can use it without deciding anything.
-pub const IDENTITY_PATH: &str = "/ping";
+/// The request that runs a command.
+const OP_RUN: &str = "run";
 
-/// The path the two sides exchange public keys on.
+/// Every `op` this version understands, for an error message that lists them.
 ///
-/// A separate path rather than a header on `/run`, because it is a different kind
-/// of message: it carries no command, needs no token (there is nothing in it but a
-/// public key), and **must be answered before anything can be sealed**. Keeping it
-/// separate is what lets the agent refuse a `/run` that arrived with no handshake,
-/// instead of having to guess whether an absent header was a mistake or an old
-/// client.
-pub const HELLO_PATH: &str = "/handshake";
+/// A single list rather than a sentence written at each refusal: a caller that sent
+/// an `op` this version does not know needs to see the ones it does, and a list that
+/// is written twice is a list that disagrees with itself eventually.
+const KNOWN_OPS: &str = "identity, run";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -123,6 +125,27 @@ pub fn handshake_public_from_json(value: &Json) -> Result<Vec<u8>, WireError> {
     from_hex(text)
 }
 
+/// Why a message was not the shape this protocol defines.
+///
+/// One variant, because there is one thing wrong: the bytes arrived and were not a
+/// request or a reply. What could not be answered at all is not this -- that is
+/// [`Reply::Refused`], and it is a successful piece of protocol carrying bad news.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WireError {
+    /// The body was not the shape this protocol defines.
+    BadRequest(String),
+}
+
+impl std::fmt::Display for WireError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BadRequest(problem) => write!(f, "bad request: {problem}"),
+        }
+    }
+}
+
+impl std::error::Error for WireError {}
+
 /// A command the host wants run on a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
@@ -130,6 +153,35 @@ pub struct RunRequest {
     pub command: String,
     /// Seconds the agent may spend before it kills the process.
     pub timeout_seconds: u64,
+}
+
+/// What the host asks an agent for.
+///
+/// The list is short on purpose. Every request is a question someone has, and the
+/// two here are "is there an agent" and "run this" -- see `crate::tool` for the same
+/// rule applied to the agent-facing surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Request {
+    /// Which agent this is, and which version.
+    Identity,
+    /// Run a command.
+    Run(RunRequest),
+}
+
+/// What the agent answers.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reply {
+    /// The request was answered, and this is the answer.
+    ///
+    /// The payload is free-form JSON because the answer to "which agent is this" and
+    /// the answer to "run this" are different shapes, and forcing them into one
+    /// would mean a struct with half its fields empty for every caller.
+    Result(Json),
+    /// The request arrived and could not be answered, and this is why.
+    ///
+    /// **Not a transport failure.** The message arrived, was understood, and says
+    /// no; the caller has a sentence to read instead of a socket error to guess at.
+    Refused(String),
 }
 
 /// What the agent observed.
@@ -164,36 +216,93 @@ pub struct RunOutcome {
 /// "failed to start" means nothing happened at all.
 pub const KILLED_BY_DEADLINE: &str = "killed by the deadline";
 
-/// Why a request could not be answered at all.
-///
-/// Separate from [`RunOutcome`] on purpose -- see the module documentation. An
-/// [`WireError`] means the host learned nothing about the command; an outcome
-/// with a non-zero exit code means it learned everything.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WireError {
-    /// The body was not the shape this protocol defines.
-    BadRequest(String),
-    /// The path is not one the agent serves.
-    NoSuchPath(String),
-}
-
-impl std::fmt::Display for WireError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::BadRequest(problem) => write!(f, "bad request: {problem}"),
-            Self::NoSuchPath(path) => write!(f, "no such path: {path}"),
-        }
-    }
-}
-
-impl std::error::Error for WireError {}
-
 /// The largest timeout the protocol will carry, in seconds.
 ///
 /// An agent that accepts an unbounded timeout from the network has been handed a
 /// way to be occupied forever. Ten minutes is longer than any build step this
 /// tool is for and short enough that a mistake ends.
 pub const MAX_TIMEOUT_SECONDS: u64 = 600;
+
+/// A request as JSON.
+pub fn request_to_json(request: &Request) -> Json {
+    match request {
+        Request::Identity => object! { "op" => OP_IDENTITY },
+        Request::Run(run) => object! {
+            "op" => OP_RUN,
+            "command" => run.command,
+            "timeout_seconds" => run.timeout_seconds as i64,
+        },
+    }
+}
+
+/// A request from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field, because the caller is a program on
+/// the other end of a socket and "invalid body" gives whoever is debugging it
+/// nothing to look at. An `op` this version does not know is refused with the ones
+/// it does, so a version skew is a list rather than a puzzle.
+pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
+    let op = value.get_str("op").ok_or_else(|| {
+        WireError::BadRequest(format!(
+            "op: missing or not a string; one of {KNOWN_OPS} is required"
+        ))
+    })?;
+
+    match op {
+        OP_IDENTITY => Ok(Request::Identity),
+        // The command's own fields are parsed by the function that owns them, so a
+        // run request has one reader rather than two that could disagree.
+        OP_RUN => Ok(Request::Run(run_request_from_json(value)?)),
+        other => Err(WireError::BadRequest(format!(
+            "op: {other:?} is not one of {KNOWN_OPS}"
+        ))),
+    }
+}
+
+/// A reply that carries an answer.
+pub fn reply_result(result: Json) -> Json {
+    object! { "ok" => true, "result" => result }
+}
+
+/// A reply that says the request could not be answered.
+pub fn reply_refused(reason: &str) -> Json {
+    object! { "ok" => false, "error" => reason }
+}
+
+/// A reply from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the body is not a reply. The distinction between
+/// a result and a refusal is carried by `ok` and not inferred from which fields are
+/// present, because two shapes that are told apart by their fields are two shapes
+/// that eventually overlap.
+pub fn reply_from_json(value: &Json) -> Result<Reply, WireError> {
+    let ok = value.get("ok").and_then(Json::as_bool).ok_or_else(|| {
+        WireError::BadRequest("a reply needs an ok field with true or false".to_string())
+    })?;
+
+    if ok {
+        return match value.get("result") {
+            Some(result) => Ok(Reply::Result(result.clone())),
+            None => Err(WireError::BadRequest(
+                "a reply that is ok needs a result".to_string(),
+            )),
+        };
+    }
+
+    match value.get("error") {
+        Some(Json::Str(reason)) => Ok(Reply::Refused(reason.clone())),
+        Some(_) => Err(WireError::BadRequest(
+            "a refusal needs error to be a string".to_string(),
+        )),
+        None => Err(WireError::BadRequest(
+            "a refusal needs an error field".to_string(),
+        )),
+    }
+}
 
 /// The request as JSON.
 pub fn run_request_to_json(request: &RunRequest) -> Json {
@@ -329,12 +438,63 @@ pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
     })
 }
 
-/// The error as JSON, in the shape the agent answers with.
-pub fn wire_error_to_json(error: &WireError) -> Json {
-    match error {
-        WireError::BadRequest(problem) => object! { "error" => problem },
-        WireError::NoSuchPath(path) => object! { "error" => format!("no such path: {path}") },
+/// Encodes an outcome as the result of a run reply.
+///
+/// The whole of the agent's side of a run, in one call, so that the shape cannot be
+/// assembled differently in two places.
+pub fn encode_run_reply(outcome: &RunOutcome) -> Json {
+    reply_result(run_outcome_to_json(outcome))
+}
+
+/// The identity reply, as the agent builds it.
+pub fn identity_to_json(name: &str, version: &str) -> Json {
+    reply_result(object! { "name" => name, "version" => version })
+}
+
+/// The name out of an identity result.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the result is a refusal or holds no name -- the
+/// two ways a caller can be handed something that is not an answer.
+pub fn identity_from_json(reply: &Reply) -> Result<String, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest(
+            "the identity reply is a refusal".to_string(),
+        ));
+    };
+    value
+        .get_str("name")
+        .map(str::to_string)
+        .ok_or_else(|| WireError::BadRequest("the identity reply has no name".to_string()))
+}
+
+/// The outcome out of a run reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal -- a caller that wants the
+/// reason should match on [`Reply`] instead -- or when the result is not an outcome.
+pub fn run_outcome_from_reply(reply: &Reply) -> Result<RunOutcome, WireError> {
+    match reply {
+        Reply::Result(value) => run_outcome_from_json(value),
+        Reply::Refused(reason) => Err(WireError::BadRequest(reason.clone())),
     }
+}
+
+/// Reads one of this module's messages out of a frame body.
+///
+/// Bytes rather than text, because a frame carries bytes and the conversion to text
+/// is a decision with an error case -- a body that is not UTF-8 is not JSON, and
+/// saying so here means every caller does not have to.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the body is not UTF-8, or not JSON.
+pub fn parse_body(body: &[u8]) -> Result<Json, WireError> {
+    let text = std::str::from_utf8(body)
+        .map_err(|_| WireError::BadRequest("the message is not UTF-8".to_string()))?;
+    json::parse(text).map_err(|error| WireError::BadRequest(error.to_string()))
 }
 
 /// Renders an outcome as the text an agent reads.
@@ -374,22 +534,4 @@ pub fn render_run(outcome: &RunOutcome) -> String {
     }
 
     out.trim_end().to_string()
-}
-
-/// The whole of a run, decoded from the agent's reply body.
-///
-/// The host's side of the contract, in one call, so that a test can drive the
-/// pair without a socket.
-///
-/// # Errors
-///
-/// [`WireError::BadRequest`] when the body is not JSON or not the shape above.
-pub fn decode_run_reply(body: &str) -> Result<RunOutcome, WireError> {
-    let value = json::parse(body).map_err(|e| WireError::BadRequest(e.to_string()))?;
-    run_outcome_from_json(&value)
-}
-
-/// Encodes an outcome as the agent's reply body.
-pub fn encode_run_reply(outcome: &RunOutcome) -> String {
-    json::write(&run_outcome_to_json(outcome))
 }

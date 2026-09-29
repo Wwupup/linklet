@@ -2,9 +2,10 @@
 
 `crates/linklet-core/src/frame.rs` lists ten ways a length-prefixed protocol goes
 wrong and defends against six of them inline. The other four belong to the
-connection rather than to a frame, so they live in `linklet-adapters` and are
-written down here — a defence that exists only in someone's head is a defence that
-gets removed by the next person tidying up.
+connection rather than to a frame, so they live in
+`crates/linklet-adapters/src/connection.rs` and are written down here -- a defence
+that exists only in someone's head is a defence that gets removed by the next
+person tidying up.
 
 ## The claim this replaces HTTP on
 
@@ -47,7 +48,7 @@ unread bytes it did not ask for.
 This is the defence against desynchronisation, and it is a property of the
 connection rather than of a frame: if a reader can be holding surplus bytes when it
 finishes a message, then a boundary can be reinterpreted, and that is the smuggling
-shape. Refusing to pipeline means the question never arises — there is no state in
+shape. Refusing to pipeline means the question never arises -- there is no state in
 which surplus bytes exist.
 
 A connection carries at most **two** messages: the hello, and one sealed request
@@ -65,8 +66,30 @@ would be read as a length and the error would arrive as an allocation attempt.
 
 `write_all`, never `write`, and the error is propagated rather than dropped. A
 truncated write that nobody noticed is a receiver waiting for the rest of a message
-the sender believes it sent — and with a read timeout, that becomes a refusal that
+the sender believes it sent -- and with a read timeout, that becomes a refusal that
 looks like a slow peer.
+
+**A write also has a deadline**, which the list above does not mention because it is
+not a framing failure: a reply can be as large as a command's output, and a peer
+that stops reading fills its own receive window and leaves the sender blocked in
+`write_all` for as long as the socket lives. On the agent that is a thread held
+permanently by a caller that never reads. The budget is the same one a read gets.
+A write that never returns has no result to check, so it is given a bound instead --
+and a write that times out partway leaves the connection desynchronised, which is
+why the connection is then closed rather than reused.
+
+## 5. A frame that timed out halfway is not a frame
+
+Not on the ten-item list, and found while writing the connection: `read_exact`
+consuming part of a payload before its deadline and then failing leaves those bytes
+gone. The next read would begin in the middle of the previous message -- which is
+exactly the desynchronisation item 2 exists to prevent. So a connection that fails
+a read for any reason **refuses to be read again**, and says so, rather than
+resynchronising on whatever arrived.
+
+The same applies to a peer that is gone. A clean close and a reset are not told
+apart, because the caller does the same thing about either, and on Windows a reset
+carries a localised message that would otherwise be the sentence a user reads.
 
 ## What is still not defended, and is known
 

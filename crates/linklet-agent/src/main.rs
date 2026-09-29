@@ -1,9 +1,8 @@
 //! The target-side agent.
 //!
-//! One file, no dependencies, and it does two things: says which agent it is, and
-//! runs a command when asked. Everything it knows about the protocol comes from
-//! `linklet_core::wire`, which the host uses too, so the two cannot drift into
-//! two readings of the same message.
+//! It does two things: says which agent it is, and runs a command when asked.
+//! Everything it knows about the protocol comes from `linklet_core::wire`, which the
+//! host uses too, so the two cannot drift into two readings of the same message.
 //!
 //! # Why this is a separate binary
 //!
@@ -12,19 +11,20 @@
 //! Making them one binary would mean shipping the whole host tool to every target
 //! and would put "can run a command" behind the same door as "can check a port".
 //!
-//! It is also the reason the agent has nothing but `linklet-core` in its
-//! dependency list: the smaller the thing that runs on someone else's machine,
-//! the less there is to be wrong with it.
+//! It is also the reason this crate has two dependencies and not five: the smaller
+//! the thing that runs on someone else's machine, the less there is to be wrong with
+//! it. `linklet-core` is the protocol and `linklet-adapters` is the socket and the
+//! cipher, and neither brings a runtime.
 //!
 //! # What it does not do
 //!
-//! - **No encryption.** A token is required and checked in constant time, so a
-//!   caller who does not know the secret gets nothing. But the token travels in
-//!   cleartext, so anyone who can read the network can read it and replay it.
-//!   That is a real limit and it is the next thing to fix, not a detail: a reader
-//!   who believes a token is encryption will use this where the difference matters.
-//! - **No keep-alive, no chunked encoding, one request per connection.** See
-//!   `http.rs` for why each of those is a refusal rather than a gap.
+//! - **No identities.** The token authenticates the channel and says nothing about
+//!   *which* caller it is, so there is no per-caller revocation and no audit trail.
+//!   One secret, every caller. See `docs/ROADMAP.md` M9.
+//! - **No session between connections.** A caller that wants to run two commands
+//!   opens two connections and does two handshakes. A session that outlived a
+//!   connection would need a table and an eviction policy, and an eviction policy is
+//!   a way to be exhausted.
 //! - **No output cap.** A command that writes a gigabyte writes a gigabyte. The
 //!   limit belongs in the wire protocol as a field, so a caller that had its
 //!   output cut can tell.
@@ -32,7 +32,7 @@
 #![forbid(unsafe_code)]
 
 mod execute;
-mod http;
+mod server;
 
 use std::net::TcpListener;
 
@@ -149,7 +149,7 @@ fn main() {
                 // at a time and each one is a command the caller asked for; a
                 // pool would be machinery bought with nothing.
                 let token = token.clone();
-                std::thread::spawn(move || http::serve_connection(stream, &token));
+                std::thread::spawn(move || server::serve_connection(stream, &token));
             }
             // One failed accept is not a reason to stop serving. The listener is
             // still bound and the next caller may be fine.

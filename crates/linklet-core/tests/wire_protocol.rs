@@ -17,8 +17,20 @@
 use linklet_core::json::{self, Json};
 use linklet_core::object;
 use linklet_core::wire::{
-    self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, RunOutcome, RunRequest, WireError,
+    self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, Reply, Request, RunOutcome, RunRequest,
+    WireError,
 };
+
+/// Reads a run outcome out of a reply body, the way the host has to.
+///
+/// Two steps rather than one function, because the middle one is the whole point:
+/// the reply is a result or a refusal, and only the first of those can be an
+/// outcome. A single function returning an outcome would have to fold a refusal
+/// into a shape that carries an exit code, which is the mistake this file is about.
+fn run_outcome_from_body(body: &str) -> Result<RunOutcome, WireError> {
+    let reply = wire::reply_from_json(&json::parse(body).expect("valid JSON"))?;
+    wire::run_outcome_from_reply(&reply)
+}
 
 // --- the distinction the module exists for -----------------------------------
 
@@ -33,8 +45,8 @@ fn a_command_that_ran_and_failed_is_an_outcome_and_not_an_error() {
         reason: None,
     };
 
-    let encoded = wire::encode_run_reply(&outcome);
-    let decoded = wire::decode_run_reply(&encoded).expect("its own output should decode");
+    let encoded = json::write(&wire::encode_run_reply(&outcome));
+    let decoded = run_outcome_from_body(&encoded).expect("its own output should decode");
 
     assert_eq!(decoded, outcome);
     assert_eq!(decoded.exit_code, Some(1));
@@ -57,7 +69,8 @@ fn a_command_that_never_started_has_no_exit_code_and_says_why() {
         reason: Some("cannot spawn: the file does not exist".to_string()),
     };
 
-    let decoded = wire::decode_run_reply(&wire::encode_run_reply(&outcome)).expect("decodes");
+    let decoded =
+        run_outcome_from_body(&json::write(&wire::encode_run_reply(&outcome))).expect("decodes");
 
     assert_eq!(decoded, outcome);
     assert_ne!(
@@ -81,7 +94,8 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
         reason: Some(KILLED_BY_DEADLINE.to_string()),
     };
 
-    let decoded = wire::decode_run_reply(&wire::encode_run_reply(&outcome)).expect("decodes");
+    let decoded =
+        run_outcome_from_body(&json::write(&wire::encode_run_reply(&outcome))).expect("decodes");
 
     assert_eq!(decoded.reason.as_deref(), Some(KILLED_BY_DEADLINE));
     assert_eq!(
@@ -185,34 +199,153 @@ fn an_insane_timeout_is_refused_rather_than_clamped() {
     );
 }
 
-// --- the shape of the body ---------------------------------------------------
+// --- the two shapes, and telling them apart ----------------------------------
 
 #[test]
-fn the_error_shape_names_the_problem_and_nothing_else() {
-    // Deliberately not a result with an exit code: an error body says the request
-    // could not be answered, and the host must not read it looking for output.
-    let body = json::write(&wire::wire_error_to_json(&WireError::BadRequest(
-        "timeout_seconds: missing".to_string(),
-    )));
-    let value = json::parse(&body).expect("valid JSON");
-    let message = value.get_str("error").expect("an error field");
+fn a_refusal_carries_the_reason_and_no_result() {
+    // Deliberately not a result with an exit code: a refusal says the request could
+    // not be answered, and a caller must not read it looking for output. The two are
+    // told apart by `ok` rather than by which fields happen to be present, because
+    // two shapes distinguished by their fields are two shapes that eventually
+    // overlap.
+    let body = json::write(&wire::reply_refused(
+        "timeout_seconds: 0 is outside 1..=600",
+    ));
+    let reply = wire::reply_from_json(&json::parse(&body).expect("valid JSON")).expect("a reply");
 
-    assert!(message.contains("timeout_seconds"), "{message}");
+    match reply {
+        Reply::Refused(reason) => assert!(reason.contains("timeout_seconds"), "{reason}"),
+        Reply::Result(value) => panic!("a refusal decoded as a result: {value:?}"),
+    }
+}
+
+#[test]
+fn a_result_that_holds_bad_news_is_still_a_result() {
+    // The distinction the protocol was built around, at the level of the envelope: a
+    // command that exited 1 produced a result. If this ever decoded as a refusal, an
+    // agent would retry a machine that had already answered.
+    let outcome = RunOutcome {
+        exit_code: Some(1),
+        stdout: String::new(),
+        stderr: "usage: app [options]".to_string(),
+        duration_ms: 4,
+        reason: None,
+    };
+
+    let body = json::write(&wire::encode_run_reply(&outcome));
+    let reply = wire::reply_from_json(&json::parse(&body).expect("valid JSON")).expect("a reply");
+
     assert!(
-        value.get("exit_code").is_none(),
-        "an error body must not carry a result field, or the two shapes become one"
+        matches!(reply, Reply::Result(_)),
+        "an exit code of 1 is bad news and not a refusal"
+    );
+    assert_eq!(
+        wire::run_outcome_from_reply(&reply).expect("an outcome"),
+        outcome
     );
 }
 
 #[test]
+fn a_reply_that_says_neither_is_refused_rather_than_guessed_at() {
+    // Four ways to be almost a reply. Each is refused with the field that is wrong,
+    // because the alternative -- inferring the shape from what happens to be there --
+    // is how a protocol grows two readings of the same bytes.
+    for (body, expected) in [
+        (r#"{"result": {}}"#, "ok"),
+        (r#"{"ok": "true", "result": {}}"#, "ok"),
+        (r#"{"ok": true}"#, "result"),
+        (r#"{"ok": false}"#, "error"),
+    ] {
+        let value = json::parse(body).expect("valid JSON");
+        let error = wire::reply_from_json(&value).expect_err("should be refused");
+        assert!(
+            error.to_string().contains(expected),
+            "for {body}, expected {expected:?} in {error}"
+        );
+    }
+}
+
+// --- the requests ------------------------------------------------------------
+
+#[test]
+fn a_result_of_the_wrong_shape_is_refused_naming_the_field() {
+    // The case a mock server someone wrote by hand produces: a well-formed result
+    // that is not a run outcome. It has to be a refusal and not a default outcome,
+    // because a caller that defaulted the missing fields would report a command that
+    // never ran as one that exited zero.
+    let error = run_outcome_from_body(r#"{"ok": true, "result": {"exit_code": 0}}"#)
+        .expect_err("should be refused");
+    assert!(error.to_string().contains("stdout"), "{error}");
+}
+
+#[test]
+fn both_requests_round_trip_through_the_wire() {
+    let requests = [
+        Request::Identity,
+        Request::Run(RunRequest {
+            command: "build.cmd --release".to_string(),
+            timeout_seconds: 600,
+        }),
+    ];
+
+    for request in requests {
+        let encoded = json::write(&wire::request_to_json(&request));
+        let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
+            .expect("its own output should decode");
+        assert_eq!(decoded, request);
+    }
+}
+
+#[test]
+fn the_op_values_are_pinned_by_value() {
+    // The equivalent of the old path constants: a typo here is a host and an agent
+    // that cannot talk, and the failure is easier to read as a byte-level fact than
+    // as a `.contains("identity")` that passes for the wrong reason.
+    assert_eq!(
+        json::write(&wire::request_to_json(&Request::Identity)),
+        r#"{"op":"identity"}"#
+    );
+    assert_eq!(
+        json::write(&wire::request_to_json(&Request::Run(RunRequest {
+            command: "echo hi".to_string(),
+            timeout_seconds: 5,
+        }))),
+        r#"{"command":"echo hi","op":"run","timeout_seconds":5}"#
+    );
+}
+
+#[test]
+fn an_unknown_op_is_refused_with_the_ones_this_version_knows() {
+    // A version skew is a list rather than a puzzle: the caller sent an op this
+    // build does not have, and the refusal names the ones it does.
+    let value = object! { "op" => "install" };
+    let error = wire::request_from_json(&value).expect_err("not an op this version has");
+    let text = error.to_string();
+    assert!(text.contains("install"), "{text}");
+    assert!(
+        text.contains("identity") && text.contains("run"),
+        "the refusal should list the ops that exist: {text}"
+    );
+}
+
+#[test]
+fn a_request_with_no_op_says_so_rather_than_assuming_one() {
+    // The field is required. A missing `op` that defaulted to "run" would turn a
+    // broken client into a command the agent tries to execute.
+    let error = wire::request_from_json(&object! { "command" => "echo hi" })
+        .expect_err("an op is required");
+    assert!(error.to_string().contains("op"), "{error}");
+}
+
+#[test]
 fn a_body_that_is_not_json_is_a_bad_request_and_not_a_panic() {
-    let error = wire::decode_run_reply("not json").expect_err("should be refused");
+    let error = wire::parse_body(b"not json").expect_err("should be refused");
     assert!(matches!(error, WireError::BadRequest(_)));
 
-    // ...and a JSON body of the wrong shape, which is the case a mock server
-    // someone wrote by hand produces.
-    let error = wire::decode_run_reply(r#"{"exit_code": 0}"#).expect_err("should be refused");
-    assert!(error.to_string().contains("stdout"), "{error}");
+    // A body that is valid UTF-8 but not JSON, and one that is not UTF-8 at all:
+    // both are refusals, and neither is a panic.
+    assert!(wire::parse_body(b"{}").is_ok());
+    assert!(wire::parse_body(&[0xff, 0xfe]).is_err());
 }
 
 // --- what the agent reads ----------------------------------------------------
@@ -301,10 +434,15 @@ fn the_rendered_text_carries_no_trailing_blank_line() {
 }
 
 #[test]
-fn the_paths_are_the_ones_the_protocol_is_documented_with() {
-    // Constants, asserted so that a typo is a failing test rather than a host and
-    // an agent disagreeing about a slash.
-    assert_eq!(wire::RUN_PATH, "/run");
-    assert_eq!(wire::IDENTITY_PATH, "/ping");
-    assert!(wire::RUN_PATH.starts_with('/') && wire::IDENTITY_PATH.starts_with('/'));
+fn the_identity_result_carries_a_name_and_a_version() {
+    // Both, because a caller that has only a name cannot tell an old agent from a new
+    // one, and "which agent is this" is a question about a version as much as a name.
+    let reply = wire::reply_from_json(&wire::identity_to_json("linklet-agent", "0.1.0"))
+        .expect("its own output should decode");
+
+    assert_eq!(
+        wire::identity_from_json(&reply).expect("a name"),
+        "linklet-agent"
+    );
+    assert!(matches!(reply, Reply::Result(_)));
 }

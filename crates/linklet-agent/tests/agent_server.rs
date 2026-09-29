@@ -1,26 +1,29 @@
 //! The agent, driven as a real process over a real socket.
 //!
 //! Everything the protocol decides is unit-tested in `linklet-core`. What is left
-//! here is the part that only exists once there is a server: that a request line
-//! and headers are read correctly, that a reply is flushed rather than buffered,
-//! that a command's output survives the trip, and that the shapes on the wire are
-//! the ones `wire.rs` says.
+//! here is the part that only exists once there is a server: that a handshake is
+//! answered, that a reply is flushed rather than buffered, that a command's output
+//! survives the trip, and that the refusals are the ones `wire.rs` says.
+//!
+//! The frames are built here with the same connection and channel the host uses,
+//! which is deliberate: a test that wrote its own framing would be a second reading
+//! of the protocol, and would pass while the two disagreed.
 //!
 //! The agent binds port 0 and prints the port it got, so a test never guesses one
 //! and never collides with something else on the machine. The banner is read
 //! before the first request, which is also why the banner exists: it is bound
 //! before it is printed, so reading it is proof the port is open.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use linklet_adapters::HkdfChannel;
-use linklet_core::auth::{TOKEN_HEADER, TOKEN_SCHEME};
+use linklet_adapters::{Connection, ConnectionError, HkdfChannel};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
+use linklet_core::frame::Kind;
 use linklet_core::json;
-use linklet_core::wire;
+use linklet_core::wire::{self, Reply, Request, RunOutcome, RunRequest};
 
 /// The token these tests configure the agent with.
 ///
@@ -28,6 +31,13 @@ use linklet_core::wire;
 /// literal is fine here: it is a test secret, on a port the OS chose, in a
 /// process that lives for one test.
 const TEST_TOKEN: &str = "test-token-0123456789";
+
+/// A token that is well formed and not the one the agent holds.
+const WRONG_TOKEN: &str = "wrong-token-0123456789";
+
+/// A budget for the tests' own reads, long enough that a slow machine never
+/// misfires and short enough that a broken agent fails the suite quickly.
+const TEST_BUDGET: Duration = Duration::from_secs(30);
 
 /// A running agent, killed when the test ends.
 struct Agent {
@@ -72,155 +82,48 @@ impl Agent {
         Self { child, port }
     }
 
-    /// Sends one request and returns the status and the body.
-    fn request(&self, method: &str, path: &str, body: &str) -> (u16, String) {
-        let mut stream =
-            TcpStream::connect(("127.0.0.1", self.port)).expect("the agent should be reachable");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .expect("a timeout should be settable");
-
-        let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-            body.len()
-        );
-        stream
-            .write_all(request.as_bytes())
-            .expect("writing the request");
-        stream.flush().expect("flushing the request");
-
-        let mut raw = String::new();
-        stream.read_to_string(&mut raw).expect("reading the reply");
-
-        let (head, body) = raw
-            .split_once("\r\n\r\n")
-            .unwrap_or_else(|| panic!("a reply with no blank line: {raw:?}"));
-        let status: u16 = head
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|code| code.parse().ok())
-            .unwrap_or_else(|| panic!("no status in {head:?}"));
-
-        (status, body.to_string())
-    }
-}
-
-/// Reads one reply from an open connection: the status, and the body by length.
-///
-/// Reads the body by its declared length rather than to the end, because the
-/// connection carries **two** messages now and reading to the end would swallow
-/// the second reply into the first.
-fn read_one(reader: &mut BufReader<TcpStream>) -> (u16, Vec<u8>) {
-    let mut status_line = String::new();
-    reader
-        .read_line(&mut status_line)
-        .expect("a status line from the agent");
-    let status: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|code| code.parse().ok())
-        .unwrap_or_else(|| panic!("no status in {status_line:?}"));
-
-    let mut content_length: Option<usize> = None;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("a header line");
-        if line == "\r\n" || line.is_empty() {
-            break;
-        }
-        if let Some(value) = line.strip_prefix("Content-Length:") {
-            content_length = value.trim().parse().ok();
-        }
-    }
-
-    let mut body = vec![0u8; content_length.unwrap_or(0)];
-    reader.read_exact(&mut body).expect("the body");
-    (status, body)
-}
-
-/// The agent under test, with the handshake done and a session in hand.
-///
-/// The protocol needs two messages on one connection, so a helper that opened a
-/// connection per call could not exercise it at all. This keeps the connection and
-/// both states.
-struct Conversation {
-    reader: BufReader<TcpStream>,
-    session: Box<dyn Sealed>,
-}
-
-impl Agent {
-    /// Opens a connection and completes a handshake on it.
-    fn sealed(&self) -> Conversation {
+    /// Opens a connection and completes a handshake on it with this token.
+    fn sealed_with(&self, token: &str) -> Conversation {
         let stream =
             TcpStream::connect(("127.0.0.1", self.port)).expect("the agent should be reachable");
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .expect("a timeout should be settable");
-        let mut reader = BufReader::new(stream);
+        let mut connection = Connection::with_budget(stream, TEST_BUDGET);
 
         let (ours, pending) = HkdfChannel
-            .propose(TEST_TOKEN.as_bytes())
+            .propose(token.as_bytes())
             .expect("proposing a handshake");
         let hello = json::write(&wire::handshake_to_json(ours.as_bytes()));
-        let request = format!(
-            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{hello}",
-            wire::HELLO_PATH,
-            hello.len()
-        );
-        reader
-            .get_mut()
-            .write_all(request.as_bytes())
+        connection
+            .write_frame(Kind::Hello, hello.as_bytes())
             .expect("writing the handshake");
-        reader.get_mut().flush().expect("flushing");
 
-        let (status, body) = read_one(&mut reader);
-        // A handshake reply is JSON, so this one is text on purpose.
-        let body = String::from_utf8_lossy(&body).into_owned();
-        assert_eq!(status, 200, "the handshake was refused: {body}");
-        let theirs = wire::handshake_public_from_json(&json::parse(&body).expect("a JSON reply"))
-            .expect("an ephemeral_public field");
+        let frame = connection
+            .read_frame(Kind::Hello)
+            .expect("the agent answers every hello");
+        let theirs = match reply(&frame) {
+            Reply::Result(value) => value,
+            Reply::Refused(reason) => panic!("the handshake was refused: {reason}"),
+        };
+        let theirs = wire::handshake_public_from_json(&theirs).expect("an ephemeral_public field");
         let theirs = EphemeralPublic::from_bytes(theirs).expect("32 bytes");
 
         let session = pending.finish(&theirs).expect("finishing the handshake");
-
-        Conversation { reader, session }
-    }
-}
-
-impl Conversation {
-    /// Sends a sealed `POST /run` with this plaintext and reads the sealed reply.
-    fn run(&mut self, plaintext: &str) -> (u16, String) {
-        let sealed = self
-            .session
-            .seal(plaintext.as_bytes())
-            .expect("sealing the request");
-        // The body is the sealed bytes. It used to be hex, because the framing layer
-        // carried text -- and a body that can only be text cannot carry ciphertext.
-        let head = format!(
-            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            wire::RUN_PATH,
-            sealed.len()
-        );
-        self.reader
-            .get_mut()
-            .write_all(head.as_bytes())
-            .and_then(|()| self.reader.get_mut().write_all(&sealed))
-            .expect("writing the sealed request");
-        self.reader.get_mut().flush().expect("flushing");
-
-        let (status, body) = read_one(&mut self.reader);
-        // A reply that is not 200 is the agent refusing, and it comes back as JSON.
-        // A 200 is the sealed result. The status line is what tells them apart, not a
-        // guess about the shape of the body.
-        if status != 200 {
-            return (status, String::from_utf8_lossy(&body).into_owned());
+        Conversation {
+            connection,
+            session,
         }
+    }
 
-        let plaintext = self.session.open(&body).expect("opening the sealed reply");
-        (status, String::from_utf8(plaintext).expect("UTF-8"))
+    /// Opens a connection and completes a handshake with the agent's own token.
+    fn sealed(&self) -> Conversation {
+        self.sealed_with(TEST_TOKEN)
+    }
+
+    /// A bare connection, for the tests that send something the protocol refuses.
+    fn stream(&self) -> TcpStream {
+        TcpStream::connect(("127.0.0.1", self.port)).expect("the agent should be reachable")
     }
 }
+
 impl Drop for Agent {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -228,47 +131,110 @@ impl Drop for Agent {
     }
 }
 
-/// Runs a command and decodes the outcome it produces.
-fn run(agent: &Agent, command: &str) -> wire::RunOutcome {
-    let body =
-        json::write(&linklet_core::object! { "command" => command, "timeout_seconds" => 30i64 });
-    let (status, body) = agent.sealed().run(&body);
-    assert_eq!(status, 200, "the agent answered {status}: {body}");
-    wire::decode_run_reply(&body).unwrap_or_else(|e| panic!("undecodable reply: {e} in {body}"))
+/// A handshake that is done and a connection that can carry a request.
+struct Conversation {
+    connection: Connection,
+    session: Box<dyn Sealed>,
 }
 
-// --- the identity path -------------------------------------------------------
+impl Conversation {
+    /// Sends one request and returns the reply.
+    fn ask(&mut self, request: &Request) -> Reply {
+        self.ask_json(&json::write(&wire::request_to_json(request)))
+    }
+
+    /// Sends one request written by hand.
+    ///
+    /// For the shapes [`Request`] cannot express: an operation this version does not
+    /// have, and a body that is not a request at all. Going through the type would
+    /// make those untestable, and they are exactly the messages an attacker sends.
+    fn ask_json(&mut self, body: &str) -> Reply {
+        let sealed = self
+            .session
+            .seal(body.as_bytes())
+            .expect("sealing the request");
+        self.connection
+            .write_frame(Kind::Sealed, &sealed)
+            .expect("writing the request");
+
+        let frame = self
+            .connection
+            .read_frame(Kind::Sealed)
+            .expect("the agent answers every request");
+        open(&mut self.session, &frame)
+    }
+}
+
+/// Opens a reply frame, falling back to reading it in the clear.
+///
+/// The fallback is not laxity: the agent's refusal for "this session did not open"
+/// is sent unsealed, because the session that would seal it is what failed. A test
+/// that did not read it would be asserting on a decryption failure instead of on
+/// the agent's answer.
+fn open(session: &mut Box<dyn Sealed>, frame: &[u8]) -> Reply {
+    let mut plaintext = Vec::new();
+    match session.open_into(frame, &mut plaintext) {
+        Ok(()) => reply(&plaintext),
+        Err(_) => reply(frame),
+    }
+}
+
+/// One of the protocol's replies, out of a frame body.
+fn reply(body: &[u8]) -> Reply {
+    let value = wire::parse_body(body).unwrap_or_else(|e| {
+        panic!(
+            "the reply is not a message this protocol defines: {e} in {:?}",
+            String::from_utf8_lossy(body)
+        )
+    });
+    wire::reply_from_json(&value).expect("a reply shape")
+}
+
+/// The reason out of a reply that must be a refusal.
+fn refusal(reply: Reply) -> String {
+    match reply {
+        Reply::Refused(reason) => reason,
+        Reply::Result(value) => panic!("expected a refusal and got a result: {value:?}"),
+    }
+}
+
+/// The outcome out of a reply that must be a result.
+fn outcome(reply: Reply) -> RunOutcome {
+    match reply {
+        Reply::Result(value) => {
+            wire::run_outcome_from_json(&value).expect("the result is a run outcome")
+        }
+        Reply::Refused(reason) => panic!("expected an outcome and got a refusal: {reason}"),
+    }
+}
+
+/// Runs a command and decodes the outcome it produces.
+fn run(agent: &Agent, command: &str) -> RunOutcome {
+    run_with(agent, command, 30)
+}
+
+/// Runs a command with an explicit deadline.
+fn run_with(agent: &Agent, command: &str, timeout_seconds: u64) -> RunOutcome {
+    outcome(agent.sealed().ask(&Request::Run(RunRequest {
+        command: command.to_string(),
+        timeout_seconds,
+    })))
+}
+
+// --- who is there ------------------------------------------------------------
 
 #[test]
 fn the_agent_says_which_agent_it_is() {
     let agent = Agent::start();
-    let (status, body) = agent.request("GET", wire::IDENTITY_PATH, "");
+    let reply = agent.sealed().ask(&Request::Identity);
 
-    assert_eq!(status, 200);
-    let value = json::parse(&body).expect("the identity reply is JSON");
+    let Reply::Result(value) = reply else {
+        panic!("the identity call should be answered");
+    };
     assert_eq!(value.get_str("name"), Some("linklet-agent"));
-    assert!(value.get_str("version").is_some());
-}
-
-#[test]
-fn a_wrong_method_on_a_known_path_is_not_an_unknown_path() {
-    // Two different mistakes, told apart: a client bug, versus a client talking
-    // to the wrong program. A 404 for both sends whoever is debugging it to look
-    // in the wrong place.
-    let agent = Agent::start();
-    let (status, _) = agent.request("GET", wire::RUN_PATH, "");
-    assert_eq!(status, 405, "GET on the run path is a method problem");
-}
-
-#[test]
-fn an_unknown_path_is_a_404_with_the_path_in_it() {
-    let agent = Agent::start();
-    let (status, body) = agent.request("GET", "/nope", "");
-
-    assert_eq!(status, 404);
     assert!(
-        body.contains("/nope"),
-        "the reply should name the path: {body}"
+        value.get_str("version").is_some(),
+        "a caller that has only a name cannot tell an old agent from a new one"
     );
 }
 
@@ -295,12 +261,12 @@ fn a_command_that_fails_is_an_outcome_and_not_an_error() {
     // The distinction the protocol was designed around, over a real socket this
     // time: a program that ran and reported a problem is a successful call.
     let agent = Agent::start();
-    let (status, body) = agent.sealed().run(&json::write(
-        &linklet_core::object! { "command" => "exit 3", "timeout_seconds" => 30i64 },
-    ));
+    let reply = agent.sealed().ask(&Request::Run(RunRequest {
+        command: "exit 3".to_string(),
+        timeout_seconds: 30,
+    }));
 
-    assert_eq!(status, 200, "the call succeeded: {body}");
-    let outcome = wire::decode_run_reply(&body).expect("decodes");
+    let outcome = outcome(reply);
     assert_eq!(outcome.exit_code, Some(3), "{outcome:#?}");
 }
 
@@ -340,13 +306,8 @@ fn a_caller_supplied_timeout_kills_the_command_and_says_which_failure_it_was() {
     // different fact from failing to start, and the reason constant is what the
     // host branches on.
     let agent = Agent::start();
-    let (status, body) = agent.sealed().run(&json::write(
-        // Longer than the timeout, and it must not finish first.
-        &linklet_core::object! { "command" => "ping -n 30 127.0.0.1", "timeout_seconds" => 1i64 },
-    ));
+    let outcome = run_with(&agent, "ping -n 30 127.0.0.1", 1);
 
-    assert_eq!(status, 200, "{body}");
-    let outcome = wire::decode_run_reply(&body).expect("decodes");
     assert_eq!(outcome.exit_code, None, "{outcome:#?}");
     assert_eq!(
         outcome.reason.as_deref(),
@@ -358,49 +319,6 @@ fn a_caller_supplied_timeout_kills_the_command_and_says_which_failure_it_was() {
         "it should have run for about the timeout, not {:?} ms",
         outcome.duration_ms
     );
-}
-
-// --- what is refused before a command runs -----------------------------------
-
-#[test]
-fn a_body_that_is_not_json_is_refused_and_no_command_runs() {
-    let agent = Agent::start();
-    // Sealed, because an unsealed body is now refused before anything parses it --
-    // which is a different refusal, tested separately below. This one is about what
-    // happens to a body that arrived intact and was not JSON.
-    let (status, body) = agent.sealed().run("not json at all");
-
-    assert_eq!(status, 400);
-    let value = json::parse(&body).expect("the refusal is JSON");
-    assert!(value.get_str("error").is_some());
-    assert!(
-        value.get("exit_code").is_none(),
-        "an error body must not carry a result field: {body}"
-    );
-}
-
-#[test]
-fn a_command_field_that_is_missing_is_refused_by_name() {
-    let agent = Agent::start();
-    let (status, body) = agent.sealed().run(&json::write(
-        &linklet_core::object! { "timeout_seconds" => 5i64 },
-    ));
-
-    assert_eq!(status, 400);
-    assert!(body.contains("command"), "{body}");
-}
-
-#[test]
-fn a_timeout_beyond_the_protocol_limit_is_refused_rather_than_clamped() {
-    // An agent that accepts an unbounded timeout from the network has been handed
-    // a way to be occupied forever.
-    let agent = Agent::start();
-    let (status, body) = agent.sealed().run(&json::write(
-        &linklet_core::object! { "command" => "echo x", "timeout_seconds" => 100_000i64 },
-    ));
-
-    assert_eq!(status, 400);
-    assert!(body.contains("timeout_seconds"), "{body}");
 }
 
 #[test]
@@ -418,94 +336,159 @@ fn several_commands_in_a_row_all_answer() {
     }
 }
 
-// --- who is allowed to ask ---------------------------------------------------
+// --- what is refused before a command runs -----------------------------------
 
-/// Sends one request with a hand-written `Authorization` header.
-///
-/// Written out rather than going through [`Agent::request`], because the whole
-/// point of these tests is the header that method always sends correctly.
-fn send_without_the_right_token(
-    agent: &Agent,
-    method: &str,
-    path: &str,
-    body: &str,
-    header: Option<&str>,
-) -> String {
-    use std::io::Write as _;
+#[test]
+fn a_message_that_is_not_json_is_refused_and_no_command_runs() {
+    // Sealed, because an unsealed body never opens at all -- which is a different
+    // refusal, tested below. This one is about a body that arrived intact and was not
+    // a message.
+    let agent = Agent::start();
+    let reason = refusal(agent.sealed().ask_json("not json at all"));
 
-    let credential = match header {
-        Some(value) => format!("{TOKEN_HEADER}: {value}\r\n"),
-        None => String::new(),
-    };
-    let request = format!(
-        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{credential}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
+    assert!(!reason.is_empty(), "a refusal has to say something");
+    assert!(
+        !reason.contains("exit_code"),
+        "a refusal must not carry a result field: {reason}"
     );
-
-    let mut stream = std::net::TcpStream::connect(("127.0.0.1", agent.port))
-        .expect("the agent should be reachable");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .expect("a timeout");
-    stream
-        .write_all(request.as_bytes())
-        .expect("writing the request");
-    stream.flush().expect("flushing");
-
-    let mut raw = String::new();
-    stream.read_to_string(&mut raw).expect("reading the reply");
-    raw
 }
 
 #[test]
-fn a_request_with_no_token_is_refused_and_no_command_runs() {
-    // The whole point of the token, over a real socket: someone who can reach the
-    // port but does not know the secret gets nothing.
+fn an_operation_this_version_does_not_have_is_refused_with_the_ones_it_does() {
+    // A version skew is a list rather than a puzzle. The alternative -- an agent that
+    // guessed at an unknown op -- turns a broken client into a command that runs.
     let agent = Agent::start();
-    let body = r#"{"command":"echo should-not-run","timeout_seconds":5}"#;
-    let raw = send_without_the_right_token(&agent, "POST", wire::RUN_PATH, body, None);
+    let reply = agent.sealed().ask_json(r#"{"op": "install"}"#);
 
+    let reason = refusal(reply);
+    assert!(reason.contains("install"), "{reason}");
     assert!(
-        raw.starts_with("HTTP/1.1 401"),
-        "expected a refusal, got: {}",
-        raw.lines().next().unwrap_or("")
+        reason.contains("identity") && reason.contains("run"),
+        "the refusal should list the operations that exist: {reason}"
+    );
+}
+
+#[test]
+fn a_command_field_that_is_missing_is_refused_by_name() {
+    let agent = Agent::start();
+    let reply = agent
+        .sealed()
+        .ask_json(r#"{"op": "run", "timeout_seconds": 5}"#);
+
+    let reason = refusal(reply);
+    assert!(reason.contains("command"), "{reason}");
+}
+
+#[test]
+fn a_timeout_beyond_the_protocol_limit_is_refused_rather_than_clamped() {
+    // An agent that accepts an unbounded timeout from the network has been handed
+    // a way to be occupied forever.
+    let agent = Agent::start();
+    let reply = agent
+        .sealed()
+        .ask_json(r#"{"op": "run", "command": "echo x", "timeout_seconds": 100000}"#);
+
+    let reason = refusal(reply);
+    assert!(reason.contains("timeout_seconds"), "{reason}");
+}
+
+// --- who is allowed to ask ---------------------------------------------------
+
+#[test]
+fn a_session_that_did_not_open_is_refused_in_the_clear_and_runs_nothing() {
+    // The whole point of the token, over a real socket: someone who can reach the
+    // port but does not know the secret gets nothing. The agent's hello is accepted
+    // by anyone -- the token is mixed into the key derivation, so the refusal cannot
+    // happen until the caller seals something.
+    let agent = Agent::start();
+    let mut conversation = agent.sealed_with(WRONG_TOKEN);
+    let reply = conversation.ask(&Request::Run(RunRequest {
+        command: "echo should-not-run".to_string(),
+        timeout_seconds: 5,
+    }));
+
+    let reason = refusal(reply);
+    assert_eq!(
+        reason,
+        linklet_core::auth::unauthorized_reason(),
+        "the refusal should be the agent's one sentence about a token"
     );
     assert!(
-        !raw.contains("should-not-run"),
-        "the command must not have run: {raw}"
+        !reason.contains("should-not-run"),
+        "no outcome may be produced for a session that did not open: {reason}"
     );
 }
 
 #[test]
 fn a_wrong_token_is_refused_the_same_way_as_a_missing_one() {
-    // Same status and same words, so the reply cannot be used to learn whether a
-    // guess was closer than no guess. Which of the two happened is information a
-    // caller who has the token does not need and one who does not should not get.
+    // Same words, so the reply cannot be used to learn whether a guess was closer than
+    // no guess. Which of the two happened is information a caller who has the token
+    // does not need and one who does not should not get.
+    //
+    // "Missing" is not a case the agent can see any more: a caller with no token
+    // cannot begin a handshake at all, and that is refused by the *client* before a
+    // socket is opened -- see `linklet-client/tests/against_agent.rs`. What is left to
+    // check here is that every unusable token gets one sentence.
     let agent = Agent::start();
-    let body = r#"{"command":"echo nope","timeout_seconds":5}"#;
-    let raw = send_without_the_right_token(
-        &agent,
-        "POST",
-        wire::RUN_PATH,
-        body,
-        Some(&format!("{TOKEN_SCHEME}wrong-token-0123456")),
-    );
+    let reasons: Vec<String> = ["", "short", WRONG_TOKEN]
+        .into_iter()
+        .map(|token| {
+            refusal(agent.sealed_with(token).ask(&Request::Run(RunRequest {
+                command: "echo nope".to_string(),
+                timeout_seconds: 5,
+            })))
+        })
+        .collect();
 
-    assert!(raw.starts_with("HTTP/1.1 401"), "{raw}");
-    assert!(raw.contains("missing or wrong"), "{raw}");
+    assert!(
+        reasons.windows(2).all(|pair| pair[0] == pair[1]),
+        "every unusable token should get the same answer: {reasons:?}"
+    );
+    assert_eq!(reasons[0], linklet_core::auth::unauthorized_reason());
+}
+
+// --- something that is not this protocol at all -------------------------------
+
+#[test]
+fn a_service_that_is_not_this_one_gets_silence_and_not_a_frame() {
+    // The operator's first mistake: the host pointed at the wrong port. Answering in a
+    // language the peer does not read would be noise on someone else's connection --
+    // and the refusal that names the byte is on *this* side, where it is useful.
+    let agent = Agent::start();
+    let mut stream = agent.stream();
+    stream
+        .write_all(b"GET / HTTP/1.1\r\n\r\n")
+        .expect("writing another protocol");
+    stream.flush().expect("flushing");
+
+    let mut connection = Connection::with_budget(stream, TEST_BUDGET);
+    let error = connection
+        .read_frame(Kind::Hello)
+        .expect_err("a silent close, not a reply");
+    assert!(
+        matches!(error, ConnectionError::Ended),
+        "expected the agent to close without answering, got {error:?}"
+    );
 }
 
 #[test]
-fn the_identity_path_is_behind_the_token_too() {
-    // Otherwise the 404-versus-405 distinction becomes a way to map the surface
-    // without a token, which is the small leak that makes a bigger one possible.
+fn a_frame_of_the_wrong_kind_is_refused_with_the_reason_in_it() {
+    // Unlike the case above, this peer *is* speaking frames -- it sent a valid one of
+    // the wrong kind -- so it can read a refusal and the refusal names both kinds.
     let agent = Agent::start();
-    let raw = send_without_the_right_token(&agent, "GET", wire::IDENTITY_PATH, "", None);
+    let mut connection = Connection::with_budget(agent.stream(), TEST_BUDGET);
+    connection
+        .write_frame(Kind::Sealed, b"sealed before any hello")
+        .expect("writing");
 
-    assert!(raw.starts_with("HTTP/1.1 401"), "{raw}");
+    let frame = connection
+        .read_frame(Kind::Hello)
+        .expect("a refusal rather than silence");
+    let reason = refusal(reply(&frame));
+
     assert!(
-        !raw.contains("linklet-agent"),
-        "the identity must not leak to an unauthenticated caller: {raw}"
+        reason.contains("hello") && reason.contains("sealed"),
+        "the refusal should name both kinds: {reason}"
     );
 }
 

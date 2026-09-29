@@ -41,7 +41,15 @@ pub enum ConnectionError {
         /// The budget, in milliseconds, because a budget may be under a second.
         millis: u64,
     },
-    /// The peer closed the connection.
+    /// The peer is gone: it closed the connection, or it was reset.
+    ///
+    /// **The two are not told apart**, and that is a decision rather than an
+    /// oversight. A clean close and a reset differ in whether bytes in flight were
+    /// lost, which the operating system knows and a protocol reader does not -- and
+    /// the thing a caller does about either is the same, because there is no message
+    /// and there will not be one. On Windows an abrupt close also carries a localised
+    /// message, and reporting that would put a sentence in some other language in
+    /// front of a user of a tool that speaks one.
     Ended,
     /// More messages arrived than the declared size allows.
     Budget {
@@ -213,21 +221,34 @@ impl Connection {
     /// the protocol refuses to do -- see `docs/transfer.md`, item 2 -- and the shape
     /// of this API is what makes that a choice rather than an accident.
     ///
+    /// The write is bounded by the same budget as a read. A reply can be as large as a
+    /// command's output, and a peer that stops reading fills its own window and leaves
+    /// this side blocked in `write_all` for as long as the socket lives -- which on
+    /// the agent is a thread, permanently, for a caller that never reads. Item 4 of
+    /// `docs/framing.md` says every write result is checked; a write that never
+    /// returns has no result to check, so it gets a deadline as well.
+    ///
     /// # Errors
     ///
     /// [`ConnectionError::Frame`] when the payload could not be framed at all, and
     /// [`ConnectionError::Io`] when the socket refused any part of the write.
     pub fn write_frame(&mut self, kind: Kind, payload: &[u8]) -> Result<(), ConnectionError> {
         let head = frame::header(kind, payload.len())?;
+        let budget = self.budget;
 
         // `write_all`, and both results checked. A truncated write that nobody
         // noticed is a receiver waiting for the rest of a message the sender
         // believes it sent.
-        self.stream
-            .write_all(&head)
+        if let Err(error) = self
+            .stream
+            .set_write_timeout(Some(budget))
+            .and_then(|()| self.stream.write_all(&head))
             .and_then(|()| self.stream.write_all(payload))
             .and_then(|()| self.stream.flush())
-            .map_err(|error| self.failed("writing", error))
+        {
+            return Err(self.failed("writing", error));
+        }
+        Ok(())
     }
 
     /// Reads exactly `buffer.len()` bytes, or says why it could not.
@@ -259,7 +280,16 @@ impl Connection {
     /// reading the remainder as though it were a boundary.
     fn failed(&mut self, doing: &str, error: std::io::Error) -> ConnectionError {
         let refusal = match error.kind() {
-            ErrorKind::UnexpectedEof => ConnectionError::Ended,
+            // A clean close and an abrupt one mean the same thing to a reader: there is
+            // no message and there will not be one. The difference is the operating
+            // system's, and on Windows an abrupt close arrives as a reset carrying a
+            // **localised** message -- which would otherwise be the sentence a user
+            // reads, in a language the rest of this tool does not speak.
+            ErrorKind::UnexpectedEof
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::BrokenPipe
+            | ErrorKind::NotConnected => ConnectionError::Ended,
             ErrorKind::WouldBlock | ErrorKind::TimedOut => ConnectionError::Timeout {
                 millis: self.budget.as_millis() as u64,
             },

@@ -278,9 +278,14 @@ fn the_client_gives_up_later_than_the_command_deadline() {
 
 #[test]
 fn a_host_with_the_wrong_token_is_refused_and_the_command_never_runs() {
-    // The end of the chain, from the caller's side: a secret that does not match
-    // is a call that could not be made, and the message says the token was missing
-    // or wrong rather than leaving the caller to guess.
+    // The end of the chain, from the caller's side: a secret that does not match is a
+    // call that could not be made, and the message says the token was missing or wrong
+    // rather than leaving the caller to guess.
+    //
+    // The refusal arrives **unsealed**, because the session that would have sealed it
+    // is exactly what failed to exist -- see `linklet-agent`'s server. So this test is
+    // also the one that pins the diagnostic: without that path the caller would get
+    // "the sealed reply did not open", which is true and useless.
     let agent = Agent::start();
     let wrong = AgentAddress::new(agent.address.text.clone())
         .expect("the same address")
@@ -297,8 +302,12 @@ fn a_host_with_the_wrong_token_is_refused_and_the_command_never_runs() {
 
     assert!(matches!(error, CallError::Refused(_)), "{error:?}");
     let text = render_call_error(&error);
-    assert!(text.contains("401"), "{text}");
     assert!(text.contains("missing or wrong"), "{text}");
+    assert!(
+        !text.contains("did not open"),
+        "a wrong token should be reported as a wrong token and not as a \
+         decryption failure: {text}"
+    );
 }
 
 #[test]

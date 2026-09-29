@@ -192,8 +192,40 @@ fn a_peer_that_hangs_up_is_told_apart_from_a_peer_that_is_silent() {
     );
 }
 
-// --- defence 3: the magic byte, at the layer that reads a stranger -------------
+#[test]
+fn an_abrupt_close_reads_the_same_as_a_clean_one() {
+    // Windows sends a reset rather than a FIN when a socket is closed with unread
+    // bytes still in its queue, and the reset arrives carrying a **localised**
+    // operating-system message. A protocol reader cannot tell the two apart in any way
+    // that changes what it does, so both read as "the peer is gone" -- which also means
+    // a refusal in another language never reaches a user.
+    //
+    // The test holds either way: if this machine sends a FIN instead, the assertion is
+    // the same one, and that is the point being pinned.
+    let (mut client, server) = pair();
+    client
+        .write_all(b"bytes the peer never reads")
+        .expect("writing before the peer closes");
+    client.flush().expect("flushing");
+    drop(server);
+    std::thread::sleep(Duration::from_millis(50));
 
+    let mut connection = Connection::with_budget(client, BRIEF);
+    let error = connection
+        .read_frame(Kind::Hello)
+        .expect_err("the peer is gone");
+
+    assert!(
+        matches!(error, ConnectionError::Ended),
+        "expected a hang-up, got {error:?}"
+    );
+    assert!(
+        error.to_string().is_ascii(),
+        "the refusal must not be the operating system's own words: {error}"
+    );
+}
+
+// --- defence 3: the magic byte, at the layer that reads a stranger -------------
 #[test]
 fn a_first_byte_that_is_not_the_magic_is_refused_by_name() {
     // Something else is listening on this port -- an HTTP server, most likely, which

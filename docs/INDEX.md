@@ -102,7 +102,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
 | `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
-| `crates/linklet-agent/src/http.rs` | the two-message connection, and the refusals |
+| `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
 | `crates/linklet-agent/src/execute.rs` | running a command, and killing the tree it started |
 | `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |

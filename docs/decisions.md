@@ -87,7 +87,8 @@ affected tools that read git's configuration -- which cargo does, because of
 | component | hand-written | why it is defensible, or not |
 |---|---|---|
 | JSON codec | **was**, 672 lines; now 345 delegating to `serde_json` | It was correct and tested, and it was still the wrong call: it parsed untrusted input from the network, and a hand-written parser in that position is the classic remote-vulnerability shape. The 345 lines that remain are the domain enum and the two conversions between it and `serde_json`, not a parser. |
-| HTTP (client and server) | yes, ~300 lines each | Only `Content-Length` framing, one request per connection, in a protocol this project owns both ends of. Defensible. |
+| HTTP (client and server) | **deleted at M7** | ~300 lines each, and the argument for keeping them was that only `Content-Length` framing was involved in a protocol this project owns both ends of. It was defensible and it was still not the right call -- see D4, which had already written down what would replace it. |
+| Framing (client and server) | yes, ~250 lines including tests | The replacement for HTTP, and a smaller surface: a magic byte, a kind byte, a 32-bit length. `crates/linklet-core/src/frame.rs` lists the ten ways it can go wrong and where each defence lives, six inline and four in the connection. Unlike a request parser, it has no grammar to be right about -- and everything it carries goes into an AEAD that refuses a message it did not authenticate. |
 | MCP framing | yes, ~240 lines | Newline-delimited JSON-RPC, no batching, no negotiation. Defensible. |
 | SHA-256 | **deleted** | Not defensible. Published vectors and it still failed three times. |
 | Channel | uses vetted crates | Not defensible to hand-roll. See above. |
@@ -175,6 +176,39 @@ nobody needs, and a length-prefixed frame would be about fifty lines instead of 
 hundred and fifty. That is the design that fits the channel, and it is written here
 rather than done, because replacing a working protocol is work that has to be paid
 for by something.
+
+### Done at M7, and the option that was taken
+
+The transfer was the something. A transfer is a manifest plus N chunks on one
+connection, and the two-message HTTP shape had no room for it: every chunk would have
+been a request, and the reason for a length-prefixed frame -- the message count is
+bounded by the declared size rather than by a constant -- only exists once you stop
+pretending each message is a request.
+
+So the fourth option was taken, in the form the last paragraph above describes:
+`crates/linklet-agent/src/http.rs` is gone, `crates/linklet-adapters/src/connection.rs`
+is what replaced it, and `linklet_core::wire` now carries a request and a reply rather
+than a method, a path and a status. What that cost and bought, stated rather than
+implied:
+
+- **The status code is gone, and the distinction it carried is stronger for it.** The
+  protocol's real distinction was never 200-versus-400; it was "a command ran and
+  failed" versus "a request could not be made". HTTP said both with a status line and
+  a body shape, and the client had to know which. Now a reply is a result or a
+  refusal, and a result holding an exit code of 1 cannot be read as a transport
+  failure because it is not one.
+- **`tiny_http` and `ureq` were never needed**, which retires the whole of the
+  `ureq`-connection-pool question above. A protocol this project defines both ends of
+  does not need a library to disagree with itself about connection reuse.
+- **The reading surface facing attackers got smaller, which was the point.** A
+  request line, headers and a `Content-Length` became a six-byte header whose ten
+  failure modes are listed in `crates/linklet-core/src/frame.rs` and whose four
+  connection-level defences are in `docs/framing.md`. The parser that had to be right
+  about a grammar nobody used is gone; what replaced it is not a parser at all.
+- **What it cost**: a protocol version that does not negotiate, so an old host and a
+  new agent fail with "the first byte is 0x47" or an unknown `op` rather than with a
+  406. That is a real cost and it is accepted for a tool with one deployment at a
+  time -- `docs/ROADMAP.md` M9 is where version negotiation would go.
 
 ---
 
