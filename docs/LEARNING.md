@@ -56,10 +56,10 @@ In rough order of how often each one helps:
   negative number, and by the range check happening once, in one place.)
 - **Read the test file top to bottom as prose.** The test names are the
   specification, in order.
-- **Ask why the rule exists before working around it.** Every rule in
-  `AGENTS.md` has its reason written next to it. If the reason turns out not to
-  apply, change the rule -- but only after saying out loud which reason stopped
-  applying. A rule that gets worked around silently stops being a rule.
+- **Ask why the rule exists before working around it.** Each rule in
+  `AGENTS.md` has its reason in `docs/rationale.md`. If the reason turns out not
+  to apply, change the rule -- but only after saying out loud which reason
+  stopped applying. A rule that gets worked around silently stops being a rule.
 
 ## The one thing not to do
 

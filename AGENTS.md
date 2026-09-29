@@ -1,37 +1,41 @@
-# Rules for working in this repository
+# Rules
 
-This file is for an AI agent (and for a human who wants the same constraints).
-It deliberately contains only rules that are **checkable** or that a reasonable
-person would otherwise get wrong. Explanation of *why* each rule exists lives
-next to the rule, in one line -- a rule whose reason is not obvious gets
-"cleaned up" by the next person, and then it is not a rule any more.
+Rules only. The reason for each one is in `docs/rationale.md` -- read it when
+you are about to change a rule, not before.
 
-Keep this file short. Every line added here is a line every future session must
-read, and a rule that is not enforced will be ignored, which teaches the reader
-that the rest can be ignored too.
+## Docs
+
+| file | read it when |
+|---|---|
+| `README.md` | what the tool is, and what it deliberately is not |
+| `docs/ROADMAP.md` | what to build next, and what was parked on purpose |
+| `docs/LEARNING.md` | the task loop: red, spec, smallest change, verify |
+| `docs/review-m1.md` | the standard M1 is judged against, published early |
+| `docs/rationale.md` | why a rule below exists |
+| `docs/INDEX.md` | the map of this project, for keeping it current |
 
 ## 1. Dependency direction
 
-`linklet-core` must not do I/O, know about the OS, or depend on any crate.
+`linklet-core` does no I/O and depends on no crate.
 
-- Enforced by the compiler: `linklet-core` has no `[dependencies]` section, and
-  the test `architecture::core_has_no_dependencies` fails if one appears.
-- The direction is `cli -> adapters -> core`. Never the reverse.
-- If you are about to add a dependency to `core`, the answer is almost always
-  that the new code belongs in `adapters` behind a trait that `core` defines.
+- The compiler enforces it: `core` has no `[dependencies]`, and
+  `tests/architecture.rs` fails if one appears.
+- Direction is `cli -> adapters -> core`. Never the reverse.
+- Something in `core` needs I/O? It belongs in `adapters`, behind a trait
+  `core` defines.
 
 ## 2. Tests before implementation
 
-Write the test first and run it. It must fail, and it must fail **for the
-reason you intended** -- not because it does not compile for an unrelated
-reason, and not because you forgot to call it. A test that has never been
-observed failing is not evidence of anything.
+Write the test first. Run it. It must fail, and fail for the reason you meant --
+not a compile error, not a test that never runs. A test never seen failing is
+not evidence of anything.
 
-`cargo test --workspace` must be green before a commit.
+`cargo test --workspace` is green before a commit.
 
 ## 3. Definition of done
 
-A change is done when all of these hold:
+All four pass, plus the docs the change makes untrue are updated in the same
+commit.
 
 ```
 cargo fmt --all --check
@@ -40,41 +44,24 @@ cargo test --workspace
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-...and the documentation that the change makes untrue has been updated in the
-same commit. A doc that describes last week's behaviour is worse than no doc,
-because it is believed.
-
-The fourth line is not decoration: `cargo doc` treats a broken link between two
-documentation comments as a warning and carries on, so a `[`PortMissing`]` that
-stopped resolving stays broken and stays invisible.
-
 ## 4. Commits
 
-One logical change per commit. Message form:
+One logical change per commit. `<type>: <what, imperative>`, then why if it is
+not obvious. Types: `feat` `fix` `refactor` `test` `docs` `chore`.
 
-```
-<type>: <what changed, imperative>
-
-<why it changed, if it is not obvious from the what>
-```
-
-Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`.
 If the message needs the word "also", it is two commits.
 
 ## 5. Never commit
 
-Secrets, tokens, logs, build output, release archives. See `.gitignore`; if you
-find yourself reaching for `git add -f`, stop and fix the ignore rule instead.
+Secrets, tokens, logs, build output, release archives. If you reach for
+`git add -f`, fix `.gitignore` instead.
 
 ## 6. Public API
 
-Every public item has a doc comment saying what it does and, where a caller
-could reasonably guess wrong, what it does *not* do. No `unwrap()` in library
-code: a returned error is information, a panic is a bug report from a user.
+Doc comment on every public item: what it does, and what it does not where a
+caller could guess wrong. No `unwrap()` in library code.
 
 ## 7. Language
 
-All identifiers, comments, doc comments, and documentation in English. The
-project's upstream (lanlink) is ASCII-only for tooling reasons and this repo
-keeps the same rule: no non-ASCII bytes in committed files except where a test
-needs them as data, in which case they are written as escapes.
+English everywhere. ASCII in every committed file; non-ASCII test data is
+written as escapes.

@@ -8,6 +8,34 @@ standard applied to it. It is also how any real review should work -- say what
 
 What M1 is judged on, in priority order:
 
+> **Applied, M1 complete.** The implementation is in
+> `crates/linklet-core/src/target.rs`. The criteria below are kept exactly as
+> they were written -- unedited -- because a rubric that gets tidied up after
+> the fact stops being evidence that it came first. The one thing this file
+> gained afterwards is this paragraph, saying what happened.
+>
+> Outcome against each heading:
+>
+> 1. **Passes, for the right reason.** 19 specification tests and 2 architecture
+>    guards green. The red state was observed first: 19 failing, all on
+>    `unimplemented!` at one line, not on a compile error.
+> 2. **Decisions in one place.** The port range check appears once, at the
+>    range test near the end of `parse_targets`. Nothing re-derives it.
+> 3. **Refuses rather than guesses.** `"a:1,"`, `"a"` and `"a:99999999999999999999"`
+>    all refuse; the huge port saturates to `u64::MAX` rather than being
+>    reported as unparseable.
+> 4. **Readable without the tests.** The eight rules in the doc comment are in
+>    the same order as the code, one `if` each.
+> 5. **Failure cases checked.** The specification was run red before the code
+>    existed, and the whole suite was run after.
+>
+> One thing this review added to the criteria rather than found satisfied by
+> them: rule 6 of the documented order (an empty host, `":80"`) had **no test**
+> when the order was first written down, so the documentation was claiming
+> behaviour nothing pinned. The test was added, and observed failing, before the
+> implementation was written. That is recorded here because it is the failure
+> mode this repository exists to avoid, and it happened in this repository.
+
 ## 1. Does it pass, and does it pass for the right reason?
 
 ```sh

@@ -1,12 +1,45 @@
 # linklet
 
-A small, honest tool for checking and driving machines on a LAN, built to be
-called by an AI agent rather than by a person reading a manual.
+A small, honest tool for checking machines on a LAN, built to be called by an AI
+agent rather than by a person reading a manual.
 
-> **Status: skeleton.** Nothing is implemented yet. The types in
-> `linklet-core` are declared and the tests that define their behaviour are
-> written and currently failing. That is the intended starting state; see
-> `docs/ROADMAP.md`.
+> **Status: milestone M3.** One command works end to end: it parses a list of
+> targets, connects to each, and reports what it observed. Deploying a build,
+> reading logs and killing processes are M4 and beyond -- see `docs/ROADMAP.md`.
+
+## What it does
+
+```console
+$ linklet check 10.0.0.5:8787,10.0.0.6:8787
+live 10.0.0.5:8787 connected
+dead 10.0.0.6:8787 the machine refused the connection
+$ echo $?
+1
+```
+
+One line per target, in the order the targets were given. `live`, `dead` or
+`unknown`, then the target as it was written, then the reason.
+
+`dead` covers two different situations, and the reason is where they are told
+apart, because the difference matters to whoever is reading:
+
+| output | what it means |
+|---|---|
+| `the machine refused the connection` | the machine is up and reachable; nothing is listening on that port |
+| `no answer within 5 s` | nothing came back at all -- off, filtered, or slow |
+
+### Exit codes
+
+| code | meaning |
+|---|---|
+| 0 | the run completed and everything asked about is alive |
+| 1 | the run completed and something is not |
+| 2 | the invocation was wrong |
+| 3 | the run was refused before anything was looked at |
+
+The distinction between 1 and 3 is the one an agent needs: "the machines are
+down" and "the tool could not start" send it to different places, and collapsing
+them into one non-zero code loses exactly the information it came for.
 
 ## The problem
 
@@ -29,8 +62,8 @@ accident. This tool:
   file copy; there is nothing to talk to yet)
 - does not keep a database, a service, or a daemon on the host
 - does not run on anything but Windows targets, until someone needs otherwise
-- does not guess: when it cannot determine something, it returns "unknown"
-  with the reason, never a plausible default
+- does not guess: when it cannot determine something, it returns `unknown` with
+  the reason, never a plausible default
 
 ## The one architectural rule
 
@@ -49,6 +82,14 @@ The rule pays for itself in exactly one way, and it is the one that matters:
 temp files, and no cleanup.** When a test needs a real machine to run, it stops
 being run, and then the behaviour it covered rots.
 
+It is worth being concrete about what that buys. The core's 47 behavioural tests
+-- parsing, reachability policy, the output format, the exit codes -- run in
+**under 0.1 seconds** and cover timeouts without anything timing out. (Two more
+tests guard the layer rule itself.) The seven tests that need a real socket live
+in `linklet-adapters` and take two seconds, because Windows takes about two
+seconds to report a refused connection. Those two seconds are the entire reason
+the trait is declared in the core.
+
 This rule is enforced by the compiler, not by review: `linklet-core` has no
 dependencies, so it *cannot* open a socket or read a file.
 
@@ -61,5 +102,5 @@ cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
-Read `AGENTS.md` before your first commit. `docs/ROADMAP.md` says where the
-next piece of work is, and `docs/LEARNING.md` says how to do it.
+Read `AGENTS.md` before your first commit -- it is the rules only, one screen
+long. `docs/INDEX.md` is the map of everything else.
