@@ -16,6 +16,49 @@ the change that made it wrong.
 | How will my work be judged? | `docs/review-m1.md` |
 | What is the state of the code? | below |
 
+## What kind of document is it
+
+Not every document here goes out of date the same way, and treating them alike
+is how a repository ends up with a folder full of things nobody dares delete.
+Four kinds, distinguished by **what keeps them true**:
+
+| kind | kept true by | goes stale when | in this repository |
+|---|---|---|---|
+| **Spec** | the tests | the tests change | `tests/*.rs` |
+| **Rule** | being obeyed | someone changes it on purpose | `AGENTS.md`, `docs/COMMITS.md` |
+| **Current** | a commit | the code moves | `README.md`, `docs/ROADMAP.md`, this file |
+| **Decision** | nothing -- it is a moment | never | `docs/rationale.md`, `docs/review-m1.md` |
+
+The first three kinds belong in the repository, because someone doing next
+week's work gets it wrong without them. The fourth is where the trouble starts:
+a **decision** records what was true when it was written, so it does not go
+stale -- it accumulates. `docs/review-m1.md` is one: the criteria were published
+before the implementation and were left unedited on purpose, because a rubric
+tidied up afterwards is no longer evidence that it came first.
+
+**Records do not belong here.** A task brief, a progress log, a diff of a review
+round -- those are what a pull request description and a commit message are for.
+Git already stores them, searchably, attached to the change they describe. The
+project this one is modelled on kept 2.28 MB of such files in a working
+directory; none of it was tracked, which was the right call made by accident
+rather than by rule. A `docs/` that fills up with records is one where the four
+kinds above can no longer be told apart, and then nobody trusts any of it.
+
+The test for where something new goes: **will someone doing next week's work do
+it wrong without this?** Yes -- a file, in the repository. No -- a commit
+message, or nothing.
+
+| file | kind | what it holds |
+|---|---|---|
+| `AGENTS.md` | rule | the rules, one screen |
+| `docs/COMMITS.md` | rule | how to write a commit, with worked examples |
+| `README.md` | current | what the tool is and is not |
+| `docs/ROADMAP.md` | current | what to build next, and what was parked |
+| `docs/LEARNING.md` | rule | the task loop: red, spec, smallest change, verify |
+| `docs/INDEX.md` | current | this file |
+| `docs/rationale.md` | decision | why each rule exists, read when changing one |
+| `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
+
 ## The code
 
 Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
