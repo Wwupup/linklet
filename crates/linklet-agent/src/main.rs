@@ -18,10 +18,11 @@
 //!
 //! # What it does not do
 //!
-//! - **No authentication.** The token and the encrypted transport are not built
-//!   yet, so this listens on whatever it is told and answers anyone who can reach
-//!   the port. That is not a small omission: it belongs next in line, and until
-//!   then this is a tool for a network you control.
+//! - **No encryption.** A token is required and checked in constant time, so a
+//!   caller who does not know the secret gets nothing. But the token travels in
+//!   cleartext, so anyone who can read the network can read it and replay it.
+//!   That is a real limit and it is the next thing to fix, not a detail: a reader
+//!   who believes a token is encryption will use this where the difference matters.
 //! - **No keep-alive, no chunked encoding, one request per connection.** See
 //!   `http.rs` for why each of those is a refusal rather than a gap.
 //! - **No output cap.** A command that writes a gigabyte writes a gigabyte. The
@@ -34,6 +35,8 @@ mod execute;
 mod http;
 
 use std::net::TcpListener;
+
+use linklet_core::auth::Token;
 
 /// The port the agent listens on when it is not told.
 ///
@@ -49,6 +52,7 @@ usage:
 
 options:
   --port <port>   the port to listen on (default 8787)
+  --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
   -h, --help      print this
 ";
 
@@ -56,6 +60,7 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     let mut port = DEFAULT_PORT;
+    let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
         match argument.as_str() {
@@ -76,6 +81,13 @@ fn main() {
                     }
                 }
             }
+            "--token" => match iterator.next() {
+                Some(value) => token = Some(value.clone()),
+                None => {
+                    eprintln!("linklet-agent: --token needs a value");
+                    std::process::exit(2);
+                }
+            },
             other => {
                 eprintln!("linklet-agent: unexpected argument {other:?}");
                 eprintln!("{USAGE}");
@@ -83,6 +95,24 @@ fn main() {
             }
         }
     }
+
+    // Checked before the port is bound, so that a bad secret is a startup failure
+    // rather than a surprise at the first caller. A configuration error should be
+    // loud when it is made.
+    let Some(token) = token else {
+        eprintln!(
+            "linklet-agent: no token. Pass --token <secret> or set LINKLET_TOKEN.\\n\\
+             Anyone who can reach this port will be able to run commands without one."
+        );
+        std::process::exit(2);
+    };
+    let token = match Token::new(token) {
+        Ok(token) => token,
+        Err(error) => {
+            eprintln!("linklet-agent: {error}");
+            std::process::exit(2);
+        }
+    };
 
     // Bound before the banner is printed, so that "listening on" is only said
     // once it is true. A message that claims something before trying it is the
@@ -118,7 +148,8 @@ fn main() {
                 // A thread per connection. The agent answers a handful of calls
                 // at a time and each one is a command the caller asked for; a
                 // pool would be machinery bought with nothing.
-                std::thread::spawn(move || http::serve_connection(stream));
+                let token = token.clone();
+                std::thread::spawn(move || http::serve_connection(stream, &token));
             }
             // One failed accept is not a reason to stop serving. The listener is
             // still bound and the next caller may be fine.

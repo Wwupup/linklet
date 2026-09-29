@@ -30,6 +30,7 @@ use std::time::Duration;
 
 use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
+use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::wire::{self, RunRequest};
 use linklet_core::{
@@ -372,7 +373,14 @@ impl ToolRunner for LiveRunner {
     }
 
     fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
-        exec_on(agent, command, timeout_seconds)
+        // The MCP server reads the token from the environment once at startup;
+        // see `run_mcp`. A tool argument would put the secret in the conversation.
+        exec_on(
+            agent,
+            command,
+            timeout_seconds,
+            token_from_environment().as_ref(),
+        )
     }
 }
 
@@ -383,11 +391,14 @@ impl ToolRunner for LiveRunner {
 /// the one the protocol was built around: a call that could not be made is
 /// `is_error`, and a call that was made and went badly is a result carrying bad
 /// news.
-fn exec_on(agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
-    let address = match AgentAddress::new(agent) {
+fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Token>) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
         Ok(address) => address,
         Err(error) => return ToolOutcome::failed(render_call_error(&error)),
     };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
 
     let request = RunRequest {
         command: command.to_string(),
@@ -530,7 +541,7 @@ fn run_exec(arguments: &[String]) -> u8 {
     // from pieces would be a second interpretation of the caller's quoting.
     let command = words.join(" ");
 
-    let outcome = exec_on(&agent, &command, timeout);
+    let outcome = exec_on(&agent, &command, timeout, token_from_environment().as_ref());
     println!("{}", outcome.text);
 
     if outcome.is_error {
@@ -539,6 +550,26 @@ fn run_exec(arguments: &[String]) -> u8 {
         ExitCode::REFUSED
     } else {
         exit_code_from_text(&outcome.text)
+    }
+}
+
+/// The token this host presents, from the environment.
+///
+/// The environment rather than a flag, so that the secret does not appear in a
+/// process listing or a shell history. `LINKLET_TOKEN` is the same variable the
+/// agent reads, so a bench with both ends on one machine needs it set once.
+///
+/// An unusable token is reported and treated as absent rather than refused: the
+/// caller finds out from a 401 that names the token, which is the same thing that
+/// happens when it is wrong, and one message for one problem is better than two.
+fn token_from_environment() -> Option<Token> {
+    let secret = std::env::var("LINKLET_TOKEN").ok()?;
+    match Token::new(secret) {
+        Ok(token) => Some(token),
+        Err(error) => {
+            eprintln!("linklet: LINKLET_TOKEN is unusable: {error}");
+            None
+        }
     }
 }
 

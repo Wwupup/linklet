@@ -23,6 +23,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
+use linklet_core::auth::{self, Token};
 use linklet_core::json;
 use linklet_core::wire::{self, WireError};
 
@@ -42,6 +43,8 @@ pub struct Request {
     pub path: String,
     /// The body, or empty.
     pub body: String,
+    /// The `Authorization` header, if it was sent.
+    pub authorization: Option<String>,
 }
 
 /// Why a request could not be read at all.
@@ -97,6 +100,7 @@ pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
     let path = target.split('?').next().unwrap_or("").to_string();
 
     let mut content_length: Option<usize> = None;
+    let mut authorization: Option<String> = None;
 
     loop {
         let mut line = String::new();
@@ -127,6 +131,7 @@ pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
                     ReadError::Malformed(format!("content-length is not a number: {value:?}"))
                 })?);
             }
+            "authorization" => authorization = Some(value.to_string()),
             // Named rather than ignored, so that a caller using it learns now
             // instead of through a body that never arrives.
             "transfer-encoding" => {
@@ -154,7 +159,12 @@ pub fn read_request(stream: &TcpStream) -> Result<Request, ReadError> {
         }
     };
 
-    Ok(Request { method, path, body })
+    Ok(Request {
+        method,
+        path,
+        body,
+        authorization,
+    })
 }
 
 /// Writes a reply and closes.
@@ -186,7 +196,19 @@ pub fn write_reply(
 /// Pure: it takes a parsed request and returns a status and a body. The socket is
 /// somebody else's problem, which is what lets every routing and protocol case be
 /// tested without binding a port.
-pub fn answer(request: &Request) -> (u16, String) {
+pub fn answer(request: &Request, expected: &Token) -> (u16, String) {
+    // Authentication first, before the path is even looked at. A request that is
+    // not from someone who knows the secret gets the same answer whatever it was
+    // asking for, so the reply cannot be used to discover which paths exist.
+    let presented = request
+        .authorization
+        .as_deref()
+        .and_then(auth::token_from_header);
+    let authorized = presented.is_some_and(|token| auth::token_matches(expected.expose(), token));
+    if !authorized {
+        return (auth::UNAUTHORIZED, json::write(&auth::unauthorized_body()));
+    }
+
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", path) if path == wire::IDENTITY_PATH => (
             200,
@@ -243,9 +265,9 @@ pub fn answer(request: &Request) -> (u16, String) {
 /// Errors are answered rather than logged and dropped. A peer that gets nothing
 /// back has to guess whether the agent is slow, dead, or refusing, and guessing
 /// is what this project exists to remove.
-pub fn serve_connection(mut stream: TcpStream) {
+pub fn serve_connection(mut stream: TcpStream, expected: &Token) {
     let (status, body) = match read_request(&stream) {
-        Ok(request) => answer(&request),
+        Ok(request) => answer(&request, expected),
         Err(error) => (
             400,
             json::write(&wire::wire_error_to_json(&WireError::BadRequest(
@@ -257,6 +279,7 @@ pub fn serve_connection(mut stream: TcpStream) {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
         _ => "Unknown",

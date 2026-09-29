@@ -23,6 +23,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod auth;
 mod error;
 pub mod json;
 mod outcome;

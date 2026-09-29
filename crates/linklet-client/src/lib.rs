@@ -21,6 +21,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+use linklet_core::auth::{TOKEN_HEADER, TOKEN_SCHEME, Token};
 use linklet_core::json;
 use linklet_core::wire::{self, RunOutcome, RunRequest};
 
@@ -76,6 +77,14 @@ const REPLY_ALLOWANCE: Duration = Duration::from_secs(10);
 pub struct AgentAddress {
     /// `host:port`, exactly as given.
     pub text: String,
+    /// The secret to present, if the agent has been configured with one.
+    ///
+    /// Optional because an agent on a bench with no token is a real way to work,
+    /// and making it required would mean inventing a token for the case where
+    /// nobody cares. What is not optional is saying so: an agent the caller cannot
+    /// authenticate against answers 401, and the message says the token was
+    /// missing or wrong rather than leaving the caller to guess.
+    pub token: Option<Token>,
 }
 
 impl AgentAddress {
@@ -100,7 +109,13 @@ impl AgentAddress {
             )));
         }
 
-        Ok(Self { text })
+        Ok(Self { text, token: None })
+    }
+
+    /// The same address, presenting this secret.
+    pub fn with_token(mut self, token: Token) -> Self {
+        self.token = Some(token);
+        self
     }
 }
 
@@ -131,6 +146,24 @@ pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
         .ok_or_else(|| CallError::Protocol("the identity reply has no name".to_string()))
 }
 
+/// The credential line, or nothing when there is no token.
+///
+/// Built in one place so that the two request builders cannot disagree about the
+/// header name or the scheme -- a client that sent a bare token on one path and a
+/// `Bearer` one on the other would work until an agent stopped accepting one of
+/// them.
+fn authorization_line(address: &AgentAddress) -> String {
+    match &address.token {
+        // A raw string, so that `\r\n` here is the escape the format machinery
+        // understands rather than two literal backslashes. Written the other way
+        // this produced a header glued to the next one, which the agent read as
+        // no credential at all and refused with a 401 -- a wrong answer that
+        // looked exactly like a wrong token.
+        Some(token) => format!("{TOKEN_HEADER}: {TOKEN_SCHEME}{}\r\n", token.expose()),
+        None => String::new(),
+    }
+}
+
 /// One `POST`, and the body that came back.
 fn post(
     address: &AgentAddress,
@@ -141,12 +174,14 @@ fn post(
     let request = format!(
         "POST {path} HTTP/1.1\r\n\
          Host: {}\r\n\
+         {}\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
          Connection: close\r\n\
          \r\n\
          {body}",
         address.text,
+        authorization_line(address),
         body.len()
     );
 
@@ -159,9 +194,11 @@ fn get(address: &AgentAddress, path: &str) -> Result<String, CallError> {
     let request = format!(
         "GET {path} HTTP/1.1\r\n\
          Host: {}\r\n\
+         {}\
          Connection: close\r\n\
          \r\n",
-        address.text
+        address.text,
+        authorization_line(address)
     );
     exchange(address, &request, REPLY_ALLOWANCE)
 }

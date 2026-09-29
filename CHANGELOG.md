@@ -11,6 +11,14 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
+- **A shared token is required to run anything.** The agent refuses a request
+  without one, with the same 401 and the same words whether the token was absent
+  or wrong -- which of the two happened is information a caller with the token
+  does not need and one without it should not get. The host reads `LINKLET_TOKEN`
+  from the environment rather than a flag, so the secret stays out of process
+  listings and shell history, and the agent refuses to start with a token shorter
+  than sixteen bytes.
+
 - **`linklet exec --agent <host:port> <command...>`**, and an `exec` MCP tool.
   The exit code is the command's own when it has one, so `linklet exec ... && next`
   behaves the way the command would; a call that could not be made gets the
@@ -71,6 +79,10 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Known gaps
 
+- **No encryption.** The token is compared in constant time, but it travels in
+  cleartext: anyone who can read the network can read it and replay it. A token is
+  not encryption, and a reader who believes otherwise will use this where the
+  difference decides whether someone else can run commands on the target.
 - No automated run against a second machine. `docs/testing.md` says what that
   costs and what it does not cover.
 - The MCP surface has never been read by a model with no other context. The tests

@@ -16,6 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use linklet_client::{AgentAddress, CallError, identity, render_call_error, run};
+use linklet_core::auth::Token;
 use linklet_core::wire::{self, RunRequest};
 
 /// Where the agent binary is.
@@ -50,6 +51,9 @@ fn agent_binary() -> PathBuf {
     path
 }
 
+/// The token these tests configure the agent with.
+const TEST_TOKEN: &str = "test-token-0123456789";
+
 /// A running agent, killed when the test ends.
 struct Agent {
     child: Child,
@@ -59,6 +63,7 @@ struct Agent {
 impl Agent {
     fn start() -> Self {
         let mut child = Command::new(agent_binary())
+            .env("LINKLET_TOKEN", TEST_TOKEN)
             .args(["--port", "0"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -82,7 +87,8 @@ impl Agent {
             .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"));
 
         let address = AgentAddress::new(format!("127.0.0.1:{port}"))
-            .expect("the banner's port is a valid address");
+            .expect("the banner port is a valid address")
+            .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
 
         Self { child, address }
     }
@@ -262,4 +268,49 @@ fn the_client_gives_up_later_than_the_command_deadline() {
         "the client waited {:?}, which is past its allowance",
         started.elapsed()
     );
+}
+
+#[test]
+fn a_host_with_the_wrong_token_is_refused_and_the_command_never_runs() {
+    // The end of the chain, from the caller's side: a secret that does not match
+    // is a call that could not be made, and the message says the token was missing
+    // or wrong rather than leaving the caller to guess.
+    let agent = Agent::start();
+    let wrong = AgentAddress::new(agent.address.text.clone())
+        .expect("the same address")
+        .with_token(Token::new("wrong-token-0123456789").expect("a usable test token"));
+
+    let error = run(
+        &wrong,
+        &RunRequest {
+            command: "echo should-not-run".to_string(),
+            timeout_seconds: 5,
+        },
+    )
+    .expect_err("the token does not match");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    let text = render_call_error(&error);
+    assert!(text.contains("401"), "{text}");
+    assert!(text.contains("missing or wrong"), "{text}");
+}
+
+#[test]
+fn a_host_with_no_token_against_a_secured_agent_is_refused_too() {
+    // The other half: an agent configured with a token refuses a caller who has
+    // none, which is the case a deployment hits when the environment variable is
+    // set on one side only.
+    let agent = Agent::start();
+    let no_token = AgentAddress::new(agent.address.text.clone()).expect("the same address");
+
+    let error = run(
+        &no_token,
+        &RunRequest {
+            command: "echo nope".to_string(),
+            timeout_seconds: 5,
+        },
+    )
+    .expect_err("no token");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
 }
