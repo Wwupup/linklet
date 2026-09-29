@@ -366,3 +366,139 @@ fn plain(component: Component<'_>) -> Option<String> {
         Component::ParentDir => Some("..".to_string()),
     }
 }
+
+/// The size of one chunk of a transfer.
+///
+/// One mebibyte, and the number matters twice. It is well under the frame ceiling so
+/// a chunk never meets it, and it is large enough that the per-chunk round trip --
+/// which `docs/transfer.md` chose to keep, so that the desynchronisation defence
+/// keeps holding -- costs something acceptable on a LAN. A smaller chunk buys
+/// latency back; a larger one buys throughput at the cost of holding more memory
+/// per connection.
+pub const CHUNK_BYTES: u64 = 1024 * 1024;
+
+/// How many chunks a transfer of `bytes` takes.
+///
+/// `docs/transfer.md` T11: the message count of a transfer is no longer bounded by a
+/// protocol constant, so it is bounded by the declared size instead, through this.
+///
+/// **The arithmetic is a function with tests rather than an expression inside a
+/// loop**, because an off-by-one here is either a transfer that never finishes or
+/// one that sends a chunk past its declared size -- and the second is T4.
+///
+/// A zero-byte transfer takes no chunks. It cannot happen, because the manifest
+/// refuses an empty file, and it is defined rather than left to fall out of the
+/// division.
+pub fn chunks_for(bytes: u64, chunk: u64) -> u64 {
+    if chunk == 0 {
+        return 0;
+    }
+    bytes.div_ceil(chunk)
+}
+
+/// What a transfer says about itself before any of it arrives.
+///
+/// Checked in full **before the first chunk is read**, which is the defence for T3
+/// and half of T11: a receiver that agreed to a size it had not checked would be
+/// agreeing to receive it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Manifest {
+    /// Where the receiving side should put it, relative to its root.
+    pub path: String,
+    /// How many bytes are coming.
+    pub bytes: u64,
+    /// The digest of what was sent, lowercase hex.
+    pub sha256: String,
+}
+
+/// Why a manifest was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestError {
+    /// The declared size is over [`MAX_TRANSFER_BYTES`].
+    TooLarge {
+        /// What it declared.
+        bytes: u64,
+    },
+    /// The declared size is zero.
+    ///
+    /// Refused for the same reason a zero-length frame is: nothing this protocol
+    /// sends is empty, and accepting it would make an empty file a valid transfer
+    /// that a caller might then believe.
+    Empty,
+    /// The digest is not 64 lowercase hex digits.
+    BadDigest {
+        /// What it was.
+        got: String,
+    },
+    /// The destination was refused.
+    Path(PathError),
+}
+
+impl std::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { bytes } => write!(
+                f,
+                "a transfer of {bytes} bytes is larger than the {MAX_TRANSFER_BYTES} byte limit"
+            ),
+            Self::Empty => write!(f, "a transfer of no bytes is not one this protocol sends"),
+            Self::BadDigest { got } => write!(
+                f,
+                "the digest is {got:?}, which is not 64 lowercase hex digits"
+            ),
+            Self::Path(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ManifestError {}
+
+impl From<PathError> for ManifestError {
+    fn from(error: PathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl Manifest {
+    /// Checks a manifest and resolves where it goes.
+    ///
+    /// Does the whole check in one call on purpose: a caller that could check the
+    /// size without checking the path, or the reverse, is a caller that will do one
+    /// of them and believe it did both.
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestError`] for every rule above.
+    pub fn check(&self, destination: &Destination) -> Result<PathBuf, ManifestError> {
+        if self.bytes == 0 {
+            return Err(ManifestError::Empty);
+        }
+        if self.bytes > MAX_TRANSFER_BYTES {
+            return Err(ManifestError::TooLarge { bytes: self.bytes });
+        }
+        if !is_lower_hex_64(&self.sha256) {
+            return Err(ManifestError::BadDigest {
+                got: self.sha256.clone(),
+            });
+        }
+        Ok(destination.resolve(&self.path)?)
+    }
+
+    /// How many chunks this transfer takes.
+    pub fn chunks(&self) -> u64 {
+        chunks_for(self.bytes, CHUNK_BYTES)
+    }
+}
+
+/// Whether a string is exactly 64 lowercase hex digits.
+///
+/// Lowercase only, and that is a decision rather than an oversight: **two digests
+/// that differ only in case compare unequal as strings and equal as digests**, so
+/// accepting both cases means the comparison has to be case-insensitive and every
+/// reader of this code has to know that. Fixing the case fixes the comparison.
+fn is_lower_hex_64(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}

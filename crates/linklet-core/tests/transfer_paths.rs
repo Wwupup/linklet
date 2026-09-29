@@ -294,3 +294,190 @@ fn the_transfer_ceiling_is_where_the_document_says_it_is() {
     // discovered by someone whose build is one byte too large.
     assert_eq!(MAX_TRANSFER_BYTES, 4 * 1024 * 1024 * 1024);
 }
+
+// --- T11: the message count, which is now bounded by the size ---------------
+
+#[test]
+fn the_chunk_count_is_exact_at_every_boundary() {
+    // T11 replaced a protocol constant with arithmetic, and this is where an
+    // off-by-one lives: a count that is one short leaves a transfer that never
+    // finishes, and one that is one long sends a chunk past the declared size,
+    // which is T4.
+    use linklet_core::transfer::{CHUNK_BYTES, chunks_for};
+
+    assert_eq!(chunks_for(1, CHUNK_BYTES), 1, "one byte is one chunk");
+    assert_eq!(
+        chunks_for(CHUNK_BYTES - 1, CHUNK_BYTES),
+        1,
+        "one short of a chunk"
+    );
+    assert_eq!(chunks_for(CHUNK_BYTES, CHUNK_BYTES), 1, "exactly one chunk");
+    assert_eq!(
+        chunks_for(CHUNK_BYTES + 1, CHUNK_BYTES),
+        2,
+        "one past a chunk"
+    );
+    assert_eq!(chunks_for(CHUNK_BYTES * 3, CHUNK_BYTES), 3, "exactly three");
+    assert_eq!(
+        chunks_for(CHUNK_BYTES * 3 + 1, CHUNK_BYTES),
+        4,
+        "three and a bit"
+    );
+
+    // Defined rather than left to fall out of a division by zero.
+    assert_eq!(chunks_for(0, CHUNK_BYTES), 0);
+    assert_eq!(chunks_for(100, 0), 0);
+}
+
+#[test]
+fn the_chunk_size_leaves_room_under_the_frame_ceiling() {
+    // A chunk that could meet the frame limit would turn a policy decision into a
+    // protocol error, and the error would arrive at the far end of a transfer.
+    use linklet_core::frame::MAX_PAYLOAD;
+    use linklet_core::transfer::CHUNK_BYTES;
+
+    // Sealed, the payload grows by a tag and a nonce's worth of framing, so the
+    // margin has to cover that and not just the plaintext.
+    assert!(
+        (CHUNK_BYTES as usize) + 64 < MAX_PAYLOAD,
+        "a chunk plus its overhead must fit in one frame"
+    );
+}
+
+// --- T3: the manifest, checked before anything is read ----------------------
+
+/// A digest of the right shape, for manifests that are not about the digest.
+///
+/// It contains letters, and that is not decoration. The first version was sixty-four
+/// zeros, which made the "uppercase is refused" case below pass a digest that was
+/// legally lowercase -- **digits have no case** -- so the test asserted a refusal of
+/// something it had actually accepted.
+const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+#[test]
+fn a_manifest_that_checks_out_resolves_to_a_path_under_the_root() {
+    use linklet_core::transfer::Manifest;
+
+    let manifest = Manifest {
+        path: r"artifacts\build.exe".to_string(),
+        bytes: 1024,
+        sha256: DIGEST.to_string(),
+    };
+
+    let resolved = manifest.check(&destination()).expect("a valid manifest");
+    assert_eq!(
+        resolved,
+        std::path::Path::new(ROOT)
+            .join("artifacts")
+            .join("build.exe")
+    );
+}
+
+#[test]
+fn a_transfer_over_the_ceiling_is_refused_by_number() {
+    // T3. The declared size is checked before a single chunk is read, so a receiver
+    // never agrees to receive something it would refuse.
+    use linklet_core::transfer::{MAX_TRANSFER_BYTES, Manifest, ManifestError};
+
+    let manifest = Manifest {
+        path: "build.exe".to_string(),
+        bytes: MAX_TRANSFER_BYTES + 1,
+        sha256: DIGEST.to_string(),
+    };
+
+    let error = manifest.check(&destination()).expect_err("too large");
+    assert_eq!(
+        error,
+        ManifestError::TooLarge {
+            bytes: MAX_TRANSFER_BYTES + 1
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains(&(MAX_TRANSFER_BYTES + 1).to_string())
+    );
+
+    // And the ceiling itself is usable: an off-by-one at the boundary is the
+    // version of this that ships.
+    let at_limit = Manifest {
+        path: "build.exe".to_string(),
+        bytes: MAX_TRANSFER_BYTES,
+        sha256: DIGEST.to_string(),
+    };
+    assert!(at_limit.check(&destination()).is_ok());
+}
+
+#[test]
+fn a_transfer_of_nothing_is_refused() {
+    use linklet_core::transfer::{Manifest, ManifestError};
+
+    let manifest = Manifest {
+        path: "build.exe".to_string(),
+        bytes: 0,
+        sha256: DIGEST.to_string(),
+    };
+    assert_eq!(manifest.check(&destination()), Err(ManifestError::Empty));
+}
+
+#[test]
+fn a_digest_that_is_not_a_digest_is_refused() {
+    use linklet_core::transfer::{Manifest, ManifestError};
+
+    // The uppercase case is the one worth stating: two digests differing only in
+    // case compare unequal as strings and equal as digests, so only one case is
+    // accepted and the comparison never has to think about it.
+    let cases = [
+        "",
+        "abc",
+        &DIGEST.to_uppercase(),
+        &format!("{DIGEST}0"),
+        "zz00000000000000000000000000000000000000000000000000000000000000",
+    ];
+
+    for got in cases {
+        let manifest = Manifest {
+            path: "build.exe".to_string(),
+            bytes: 1,
+            sha256: got.to_string(),
+        };
+        assert!(
+            matches!(
+                manifest.check(&destination()),
+                Err(ManifestError::BadDigest { .. })
+            ),
+            "{got:?} should not be a digest"
+        );
+    }
+}
+
+#[test]
+fn a_manifest_checks_the_path_and_not_only_the_size() {
+    // One call checks everything, on purpose: a caller that could check the size
+    // without the path, or the reverse, is a caller that does one of them.
+    use linklet_core::transfer::{Manifest, ManifestError};
+
+    let manifest = Manifest {
+        path: r"..\..\Windows\System32\drivers\etc\hosts".to_string(),
+        bytes: 1024,
+        sha256: DIGEST.to_string(),
+    };
+
+    let error = manifest.check(&destination()).expect_err("an escape");
+    assert!(
+        matches!(error, ManifestError::Path(PathError::Parent { .. })),
+        "got {error:?}"
+    );
+}
+
+#[test]
+fn a_manifest_reports_which_chunks_it_takes() {
+    use linklet_core::transfer::{CHUNK_BYTES, Manifest};
+
+    let manifest = Manifest {
+        path: "build.exe".to_string(),
+        bytes: CHUNK_BYTES * 2 + 1,
+        sha256: DIGEST.to_string(),
+    };
+    assert_eq!(manifest.chunks(), 3);
+}
