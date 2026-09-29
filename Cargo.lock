@@ -21,6 +21,7 @@ name = "linklet-cli"
 version = "0.1.0"
 dependencies = [
  "linklet-adapters",
+ "linklet-client",
  "linklet-core",
 ]
 
@@ -28,7 +29,6 @@ dependencies = [
 name = "linklet-client"
 version = "0.1.0"
 dependencies = [
- "linklet-agent",
  "linklet-core",
 ]
 

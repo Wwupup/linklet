@@ -28,11 +28,16 @@ use linklet_core::{
 struct FakeRun {
     reachability_calls: RefCell<Vec<(String, Duration)>>,
     testbed_calls: RefCell<Vec<(String, String)>>,
+    exec_calls: RefCell<Vec<(String, String, u64)>>,
 }
 
 impl FakeRun {
     fn testbed_calls(&self) -> Vec<(String, String)> {
         self.testbed_calls.borrow().clone()
+    }
+
+    fn exec_calls(&self) -> Vec<(String, String, u64)> {
+        self.exec_calls.borrow().clone()
     }
 }
 
@@ -50,12 +55,21 @@ impl ToolRunner for FakeRun {
             .push((spec_path.to_string(), target.to_string()));
         ToolOutcome::ok("testbed launch-smoke  target box\nREADY 1 of 1 requirements met")
     }
+
+    fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
+        self.exec_calls.borrow_mut().push((
+            agent.to_string(),
+            command.to_string(),
+            timeout_seconds,
+        ));
+        ToolOutcome::ok("exit 0\ntook 12 ms\nstdout:\nhello")
+    }
 }
 
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_two_tools() {
+fn there_are_exactly_three_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -66,14 +80,14 @@ fn there_are_exactly_two_tools() {
     // the last time.
     assert_eq!(
         tools().len(),
-        2,
+        3,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
     // Both names, so a tool cannot be swapped for another without this failing.
     // A count alone would not notice.
     let names: Vec<&str> = tools().iter().map(|tool| tool.name).collect();
-    assert_eq!(names, vec!["check", "testbed"]);
+    assert_eq!(names, vec!["check", "testbed", "exec"]);
 }
 
 #[test]
@@ -365,6 +379,9 @@ fn bad_news_is_not_an_error() {
         fn testbed(&self, _spec_path: &str, _target: &str) -> ToolOutcome {
             ToolOutcome::ok("NOT READY 0 of 1 requirements met")
         }
+        fn exec(&self, _agent: &str, _command: &str, _timeout_seconds: u64) -> ToolOutcome {
+            ToolOutcome::ok("exit 1\\ntook 3 ms\\nstderr:\\nfailed")
+        }
     }
 
     let outcome = dispatch(
@@ -481,4 +498,101 @@ fn the_reply_is_the_text_the_runner_produced() {
         outcome.text, "live 10.0.0.5:8787 connected\n1 of 1 live",
         "the reply should be whatever the runner said, not something dispatch composed"
     );
+}
+
+// --- the third tool ----------------------------------------------------------
+
+#[test]
+fn the_exec_tool_passes_its_three_arguments_through() {
+    let fake = FakeRun::default();
+    let arguments = object! {
+        "agent" => Json::str("10.0.0.5:8787"),
+        "command" => Json::str("build.cmd --release"),
+        "timeout" => 120i64,
+    };
+
+    let outcome = dispatch("exec", &arguments, &fake).expect("a valid call");
+
+    assert!(!outcome.is_error);
+    assert_eq!(
+        fake.exec_calls(),
+        vec![(
+            "10.0.0.5:8787".to_string(),
+            "build.cmd --release".to_string(),
+            120
+        )]
+    );
+    assert!(
+        fake.reachability_calls.borrow().is_empty() && fake.testbed_calls().is_empty(),
+        "calling one tool must not run another"
+    );
+}
+
+#[test]
+fn the_exec_timeout_defaults_and_is_refused_outside_the_protocol_range() {
+    // The ceiling is the protocol's own constant, checked at the surface so that
+    // a caller learns from tools/list rather than from a refusal after a round
+    // trip.
+    let fake = FakeRun::default();
+
+    dispatch(
+        "exec",
+        &object! { "agent" => Json::str("a:1"), "command" => Json::str("x") },
+        &fake,
+    )
+    .expect("a valid call");
+    assert_eq!(
+        fake.exec_calls()[0].2,
+        linklet_core::DEFAULT_EXEC_TIMEOUT_SECONDS
+    );
+
+    for value in [
+        0i64,
+        -1,
+        (linklet_core::wire::MAX_TIMEOUT_SECONDS + 1) as i64,
+    ] {
+        let result = dispatch(
+            "exec",
+            &object! { "agent" => Json::str("a:1"), "command" => Json::str("x"), "timeout" => value },
+            &fake,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(ToolError::BadArgument {
+                    name: "timeout",
+                    ..
+                })
+            ),
+            "{value} should be refused, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn the_exec_tool_needs_an_agent_and_a_non_empty_command() {
+    let fake = FakeRun::default();
+
+    assert!(matches!(
+        dispatch("exec", &object! { "command" => Json::str("x") }, &fake),
+        Err(ToolError::BadArgument { name: "agent", .. })
+    ));
+    assert!(matches!(
+        dispatch("exec", &object! { "agent" => Json::str("a:1") }, &fake),
+        Err(ToolError::BadArgument {
+            name: "command",
+            ..
+        })
+    ));
+    assert!(matches!(
+        dispatch(
+            "exec",
+            &object! { "agent" => Json::str("a:1"), "command" => Json::str("   ") },
+            &fake
+        ),
+        Err(ToolError::BadArgument {
+            name: "command",
+            ..
+        })
+    ));
 }

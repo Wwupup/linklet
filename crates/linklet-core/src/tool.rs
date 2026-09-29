@@ -128,6 +128,14 @@ pub trait ToolRunner {
 
     /// Whether a machine matches a testbed specification.
     fn testbed(&self, spec_path: &str, target: &str) -> ToolOutcome;
+
+    /// Runs a command on an agent and reports what the command did.
+    ///
+    /// Takes the pieces rather than a [`crate::wire::RunRequest`] so that this
+    /// crate stays the one deciding what a tool call means. An implementation
+    /// builds the request; whether the request is well formed is decided here,
+    /// before it ever sees a socket.
+    fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -338,6 +346,38 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "exec",
+            // The third tool, and the first whose description took thought. It
+            // has to say what runs the command, because "run a command" alone
+            // would leave a reader unsure whether it runs here or there -- and
+            // that is the one thing a caller must know before using it.
+            description: "Run a command on a remote linklet agent and return its output.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "the command line, as it would be typed in cmd.exe"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "seconds the command may run before it is killed",
+                            "minimum": 1,
+                            "maximum": 600
+                        }
+                    },
+                    "required": ["agent", "command"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -403,6 +443,35 @@ pub fn dispatch(
             let target = required_str(arguments, "target")?;
             Ok(runner.testbed(&spec, &target))
         }
+        "exec" => {
+            reject_unknown(arguments, &["agent", "command", "timeout"])?;
+            let agent = required_str(arguments, "agent")?;
+            let command = required_str(arguments, "command")?;
+            if command.trim().is_empty() {
+                return Err(ToolError::BadArgument {
+                    name: "command",
+                    problem: "empty".to_string(),
+                });
+            }
+            // The same ceiling the protocol enforces, checked here so that a
+            // caller learns from the tool surface rather than from a refusal
+            // after a round trip. The two constants are one constant; the
+            // protocol owns it.
+            let timeout = optional_int(
+                arguments,
+                "timeout",
+                DEFAULT_EXEC_TIMEOUT_SECONDS,
+                crate::wire::MAX_TIMEOUT_SECONDS,
+            )?;
+            Ok(runner.exec(&agent, &command, timeout))
+        }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }
 }
+
+/// The timeout an `exec` call gets when the caller does not ask for one.
+///
+/// Long enough for a build step, short enough that a mistake ends: a caller that
+/// wanted longer can say so, and a caller that did not think about it should not
+/// get an unbounded wait.
+pub const DEFAULT_EXEC_TIMEOUT_SECONDS: u64 = 60;

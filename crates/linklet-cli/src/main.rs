@@ -29,10 +29,13 @@ use std::process::ExitCode as ProcessExit;
 use std::time::Duration;
 
 use linklet_adapters::{SystemProber, TcpProbe, serve};
+use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::testbed::{self, Testbed};
+use linklet_core::wire::{self, RunRequest};
 use linklet_core::{
-    CheckError, DEFAULT_BUDGET_SECONDS, ExitCode, MAX_AT_ONCE, MAX_TARGETS, Report, Summary,
-    ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for, parse_targets, render,
+    CheckError, DEFAULT_BUDGET_SECONDS, DEFAULT_EXEC_TIMEOUT_SECONDS, ExitCode, MAX_AT_ONCE,
+    MAX_TARGETS, Report, Summary, ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for,
+    parse_targets, render,
 };
 
 /// The usage text, printed for `--help` and for a wrong invocation.
@@ -45,6 +48,7 @@ linklet -- check whether machines on a LAN are listening
 usage:
   linklet check [options] <target>[,<target>...]
   linklet testbed check <spec-file> <target>
+  linklet exec --agent <host:port> [options] <command...>
   linklet mcp
 
 target:
@@ -140,6 +144,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("testbed") {
         return run_testbed(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("exec") {
+        return run_exec(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -362,6 +370,34 @@ impl ToolRunner for LiveRunner {
         let verdicts = testbed.check(&SystemProber);
         ToolOutcome::ok(testbed::render(&testbed, &verdicts, target))
     }
+
+    fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
+        exec_on(agent, command, timeout_seconds)
+    }
+}
+
+/// Runs a command on an agent and renders what it did.
+///
+/// Shared by the `exec` command and the `exec` tool, so that the two cannot
+/// disagree about what a failure looks like. The distinction it keeps intact is
+/// the one the protocol was built around: a call that could not be made is
+/// `is_error`, and a call that was made and went badly is a result carrying bad
+/// news.
+fn exec_on(agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
+    let address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+
+    let request = RunRequest {
+        command: command.to_string(),
+        timeout_seconds,
+    };
+
+    match linklet_client::run(&address, &request) {
+        Ok(outcome) => ToolOutcome::ok(wire::render_run(&outcome)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
 }
 
 /// Runs the MCP server on stdio until the client closes it.
@@ -444,4 +480,86 @@ fn run_testbed(arguments: &[String]) -> u8 {
     } else {
         ExitCode::NOT_ALL_ALIVE
     }
+}
+
+/// Runs a command on an agent and prints what it did.
+///
+/// The exit code is the command's own when there is one, and it is worth being
+/// explicit about why: a caller in a shell script wants `linklet exec ... && next`
+/// to behave the way the command itself would. Anything that means the command
+/// did not run gets [`ExitCode::REFUSED`], a code no command can produce, so a
+/// script can tell "it ran and failed" from "it never ran" without reading a word
+/// of output.
+fn run_exec(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut timeout = DEFAULT_EXEC_TIMEOUT_SECONDS;
+    let mut words: Vec<String> = Vec::new();
+    let mut iterator = arguments.iter();
+
+    while let Some(argument) = iterator.next() {
+        match argument.as_str() {
+            "--agent" => match iterator.next() {
+                Some(value) => agent = Some(value.clone()),
+                None => {
+                    eprintln!("linklet: --agent needs a host:port");
+                    return ExitCode::USAGE;
+                }
+            },
+            "--timeout" => match iterator.next().and_then(|value| value.parse().ok()) {
+                Some(value) => timeout = value,
+                None => {
+                    eprintln!("linklet: --timeout needs a number of seconds");
+                    return ExitCode::USAGE;
+                }
+            },
+            other => words.push(other.to_string()),
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: exec needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+    if words.is_empty() {
+        eprintln!("linklet: exec needs a command");
+        return ExitCode::USAGE;
+    }
+
+    // Joined rather than taken one word at a time, so that the command is exactly
+    // what was typed after the options. A tool that reassembled a command line
+    // from pieces would be a second interpretation of the caller's quoting.
+    let command = words.join(" ");
+
+    let outcome = exec_on(&agent, &command, timeout);
+    println!("{}", outcome.text);
+
+    if outcome.is_error {
+        // The command never ran, so there is no exit code to pass on, and the
+        // refusal code says so without ambiguity.
+        ExitCode::REFUSED
+    } else {
+        exit_code_from_text(&outcome.text)
+    }
+}
+
+/// The exit code a rendered run reports, or success when it reports none.
+///
+/// A small parse of a format this project owns, which is normally a smell -- but
+/// the alternative is returning the outcome as well as rendering it, and that
+/// would put the same fact in two parameters. The format is pinned by
+/// `linklet_core::wire`'s tests, so a change that breaks this parser breaks those
+/// first.
+fn exit_code_from_text(text: &str) -> u8 {
+    let Some(first) = text.lines().next() else {
+        return ExitCode::SUCCESS;
+    };
+    let Some(rest) = first.strip_prefix("exit ") else {
+        // "no exit code: <reason>" -- the command was killed, and a killed
+        // command's status is a failure by any reading.
+        return ExitCode::NOT_ALL_ALIVE;
+    };
+    // Truncated to the low byte, because a process exit code is a byte: a command
+    // that exits 256 is a command that exited 0 on this platform, and pretending
+    // otherwise would report a failure the operating system does not.
+    rest.trim().parse::<i32>().unwrap_or(1).rem_euclid(256) as u8
 }

@@ -70,6 +70,8 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 |---|---|---|
 | `crates/linklet-core/` | M1-M3 done | decisions; no I/O, no dependencies |
 | `crates/linklet-adapters/` | M2 done | sockets: the one place that opens one |
+| `crates/linklet-agent/` | M6 done | the target side: one file, one dependency |
+| `crates/linklet-client/` | M6 done | the host side of the agent protocol |
 | `crates/linklet-cli/` | M3 done | argv in, text out, exit code |
 
 | file | what it holds |

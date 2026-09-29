@@ -13,12 +13,13 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Two tools.**
+**Three tools.**
 
 | tool | question it answers |
 |---|---|
 | `check` | does each host:port accept a TCP connection |
 | `testbed` | does a machine match a testbed specification file |
+| `exec` | run a command on a remote agent and return its output |
 
 The second one was added late and is the reason the count is asserted rather
 than described. `linklet testbed check` shipped as a command first, and for a

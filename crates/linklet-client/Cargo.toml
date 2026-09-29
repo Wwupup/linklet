@@ -11,11 +11,11 @@ description = "The host side of the agent protocol: ask a target to run somethin
 # the two ends of a message are decoded by the same code.
 linklet-core = { path = "../linklet-core" }
 
-[dev-dependencies]
-# Not used by any code here. It is here so that `cargo test` builds the agent
-# binary, which the integration test spawns: a client and a server that cannot be
-# tested against each other are two projects that happen to share a name.
-linklet-agent = { path = "../linklet-agent" }
+# No dev-dependency on the agent, although the integration test spawns its
+# binary. `linklet-agent` has no library target, so cargo ignores it as a
+# dependency and warns -- a declaration that does nothing is worse than none,
+# because a reader believes it. The test finds the binary on disk and says so
+# when it cannot, which is the honest version of the same intent.
 
 [lints]
 workspace = true

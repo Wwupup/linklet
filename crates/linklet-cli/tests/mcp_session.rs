@@ -161,9 +161,10 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     // Two, asserted here as well as in the core. The core test checks the list
     // and the dispatcher agree; this one checks the list survives the wire, which
     // is the part a session can fail at and a unit test cannot.
-    assert_eq!(tools.len(), 2, "the surface is two tools: {tools:#?}");
+    assert_eq!(tools.len(), 3, "the surface is three tools: {tools:#?}");
     assert_eq!(tools[0].get_str("name"), Some("check"));
     assert_eq!(tools[1].get_str("name"), Some("testbed"));
+    assert_eq!(tools[2].get_str("name"), Some("exec"));
 
     for tool in &tools {
         let description = tool.get_str("description").expect("a description");

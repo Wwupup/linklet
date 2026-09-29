@@ -11,6 +11,12 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
+- **`linklet exec --agent <host:port> <command...>`**, and an `exec` MCP tool.
+  The exit code is the command's own when it has one, so `linklet exec ... && next`
+  behaves the way the command would; a call that could not be made gets the
+  refusal code, which no command can produce, so a script can tell "it ran and
+  failed" from "it never ran" without reading any output.
+
 - **`linklet-agent`**, the target-side binary. One file, one dependency (the
   shared protocol), and two things it does: say which agent it is, and run a
   command when asked. It is separate from the host tool because it runs on a
@@ -80,6 +86,12 @@ The first version with a shape. Everything below landed between the initial
 skeleton and M5.
 
 ### Added
+
+- **`linklet exec --agent <host:port> <command...>`**, and an `exec` MCP tool.
+  The exit code is the command's own when it has one, so `linklet exec ... && next`
+  behaves the way the command would; a call that could not be made gets the
+  refusal code, which no command can produce, so a script can tell "it ran and
+  failed" from "it never ran" without reading any output.
 
 - `linklet check <target>[,<target>...]` -- reports whether each `host:port`
   accepts a TCP connection, one line per target, with the reason. Exit codes:

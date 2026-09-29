@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 linklet-core = { path = "../linklet-core" }
 linklet-adapters = { path = "../linklet-adapters" }
+linklet-client = { path = "../linklet-client" }
 
 [lints]
 workspace = true
