@@ -26,11 +26,13 @@
 //!
 //! # What this is not, still
 //!
-//! - **No forward secrecy, and no handshake.** Two sides that share a secret can
-//!   derive the same keys and talk. An attacker who records a session and later
-//!   learns the secret can read that session. Fixing that needs an ephemeral key
-//!   exchange, which is a different and larger piece of work, and saying so here
-//!   is cheaper than a reader assuming otherwise.
+//! - **Forward secrecy is available, and opt-in.** [`Handshake`] runs an X25519
+//!   exchange whose private halves are discarded, so a session recorded today
+//!   cannot be read by anyone who learns the secret tomorrow. [`Channel`] alone
+//!   does **not** have that property: it derives the keys from the shared secret
+//!   and nothing else, so it is the wrong path for a deployment and the right one
+//!   for a test. Both are here, and which is which is stated on each trait rather
+//!   than left to be inferred from the names.
 //! - **No protection against replay within a session.** A captured message can be
 //!   sent again and will open. The sequence numbers stop a *reordering* from being
 //!   accepted; they do not stop a repeat of the exact bytes from being replayed at
@@ -97,6 +99,14 @@ pub enum ChannelError {
         /// How long it was.
         bytes: usize,
     },
+    /// A public key was the wrong length.
+    ///
+    /// Separate from [`ChannelError::BadSessionId`] because the two arrive from
+    /// different headers and a reader fixing one should not be sent to the other.
+    BadPublicKey {
+        /// How long it was.
+        bytes: usize,
+    },
     /// The implementation refused, for a reason it can name.
     ///
     /// A separate variant so that an adapter's own failure -- a random source
@@ -117,6 +127,11 @@ impl std::fmt::Display for ChannelError {
                 f,
                 "a session identifier is {bytes} bytes; {} are required",
                 SessionId::BYTES
+            ),
+            Self::BadPublicKey { bytes } => write!(
+                f,
+                "a public key is {bytes} bytes; {} are required",
+                EphemeralPublic::BYTES
             ),
             Self::Refused(why) => write!(f, "the channel refused: {why}"),
         }
@@ -184,10 +199,11 @@ pub trait Sealed {
 pub trait Channel {
     /// A conversation keyed by `session`, for the end named by `role`.
     ///
-    /// The role decides which directional key seals and which opens, so the two
-    /// ends are mirror images. A caller that passed the same role at both ends
-    /// would get two sessions that cannot talk, which is loud; the failure this
-    /// parameter prevents silently is the one described on [`Role`].
+    /// This is the **shared-secret-only** path: two sides that already hold the
+    /// same secret derive the same keys with no exchange at all. It is kept
+    /// because it is the simplest thing that seals a message and because the tests
+    /// above drive it, but it has no forward secrecy -- see [`Handshake`] for the
+    /// path a deployment should use.
     ///
     /// # Errors
     ///
@@ -199,4 +215,118 @@ pub trait Channel {
         session: &SessionId,
         role: Role,
     ) -> Result<Box<dyn Sealed>, ChannelError>;
+}
+
+/// A public key for one handshake, as bytes.
+///
+/// The core carries it and does not compute with it. What it is -- a curve point,
+/// a different length, something else entirely -- is the implementation's
+/// business, and a core that knew would be a core that had started implementing
+/// the cryptography.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EphemeralPublic(Vec<u8>);
+
+impl EphemeralPublic {
+    /// How many bytes a public key is.
+    ///
+    /// Thirty-two, which is X25519's size. Declared here rather than in the
+    /// adapter because the *protocol* fixes it: a message carrying a key of
+    /// another length cannot be parsed by the other side, so this is a fact about
+    /// the wire and not about the curve.
+    pub const BYTES: usize = 32;
+
+    /// Wraps bytes that arrived from the other side.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelError::BadPublicKey`] when the length is wrong, which is the only
+    /// check the core can make. Whether the bytes are a *valid* public key is a
+    /// question for the curve, and an implementation that rejected them here would
+    /// be a core that had learned arithmetic.
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, ChannelError> {
+        let bytes = bytes.into();
+        if bytes.len() != Self::BYTES {
+            return Err(ChannelError::BadPublicKey { bytes: bytes.len() });
+        }
+        Ok(Self(bytes))
+    }
+
+    /// The bytes, for putting in a header.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+/// The initiator's half of a handshake, waiting for the reply.
+///
+/// A separate type because the initiator holds a private key it must not use until
+/// the peer's public key arrives, and there is no way to express "a session that
+/// is not ready" with a single [`Sealed`]. Consuming `self` in
+/// [`Pending::finish`] is what stops it being finished twice -- two sessions from
+/// one ephemeral key would share a nonce sequence, which is the failure the whole
+/// module is arranged to avoid.
+pub trait Pending {
+    /// Derives the session, given the responder's public key.
+    ///
+    /// Takes `self` by value: a `Pending` that could be finished twice is a
+    /// `Pending` that can produce two sessions from one ephemeral key.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelError::NotAuthentic`] when the peer's key does not produce a
+    /// session the shared secret agrees with, and [`ChannelError::Refused`] when
+    /// the implementation cannot proceed at all.
+    fn finish(self: Box<Self>, peer: &EphemeralPublic) -> Result<Box<dyn Sealed>, ChannelError>;
+}
+
+/// Runs a handshake, so that a session recorded today cannot be read by anyone who
+/// learns the secret tomorrow.
+///
+/// # Where forward secrecy comes from
+///
+/// Both sides generate a key pair for this handshake and **discard the private
+/// half when it is done**. The session key is the X25519 result of the initiator's
+/// private key against the responder's public key -- the same value the responder
+/// computes from its private key and the initiator's public key -- mixed with the
+/// shared secret by a key derivation.
+///
+/// An attacker who records the whole exchange and later learns the shared secret
+/// still needs the ephemeral private keys to recompute that result, and those no
+/// longer exist anywhere. That is the entire benefit, and it is worth the round
+/// trip exactly once: an operator who does not need it can use
+/// [`Channel::open_session`] and skip the exchange.
+///
+/// # What the shared secret is still for
+///
+/// **Authentication.** Without it the exchange is anonymous, and anyone in the
+/// middle can complete a handshake with both sides and read everything. Mixing it
+/// into the key derivation is what makes the session key depend on a value only
+/// the two real ends have, so an attacker who substitutes their own public key
+/// produces a session that neither end can open. There is no separate signature
+/// because there is nothing to sign with -- the secret *is* the credential.
+pub trait Handshake {
+    /// Starts a handshake: our public key, and the state to finish with.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelError::Refused`] when the implementation cannot produce a key pair,
+    /// which in practice means the system has no randomness.
+    fn propose(&self, secret: &[u8]) -> Result<(EphemeralPublic, Box<dyn Pending>), ChannelError>;
+
+    /// Answers a handshake: our public key, and the session, ready to use.
+    ///
+    /// The responder can finish in one call because it has both public keys --
+    /// its own, which it just made, and the initiator's, which it was given. The
+    /// initiator cannot, which is why [`Pending`] exists.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelError::NotAuthentic`] when the peer's public key does not produce a
+    /// session the shared secret agrees with, and [`ChannelError::Refused`] when
+    /// the implementation cannot proceed.
+    fn accept(
+        &self,
+        secret: &[u8],
+        peer: &EphemeralPublic,
+    ) -> Result<(EphemeralPublic, Box<dyn Sealed>), ChannelError>;
 }

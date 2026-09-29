@@ -9,6 +9,15 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+### Added
+
+- **A handshake, so a recorded session cannot be read by someone who learns the
+  secret later.** Both sides generate an X25519 key pair per handshake and discard
+  the private half, so the session key depends on a value that no longer exists
+  anywhere. The shared secret still authenticates the exchange: an attacker in the
+  middle can complete a handshake with both ends and still cannot open a byte,
+  because the session they build is not the one either end built.
+
 ### Changed
 
 - **The project may now depend on vetted crates, in the adapters.** The rule that
@@ -62,6 +71,15 @@ to answer one question: **what can I do now that I could not do before?**
   were found by hand before this test existed, and a fault found twice by hand
   belongs in a test.
 
+### Added
+
+- **A handshake, so a recorded session cannot be read by someone who learns the
+  secret later.** Both sides generate an X25519 key pair per handshake and discard
+  the private half, so the session key depends on a value that no longer exists
+  anywhere. The shared secret still authenticates the exchange: an attacker in the
+  middle can complete a handshake with both ends and still cannot open a byte,
+  because the session they build is not the one either end built.
+
 ### Changed
 
 - `dispatch` takes a `ToolRunner` rather than a closure per capability. With one
@@ -88,10 +106,12 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Known gaps
 
-- **No encryption.** The token is compared in constant time, but it travels in
-  cleartext: anyone who can read the network can read it and replay it. A token is
-  not encryption, and a reader who believes otherwise will use this where the
-  difference decides whether someone else can run commands on the target.
+- **The channel is not wired into the agent and client yet.** It exists, it is
+  tested, and nothing uses it: the token still travels in cleartext over HTTP.
+  Until that is done, this is a tool for a network you control and the auth module
+  documentation says so.
+- **No cipher agility and no version negotiation.** One cipher, one curve, one
+  key derivation, chosen at build time.
 - No automated run against a second machine. `docs/testing.md` says what that
   costs and what it does not cover.
 - The MCP surface has never been read by a model with no other context. The tests
@@ -105,6 +125,15 @@ to answer one question: **what can I do now that I could not do before?**
 
 The first version with a shape. Everything below landed between the initial
 skeleton and M5.
+
+### Added
+
+- **A handshake, so a recorded session cannot be read by someone who learns the
+  secret later.** Both sides generate an X25519 key pair per handshake and discard
+  the private half, so the session key depends on a value that no longer exists
+  anywhere. The shared secret still authenticates the exchange: an attacker in the
+  middle can complete a handshake with both ends and still cannot open a byte,
+  because the session they build is not the one either end built.
 
 ### Changed
 

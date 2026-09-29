@@ -12,6 +12,7 @@ getrandom = "0.4.3"
 hkdf = "0.13.0"
 linklet-core = { path = "../linklet-core" }
 sha2 = "0.11.0"
+x25519-dalek = { version = "3.0.0", features = ["getrandom", "static_secrets"] }
 
 [lints]
 workspace = true
