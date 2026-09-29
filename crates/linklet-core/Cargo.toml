@@ -1,0 +1,22 @@
+[package]
+name = "linklet-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Pure decision logic for linklet: parsing, validation, policy. No I/O."
+
+# ---------------------------------------------------------------------------
+# This section is intentionally empty and must stay empty.
+#
+# It is not a style preference. Because core cannot link against anything, it
+# *cannot* open a socket, read a file, or ask the OS anything -- so the rule
+# "decisions are testable without a machine" is enforced by the compiler
+# instead of by memory.
+#
+# The test in `tests/architecture.rs` fails if a dependency appears here.
+# ---------------------------------------------------------------------------
+[dependencies]
+
+[lints]
+workspace = true

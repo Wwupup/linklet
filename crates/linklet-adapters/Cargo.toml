@@ -1,0 +1,13 @@
+[package]
+name = "linklet-adapters"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The edges: sockets, processes, files. Thin, and easy to replace."
+
+[dependencies]
+linklet-core = { path = "../linklet-core" }
+
+[lints]
+workspace = true

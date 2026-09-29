@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# Every line here has a reason. If you cannot state the reason, delete the line:
+# an unexplained ignore rule is how a file that matters goes missing for a year.
+# ---------------------------------------------------------------------------
+
+# Build output. Cargo's target/ grows to several GB and is a pure function of
+# the source; committing it would be storing a derived artifact.
+/target/
+**/target/
+
+# Dependency lockfiles are NOT ignored. Cargo.lock is committed, for two
+# reasons: this project ships binaries (a library would not need it), and a
+# lockfile is the only record of the exact versions a build was verified
+# against. Ignoring it means "it built last Tuesday" stops being reproducible.
+
+# Runtime state produced by the tool itself: tokens, logs, job output.
+# Secrets must never enter history -- a committed token has to be rotated, not
+# deleted, because history keeps it.
+token.txt
+config.json
+*.local
+*.local.*
+.env
+*.log
+
+# Release artifacts. These are outputs of a build, not sources. Ship them as
+# release assets, never as repository content: a dozen 13 MB zips is 150 MB of
+# dead weight that every clone pays for.
+/dist/
+*.zip
+
+# Editor and OS debris. Personal, machine-specific, no information for anyone else.
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Python leftovers (this repo may grow helper scripts).
+__pycache__/
+*.py[cod]
+.venv/

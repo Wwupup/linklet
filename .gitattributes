@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Line endings, decided once instead of per machine.
+#
+# Without this file, git on Windows checks files out as CRLF while the content
+# in history is LF. Every tool that reads a file then sees a different byte
+# sequence depending on who cloned it -- which breaks byte-level checks (the
+# upstream project has an ASCII-only rule, and this repo keeps it) and produces
+# diffs that show every line changed for no reason.
+#
+# `text=auto` lets git normalise on commit and check out per platform;
+# the explicit `eol=lf` entries pin the files where a stray CR would be a bug
+# rather than a preference.
+# ---------------------------------------------------------------------------
+* text=auto
+
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+
+# Binary files: never touch them, never diff them, never try to merge them.
+*.exe   binary
+*.dll   binary
+*.zip   binary
+*.png   binary

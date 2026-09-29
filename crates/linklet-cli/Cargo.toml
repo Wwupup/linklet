@@ -1,0 +1,20 @@
+[package]
+name = "linklet-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The command line: argv in, text out, exit code. Thin."
+
+[[bin]]
+name = "linklet"
+path = "src/main.rs"
+
+[dependencies]
+linklet-core = { path = "../linklet-core" }
+# linklet-adapters will be added when the first command needs the network
+# (milestone M2). It is not listed here yet: an unused dependency in the
+# manifest is a claim that this crate talks to the machine, and it does not.
+
+[lints]
+workspace = true

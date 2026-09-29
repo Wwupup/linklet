@@ -1,0 +1,12 @@
+# Pins the toolchain for everyone who clones this repo, including CI.
+#
+# Why this file exists at all: "it compiles on my machine" is almost always a
+# toolchain difference. Pinning it turns that class of bug into a non-event,
+# and it costs one file.
+#
+# `components` are installed automatically if missing. `rustfmt` and `clippy`
+# are not optional here: formatting and lint output are part of the definition
+# of done (see AGENTS.md).
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

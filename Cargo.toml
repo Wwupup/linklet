@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# The workspace root manifest. It holds no source code: it exists to (a) give
+# the crates one shared target/ directory and one Cargo.lock, and (b) hold the
+# rules that every crate inherits.
+#
+# Why a workspace and not one crate: the layer rule this project is built on --
+# "the core never does I/O" -- is enforced by the compiler only if the core is
+# a separate crate. A rule that a reviewer has to remember is not a rule; a
+# rule that fails `cargo build` is.
+# ---------------------------------------------------------------------------
+[workspace]
+resolver = "3"
+members = ["crates/linklet-core", "crates/linklet-adapters", "crates/linklet-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+# Inherited by every crate with `[lints] workspace = true`. These are the
+# quality bar; the list should stay short enough that every entry is
+# understood, and every entry is here because it caught something.
+[workspace.lints.rust]
+unsafe_code = "forbid"          # no unsafe anywhere; ask before adding an exception
+missing_docs = "warn"           # a public item with no doc comment is unexplained
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"                   # a TODO that reaches a release is a known lie
+dbg_macro = "deny"
+unwrap_used = "warn"            # unwrap in library code is a panic waiting for input
