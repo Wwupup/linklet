@@ -10,7 +10,12 @@
 # ---------------------------------------------------------------------------
 [workspace]
 resolver = "3"
-members = ["crates/linklet-core", "crates/linklet-adapters", "crates/linklet-cli"]
+members = [
+    "crates/linklet-core",
+    "crates/linklet-adapters",
+    "crates/linklet-cli",
+    "crates/linklet-agent",
+]
 
 [workspace.package]
 version = "0.1.0"
