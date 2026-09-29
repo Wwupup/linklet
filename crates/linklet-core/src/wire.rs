@@ -38,6 +38,91 @@ pub const RUN_PATH: &str = "/run";
 /// probe can use it without deciding anything.
 pub const IDENTITY_PATH: &str = "/ping";
 
+/// The path the two sides exchange public keys on.
+///
+/// A separate path rather than a header on `/run`, because it is a different kind
+/// of message: it carries no command, needs no token (there is nothing in it but a
+/// public key), and **must be answered before anything can be sealed**. Keeping it
+/// separate is what lets the agent refuse a `/run` that arrived with no handshake,
+/// instead of having to guess whether an absent header was a mistake or an old
+/// client.
+pub const HELLO_PATH: &str = "/handshake";
+
+/// Encodes bytes as lowercase hexadecimal.
+///
+/// Hex rather than base64 because a public key is 32 bytes and this is the encoding
+/// a reader can check by eye against a captured message. That matters more than the
+/// handful of extra characters for a value nobody types by hand.
+pub fn to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Decodes hexadecimal, either case.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the text is not an even number of hex digits.
+/// The caller turns that into the message a peer sees, so it says what was wrong
+/// with the text and not where it came from.
+pub fn from_hex(text: &str) -> Result<Vec<u8>, WireError> {
+    if !text.len().is_multiple_of(2) {
+        return Err(WireError::BadRequest(format!(
+            "a hex value must have an even number of digits, and this has {}",
+            text.len()
+        )));
+    }
+
+    let mut out = Vec::with_capacity(text.len() / 2);
+    let bytes = text.as_bytes();
+    for pair in bytes.chunks_exact(2) {
+        let digit = |byte: u8| -> Result<u8, WireError> {
+            match byte {
+                b'0'..=b'9' => Ok(byte - b'0'),
+                b'a'..=b'f' => Ok(byte - b'a' + 10),
+                b'A'..=b'F' => Ok(byte - b'A' + 10),
+                other => Err(WireError::BadRequest(format!(
+                    "{:?} is not a hex digit",
+                    other as char
+                ))),
+            }
+        };
+        out.push((digit(pair[0])? << 4) | digit(pair[1])?);
+    }
+    Ok(out)
+}
+
+/// The one field both handshake messages carry.
+///
+/// The same shape in both directions, which is not laziness: the two messages are
+/// the same thing -- "here is my public key for this handshake" -- and giving them
+/// different field names would be a chance for the two sides to disagree about
+/// which is which.
+pub fn handshake_to_json(public: &[u8]) -> Json {
+    object! { "ephemeral_public" => to_hex(public) }
+}
+
+/// Reads a handshake message.
+///
+/// Returns the bytes and not an [`crate::channel::EphemeralPublic`], because
+/// whether they are a usable public key is a question for the curve and this crate
+/// does not do arithmetic. The length check that belongs to the *wire* -- the field
+/// exists and is text -- is made here; the one that belongs to the protocol is made
+/// by whoever builds the key.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the field is absent, not text, or not hex.
+pub fn handshake_public_from_json(value: &Json) -> Result<Vec<u8>, WireError> {
+    let text = value.get_str("ephemeral_public").ok_or_else(|| {
+        WireError::BadRequest("a handshake needs an ephemeral_public hex string".to_string())
+    })?;
+    from_hex(text)
+}
+
 /// A command the host wants run on a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {

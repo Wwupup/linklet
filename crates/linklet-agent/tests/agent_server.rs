@@ -16,8 +16,10 @@ use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use linklet_adapters::HkdfChannel;
 use linklet_core::auth::{TOKEN_HEADER, TOKEN_SCHEME};
-use linklet_core::json::{self, Json};
+use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
+use linklet_core::json;
 use linklet_core::wire;
 
 /// The token these tests configure the agent with.
@@ -102,13 +104,123 @@ impl Agent {
 
         (status, body.to_string())
     }
+}
 
-    /// Sends a request whose body is a JSON value.
-    fn json_request(&self, method: &str, path: &str, body: &Json) -> (u16, String) {
-        self.request(method, path, &json::write(body))
+/// Reads one reply from an open connection: the status, and the body by length.
+///
+/// Reads the body by its declared length rather than to the end, because the
+/// connection carries **two** messages now and reading to the end would swallow
+/// the second reply into the first.
+fn read_one(reader: &mut BufReader<TcpStream>) -> (u16, String) {
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .expect("a status line from the agent");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .unwrap_or_else(|| panic!("no status in {status_line:?}"));
+
+    let mut content_length: Option<usize> = None;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("a header line");
+        if line == "\r\n" || line.is_empty() {
+            break;
+        }
+        if let Some(value) = line.strip_prefix("Content-Length:") {
+            content_length = value.trim().parse().ok();
+        }
+    }
+
+    let mut body = vec![0u8; content_length.unwrap_or(0)];
+    reader.read_exact(&mut body).expect("the body");
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// The agent under test, with the handshake done and a session in hand.
+///
+/// The protocol needs two messages on one connection, so a helper that opened a
+/// connection per call could not exercise it at all. This keeps the connection and
+/// both states.
+struct Conversation {
+    reader: BufReader<TcpStream>,
+    session: Box<dyn Sealed>,
+}
+
+impl Agent {
+    /// Opens a connection and completes a handshake on it.
+    fn sealed(&self) -> Conversation {
+        let stream =
+            TcpStream::connect(("127.0.0.1", self.port)).expect("the agent should be reachable");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("a timeout should be settable");
+        let mut reader = BufReader::new(stream);
+
+        let (ours, pending) = HkdfChannel
+            .propose(TEST_TOKEN.as_bytes())
+            .expect("proposing a handshake");
+        let hello = json::write(&wire::handshake_to_json(ours.as_bytes()));
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{hello}",
+            wire::HELLO_PATH,
+            hello.len()
+        );
+        reader
+            .get_mut()
+            .write_all(request.as_bytes())
+            .expect("writing the handshake");
+        reader.get_mut().flush().expect("flushing");
+
+        let (status, body) = read_one(&mut reader);
+        assert_eq!(status, 200, "the handshake was refused: {body}");
+        let theirs = wire::handshake_public_from_json(&json::parse(&body).expect("a JSON reply"))
+            .expect("an ephemeral_public field");
+        let theirs = EphemeralPublic::from_bytes(theirs).expect("32 bytes");
+
+        let session = pending.finish(&theirs).expect("finishing the handshake");
+
+        Conversation { reader, session }
     }
 }
 
+impl Conversation {
+    /// Sends a sealed `POST /run` with this plaintext and reads the sealed reply.
+    fn run(&mut self, plaintext: &str) -> (u16, String) {
+        let sealed = self
+            .session
+            .seal(plaintext.as_bytes())
+            .expect("sealing the request");
+        let hex = wire::to_hex(&sealed);
+
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1\r\n{TOKEN_HEADER}: {TOKEN_SCHEME}{TEST_TOKEN}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{hex}",
+            wire::RUN_PATH,
+            hex.len()
+        );
+        self.reader
+            .get_mut()
+            .write_all(request.as_bytes())
+            .expect("writing the sealed request");
+        self.reader.get_mut().flush().expect("flushing");
+
+        let (status, body) = read_one(&mut self.reader);
+        if status != 200 {
+            // A refusal comes back as plain JSON, which is how the two kinds of
+            // reply are told apart on this path.
+            return (status, body);
+        }
+
+        let ciphertext = wire::from_hex(body.trim()).expect("a hex sealed reply");
+        let plaintext = self
+            .session
+            .open(&ciphertext)
+            .expect("opening the sealed reply");
+        (status, String::from_utf8(plaintext).expect("UTF-8"))
+    }
+}
 impl Drop for Agent {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -118,11 +230,9 @@ impl Drop for Agent {
 
 /// Runs a command and decodes the outcome it produces.
 fn run(agent: &Agent, command: &str) -> wire::RunOutcome {
-    let (status, body) = agent.json_request(
-        "POST",
-        wire::RUN_PATH,
-        &linklet_core::object! { "command" => command, "timeout_seconds" => 30i64 },
-    );
+    let body =
+        json::write(&linklet_core::object! { "command" => command, "timeout_seconds" => 30i64 });
+    let (status, body) = agent.sealed().run(&body);
     assert_eq!(status, 200, "the agent answered {status}: {body}");
     wire::decode_run_reply(&body).unwrap_or_else(|e| panic!("undecodable reply: {e} in {body}"))
 }
@@ -185,11 +295,9 @@ fn a_command_that_fails_is_an_outcome_and_not_an_error() {
     // The distinction the protocol was designed around, over a real socket this
     // time: a program that ran and reported a problem is a successful call.
     let agent = Agent::start();
-    let (status, body) = agent.json_request(
-        "POST",
-        wire::RUN_PATH,
+    let (status, body) = agent.sealed().run(&json::write(
         &linklet_core::object! { "command" => "exit 3", "timeout_seconds" => 30i64 },
-    );
+    ));
 
     assert_eq!(status, 200, "the call succeeded: {body}");
     let outcome = wire::decode_run_reply(&body).expect("decodes");
@@ -232,12 +340,10 @@ fn a_caller_supplied_timeout_kills_the_command_and_says_which_failure_it_was() {
     // different fact from failing to start, and the reason constant is what the
     // host branches on.
     let agent = Agent::start();
-    let (status, body) = agent.json_request(
-        "POST",
-        wire::RUN_PATH,
+    let (status, body) = agent.sealed().run(&json::write(
         // Longer than the timeout, and it must not finish first.
         &linklet_core::object! { "command" => "ping -n 30 127.0.0.1", "timeout_seconds" => 1i64 },
-    );
+    ));
 
     assert_eq!(status, 200, "{body}");
     let outcome = wire::decode_run_reply(&body).expect("decodes");
@@ -259,7 +365,10 @@ fn a_caller_supplied_timeout_kills_the_command_and_says_which_failure_it_was() {
 #[test]
 fn a_body_that_is_not_json_is_refused_and_no_command_runs() {
     let agent = Agent::start();
-    let (status, body) = agent.request("POST", wire::RUN_PATH, "not json at all");
+    // Sealed, because an unsealed body is now refused before anything parses it --
+    // which is a different refusal, tested separately below. This one is about what
+    // happens to a body that arrived intact and was not JSON.
+    let (status, body) = agent.sealed().run("not json at all");
 
     assert_eq!(status, 400);
     let value = json::parse(&body).expect("the refusal is JSON");
@@ -273,11 +382,9 @@ fn a_body_that_is_not_json_is_refused_and_no_command_runs() {
 #[test]
 fn a_command_field_that_is_missing_is_refused_by_name() {
     let agent = Agent::start();
-    let (status, body) = agent.json_request(
-        "POST",
-        wire::RUN_PATH,
+    let (status, body) = agent.sealed().run(&json::write(
         &linklet_core::object! { "timeout_seconds" => 5i64 },
-    );
+    ));
 
     assert_eq!(status, 400);
     assert!(body.contains("command"), "{body}");
@@ -288,11 +395,9 @@ fn a_timeout_beyond_the_protocol_limit_is_refused_rather_than_clamped() {
     // An agent that accepts an unbounded timeout from the network has been handed
     // a way to be occupied forever.
     let agent = Agent::start();
-    let (status, body) = agent.json_request(
-        "POST",
-        wire::RUN_PATH,
+    let (status, body) = agent.sealed().run(&json::write(
         &linklet_core::object! { "command" => "echo x", "timeout_seconds" => 100_000i64 },
-    );
+    ));
 
     assert_eq!(status, 400);
     assert!(body.contains("timeout_seconds"), "{body}");

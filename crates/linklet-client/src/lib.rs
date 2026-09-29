@@ -21,7 +21,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+use linklet_adapters::HkdfChannel;
 use linklet_core::auth::{TOKEN_HEADER, TOKEN_SCHEME, Token};
+use linklet_core::channel::{EphemeralPublic, Handshake};
 use linklet_core::json;
 use linklet_core::wire::{self, RunOutcome, RunRequest};
 
@@ -121,15 +123,115 @@ impl AgentAddress {
 
 /// Runs a command on an agent and returns what it observed.
 ///
+/// # Two messages on one connection, and why
+///
+/// A handshake cannot protect itself. The initiator cannot derive a session key
+/// until it has the responder's public key, so the exchange has to happen *before*
+/// the command can be sealed -- and the command is the part worth protecting. So
+/// the handshake goes first, then the sealed request, both on the connection just
+/// opened.
+///
+/// The alternative is one round trip with the request sealed under the token
+/// alone, which leaves the command readable by anyone who later learns the token.
+/// That is the wrong half to protect.
+///
 /// # Errors
 ///
-/// [`CallError`] for anything that means the host does not know whether the
-/// command ran. A command that ran and failed comes back as
-/// `Ok(RunOutcome { exit_code: Some(1), .. })`.
+/// [`CallError`] for anything that means the host does not know whether the command
+/// ran. A command that ran and failed comes back as
+/// `Ok(RunOutcome { exit_code: Some(1), .. })`, which is the distinction the
+/// protocol was built around.
 pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, CallError> {
+    // The token is the handshake's authentication. Without one there is no way to
+    // tell the agent from someone sitting in front of it, so a sealed call is
+    // refused rather than done unauthenticated -- an anonymous handshake would be
+    // worse than none, because it looks like protection.
+    let Some(token) = address.token.as_ref() else {
+        return Err(CallError::BadAddress(
+            "a sealed call needs a token: set LINKLET_TOKEN, or pass --agent with one".to_string(),
+        ));
+    };
+
+    let read_budget = Duration::from_secs(request.timeout_seconds) + REPLY_ALLOWANCE;
+    let mut reader = open(address, read_budget)?;
+
+    // 1. The handshake. Our public key goes out; theirs comes back.
+    let (ours, pending) = HkdfChannel
+        .propose(token.expose().as_bytes())
+        .map_err(|e| CallError::Protocol(format!("cannot begin a handshake: {e}")))?;
+    let hello_body = json::write(&wire::handshake_to_json(ours.as_bytes()));
+    let hello = format!(
+        "POST {path} HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {length}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {hello_body}",
+        path = wire::HELLO_PATH,
+        host = address.text,
+        length = hello_body.len(),
+    );
+
+    let hello_reply = round_trip(&mut reader, &hello, REPLY_ALLOWANCE)?;
+    let hello_value = json::parse(&hello_reply).map_err(|e| CallError::Protocol(e.to_string()))?;
+    let theirs = wire::handshake_public_from_json(&hello_value)
+        .map_err(|e| CallError::Protocol(e.to_string()))?;
+    let theirs =
+        EphemeralPublic::from_bytes(theirs).map_err(|e| CallError::Protocol(e.to_string()))?;
+
+    // The initiator's half. This is where the private key for this handshake stops
+    // being needed, and it is dropped with `pending` -- which is what forward
+    // secrecy consists of.
+    let mut session = pending
+        .finish(&theirs)
+        .map_err(|e| CallError::Protocol(format!("the handshake did not complete: {e}")))?;
+
+    // 2. The command, sealed under the session the handshake produced.
     let body = json::write(&wire::run_request_to_json(request));
-    let reply = post(address, wire::RUN_PATH, &body, request.timeout_seconds)?;
-    wire::decode_run_reply(&reply).map_err(|e| CallError::Protocol(e.to_string()))
+    let sealed = session
+        .seal(body.as_bytes())
+        .map_err(|e| CallError::Protocol(format!("cannot seal the request: {e}")))?;
+    let sealed_hex = wire::to_hex(&sealed);
+
+    let sealed_request = format!(
+        "POST {path} HTTP/1.1\r\n\
+         Host: {host}\r\n\
+         {credential}\
+         Content-Type: text/plain\r\n\
+         Content-Length: {length}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {sealed_hex}",
+        path = wire::RUN_PATH,
+        host = address.text,
+        credential = authorization_line(address),
+        length = sealed_hex.len(),
+    );
+
+    let sealed_reply = round_trip(&mut reader, &sealed_request, read_budget)?;
+
+    // The reply to a sealed request is hex, and nothing else in the protocol is.
+    // So a body that is not hex means the agent answered with a refusal or an
+    // error rather than a result -- and `read_reply` hands back the body, not the
+    // status line, so this is where a 401 surfaces. Reported as a refusal because
+    // that is what it is: the call could not be made.
+    let ciphertext = match wire::from_hex(sealed_reply.trim()) {
+        Ok(ciphertext) => ciphertext,
+        Err(_) => {
+            return Err(CallError::Refused(format!(
+                "the agent did not answer with a sealed reply: {}",
+                sealed_reply.trim()
+            )));
+        }
+    };
+    let plaintext = session
+        .open(&ciphertext)
+        .map_err(|e| CallError::Protocol(format!("the sealed reply did not open: {e}")))?;
+    let text = String::from_utf8(plaintext)
+        .map_err(|e| CallError::Protocol(format!("the sealed reply is not text: {e}")))?;
+
+    wire::decode_run_reply(&text).map_err(|e| CallError::Protocol(e.to_string()))
 }
 
 /// Asks an agent which agent it is.
@@ -164,31 +266,6 @@ fn authorization_line(address: &AgentAddress) -> String {
     }
 }
 
-/// One `POST`, and the body that came back.
-fn post(
-    address: &AgentAddress,
-    path: &str,
-    body: &str,
-    command_timeout_seconds: u64,
-) -> Result<String, CallError> {
-    let request = format!(
-        "POST {path} HTTP/1.1\r\n\
-         Host: {}\r\n\
-         {}\
-         Content-Type: application/json\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n\
-         \r\n\
-         {body}",
-        address.text,
-        authorization_line(address),
-        body.len()
-    );
-
-    let read_budget = Duration::from_secs(command_timeout_seconds) + REPLY_ALLOWANCE;
-    exchange(address, &request, read_budget)
-}
-
 /// One `GET`, and the body that came back.
 fn get(address: &AgentAddress, path: &str) -> Result<String, CallError> {
     let request = format!(
@@ -209,6 +286,18 @@ fn exchange(
     request: &str,
     read_budget: Duration,
 ) -> Result<String, CallError> {
+    let mut reader = open(address, read_budget)?;
+    round_trip(&mut reader, request, read_budget)
+}
+
+/// Connects, leaving a reader that more than one message can be sent on.
+///
+/// Split out from [`exchange`] because a sealed call needs **two** messages on one
+/// connection: the handshake, and then the command. The reader has to survive
+/// between them -- a fresh `BufReader` for the second message would lose whatever
+/// the first read ahead into its buffer, which is the kind of bug that works on a
+/// fast network and fails on a slow one.
+fn open(address: &AgentAddress, read_budget: Duration) -> Result<BufReader<TcpStream>, CallError> {
     let mut addresses = address
         .text
         .to_socket_addrs()
@@ -221,20 +310,36 @@ fn exchange(
         )));
     };
 
-    let mut stream = TcpStream::connect_timeout(&target, CONNECT_BUDGET)
+    let stream = TcpStream::connect_timeout(&target, CONNECT_BUDGET)
         .map_err(|e| CallError::Transport(format!("cannot reach {}: {e}", address.text)))?;
     stream
         .set_read_timeout(Some(read_budget))
         .map_err(|e| CallError::Transport(e.to_string()))?;
 
-    stream
+    Ok(BufReader::new(stream))
+}
+
+/// Sends one request on an open connection and reads its reply.
+fn round_trip(
+    reader: &mut BufReader<TcpStream>,
+    request: &str,
+    read_budget: Duration,
+) -> Result<String, CallError> {
+    reader
+        .get_ref()
+        .set_read_timeout(Some(read_budget))
+        .map_err(|e| CallError::Transport(e.to_string()))?;
+
+    reader
+        .get_mut()
         .write_all(request.as_bytes())
         .map_err(|e| CallError::Transport(format!("cannot send the request: {e}")))?;
-    stream
+    reader
+        .get_mut()
         .flush()
         .map_err(|e| CallError::Transport(format!("cannot send the request: {e}")))?;
 
-    read_reply(stream)
+    read_reply(reader)
 }
 
 /// Reads a reply: status line, headers, then exactly the declared body length.
@@ -244,9 +349,7 @@ fn exchange(
 /// until the peer decides to close, and with no read timeout that is a hang. The
 /// length is there in the reply; using it is why the client does not need to
 /// trust the server to hang up.
-fn read_reply(stream: TcpStream) -> Result<String, CallError> {
-    let mut reader = BufReader::new(stream);
-
+fn read_reply(reader: &mut BufReader<TcpStream>) -> Result<String, CallError> {
     let mut status_line = String::new();
     reader
         .read_line(&mut status_line)

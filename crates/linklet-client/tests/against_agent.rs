@@ -211,7 +211,11 @@ fn no_agent_at_the_address_is_a_transport_error_and_not_a_result() {
     // The case every caller meets first. The rendered text starts with the fact
     // that decides what to do next, because a reader must not have to work out
     // from prose whether the command ran.
-    let address = AgentAddress::new("127.0.0.1:1").expect("a valid address");
+    // With a token, so that the call gets as far as the network. Without one it is
+    // refused before connecting, which is a different test and a better error.
+    let address = AgentAddress::new("127.0.0.1:1")
+        .expect("a valid address")
+        .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
     let error = run(
         &address,
         &RunRequest {
@@ -228,7 +232,9 @@ fn no_agent_at_the_address_is_a_transport_error_and_not_a_result() {
 
 #[test]
 fn an_address_that_cannot_be_resolved_is_named() {
-    let address = AgentAddress::new("no-such-host.invalid:8787").expect("shape is fine");
+    let address = AgentAddress::new("no-such-host.invalid:8787")
+        .expect("shape is fine")
+        .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
     let error = run(
         &address,
         &RunRequest {
@@ -300,6 +306,12 @@ fn a_host_with_no_token_against_a_secured_agent_is_refused_too() {
     // The other half: an agent configured with a token refuses a caller who has
     // none, which is the case a deployment hits when the environment variable is
     // set on one side only.
+    //
+    // Where the refusal happens changed when the channel became sealed, and for the
+    // better. It used to be the agent answering 401 after a round trip; now the
+    // client refuses before it opens a socket, because a sealed call with no token
+    // cannot be made at all -- the token is what authenticates the handshake. The
+    // caller gets a sentence saying so instead of a status code to interpret.
     let agent = Agent::start();
     let no_token = AgentAddress::new(agent.address.text.clone()).expect("the same address");
 
@@ -312,5 +324,7 @@ fn a_host_with_no_token_against_a_secured_agent_is_refused_too() {
     )
     .expect_err("no token");
 
-    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    assert!(matches!(error, CallError::BadAddress(_)), "{error:?}");
+    let text = render_call_error(&error);
+    assert!(text.contains("token"), "{text}");
 }

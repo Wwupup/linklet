@@ -11,6 +11,7 @@ name = "linklet-agent"
 path = "src/main.rs"
 
 [dependencies]
+linklet-adapters = { version = "0.1.0", path = "../linklet-adapters" }
 # The protocol, and nothing else. The agent and the host decode the same
 # definitions out of the same module, so they cannot come to disagree about what
 # a message is -- which is the failure a wire format is most likely to have and

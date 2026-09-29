@@ -18,6 +18,19 @@ to answer one question: **what can I do now that I could not do before?**
   middle can complete a handshake with both ends and still cannot open a byte,
   because the session they build is not the one either end built.
 
+### Added
+
+- **The command and its output cross the network sealed.** A sealed call is two
+  messages on one connection: the handshake, then the command sealed under the
+  session it produced. The handshake cannot protect itself -- the initiator cannot
+  derive a key until it has the responder public key -- so the exchange comes
+  first and the command follows it. The alternative, one round trip with the
+  command sealed under the token alone, leaves the command readable by anyone who
+  later learns the token, which is the wrong half to protect.
+- A sealed call needs a token, and the client says so **before opening a socket**
+  rather than after a round trip. The token is what authenticates the handshake,
+  so without one there is no call to make.
+
 ### Changed
 
 - **The project may now depend on vetted crates, in the adapters.** The rule that
@@ -80,6 +93,19 @@ to answer one question: **what can I do now that I could not do before?**
   middle can complete a handshake with both ends and still cannot open a byte,
   because the session they build is not the one either end built.
 
+### Added
+
+- **The command and its output cross the network sealed.** A sealed call is two
+  messages on one connection: the handshake, then the command sealed under the
+  session it produced. The handshake cannot protect itself -- the initiator cannot
+  derive a key until it has the responder public key -- so the exchange comes
+  first and the command follows it. The alternative, one round trip with the
+  command sealed under the token alone, leaves the command readable by anyone who
+  later learns the token, which is the wrong half to protect.
+- A sealed call needs a token, and the client says so **before opening a socket**
+  rather than after a round trip. The token is what authenticates the handshake,
+  so without one there is no call to make.
+
 ### Changed
 
 - `dispatch` takes a `ToolRunner` rather than a closure per capability. With one
@@ -106,10 +132,10 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Known gaps
 
-- **The channel is not wired into the agent and client yet.** It exists, it is
-  tested, and nothing uses it: the token still travels in cleartext over HTTP.
-  Until that is done, this is a tool for a network you control and the auth module
-  documentation says so.
+- **The handshake is authenticated by a shared secret, not by a certificate.**
+  Whoever holds the token can talk to the agent; there is no notion of which caller
+  it is, so there is no per-caller revocation and no audit trail. A deployment that
+  needs those needs identities, which this does not have.
 - **No cipher agility and no version negotiation.** One cipher, one curve, one
   key derivation, chosen at build time.
 - No automated run against a second machine. `docs/testing.md` says what that
@@ -134,6 +160,19 @@ skeleton and M5.
   anywhere. The shared secret still authenticates the exchange: an attacker in the
   middle can complete a handshake with both ends and still cannot open a byte,
   because the session they build is not the one either end built.
+
+### Added
+
+- **The command and its output cross the network sealed.** A sealed call is two
+  messages on one connection: the handshake, then the command sealed under the
+  session it produced. The handshake cannot protect itself -- the initiator cannot
+  derive a key until it has the responder public key -- so the exchange comes
+  first and the command follows it. The alternative, one round trip with the
+  command sealed under the token alone, leaves the command readable by anyone who
+  later learns the token, which is the wrong half to protect.
+- A sealed call needs a token, and the client says so **before opening a socket**
+  rather than after a round trip. The token is what authenticates the handshake,
+  so without one there is no call to make.
 
 ### Changed
 

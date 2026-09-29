@@ -23,7 +23,9 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
+use linklet_adapters::HkdfChannel;
 use linklet_core::auth::{self, Token};
+use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::json;
 use linklet_core::wire::{self, WireError};
 
@@ -196,17 +198,37 @@ pub fn write_reply(
 /// Pure: it takes a parsed request and returns a status and a body. The socket is
 /// somebody else's problem, which is what lets every routing and protocol case be
 /// tested without binding a port.
-pub fn answer(request: &Request, expected: &Token) -> (u16, String) {
-    // Authentication first, before the path is even looked at. A request that is
-    // not from someone who knows the secret gets the same answer whatever it was
-    // asking for, so the reply cannot be used to discover which paths exist.
+pub fn answer(
+    request: &Request,
+    expected: &Token,
+    session: &mut Option<Box<dyn Sealed>>,
+) -> (u16, String, bool) {
+    // The handshake comes **before** authentication and carries no token, which
+    // looks backwards and is not: the message holds nothing but a public key, so
+    // there is nothing to protect, and refusing it would mean a caller could not
+    // even begin. Everything a caller might want protected is behind the next
+    // message, and that one does need the token.
+    if request.method == "POST" && request.path == wire::HELLO_PATH {
+        return match begin_session(request, expected, session) {
+            Ok(reply) => (200, reply, true),
+            Err(error) => (400, json::write(&wire::wire_error_to_json(&error)), false),
+        };
+    }
+
+    // Authentication before the path is even looked at. A request that is not from
+    // someone who knows the secret gets the same answer whatever it was asking for,
+    // so the reply cannot be used to discover which paths exist.
     let presented = request
         .authorization
         .as_deref()
         .and_then(auth::token_from_header);
     let authorized = presented.is_some_and(|token| auth::token_matches(expected.expose(), token));
     if !authorized {
-        return (auth::UNAUTHORIZED, json::write(&auth::unauthorized_body()));
+        return (
+            auth::UNAUTHORIZED,
+            json::write(&auth::unauthorized_body()),
+            false,
+        );
     }
 
     match (request.method.as_str(), request.path.as_str()) {
@@ -216,27 +238,86 @@ pub fn answer(request: &Request, expected: &Token) -> (u16, String) {
                 "name" => "linklet-agent",
                 "version" => env!("CARGO_PKG_VERSION"),
             }),
+            false,
         ),
 
         ("POST", path) if path == wire::RUN_PATH => {
-            let value = match json::parse(&request.body) {
-                Ok(value) => value,
+            // A command with no handshake on this connection is refused rather
+            // than run in the clear. Refusing is the whole point of the
+            // exchange -- an agent that fell back to a plaintext path would leave
+            // the fallback as the thing an attacker forces.
+            let Some(session) = session.as_mut() else {
+                return (
+                    400,
+                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                        "a command must be sealed: send POST /handshake on this connection first"
+                            .to_string(),
+                    ))),
+                    false,
+                );
+            };
+
+            // The body is hex of the sealed JSON, because the framing below this
+            // is textual by construction. Doubling the size of a body that is
+            // already capped is cheaper than making every path in the HTTP layer
+            // carry bytes, and it has the small virtue of being unable to contain
+            // a delimiter.
+            let Ok(ciphertext) = wire::from_hex(&request.body) else {
+                return (401, json::write(&auth::unauthorized_body()), false);
+            };
+
+            let Ok(plaintext) = session.open(&ciphertext) else {
+                // The same refusal as a bad token, on purpose: whether the secret
+                // was wrong or the bytes were altered is not a distinction the
+                // caller needs and not one an attacker should be given.
+                return (401, json::write(&auth::unauthorized_body()), false);
+            };
+
+            // A sealed message that does not decode as UTF-8 is authentic and
+            // unusable, which is a different failure from a forged one -- but both
+            // end with no command run, so both answer the same way.
+            let Ok(text) = String::from_utf8(plaintext) else {
+                return (
+                    400,
+                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                        "the sealed request is not UTF-8".to_string(),
+                    ))),
+                    false,
+                );
+            };
+
+            let Ok(value) = json::parse(&text) else {
+                return (
+                    400,
+                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                        "the sealed request is not JSON".to_string(),
+                    ))),
+                    false,
+                );
+            };
+
+            let run_request = match wire::run_request_from_json(&value) {
+                Ok(run_request) => run_request,
                 Err(error) => {
-                    return (
-                        400,
-                        json::write(&wire::wire_error_to_json(&WireError::BadRequest(
-                            error.to_string(),
-                        ))),
-                    );
+                    return (400, json::write(&wire::wire_error_to_json(&error)), false);
                 }
             };
 
-            match wire::run_request_from_json(&value) {
-                Ok(run_request) => {
-                    let outcome = crate::execute::run(&run_request);
-                    (200, wire::encode_run_reply(&outcome))
-                }
-                Err(error) => (400, json::write(&wire::wire_error_to_json(&error))),
+            let outcome = crate::execute::run(&run_request);
+            let reply = wire::encode_run_reply(&outcome);
+
+            // The reply is sealed with the same session. A reply that went back in
+            // the clear would leak the command's output, which is the part a
+            // caller most wants kept.
+            match session.seal(reply.as_bytes()) {
+                Ok(sealed) => (200, wire::to_hex(&sealed), false),
+                Err(_) => (
+                    500,
+                    json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                        "the reply could not be sealed".to_string(),
+                    ))),
+                    false,
+                ),
             }
         }
 
@@ -249,6 +330,7 @@ pub fn answer(request: &Request, expected: &Token) -> (u16, String) {
                 "{} is not a method this path answers",
                 request.method
             )))),
+            false,
         ),
 
         (_, path) => (
@@ -256,33 +338,91 @@ pub fn answer(request: &Request, expected: &Token) -> (u16, String) {
             json::write(&wire::wire_error_to_json(&WireError::NoSuchPath(
                 path.to_string(),
             ))),
+            false,
         ),
     }
 }
 
-/// Serves one connection: read, answer, close.
+/// Answers a handshake and leaves the session in `session`.
+///
+/// The two sides both generate a key pair for this handshake and **discard the
+/// private half when it is done**, which is where forward secrecy comes from: an
+/// attacker who records this exchange and later learns the token still needs
+/// private keys that no longer exist.
+///
+/// The token is mixed into the key derivation, so it authenticates the exchange.
+/// Without that an attacker who could rewrite traffic would complete a handshake
+/// with each side and read everything; with it, the session they compute is not the
+/// one either end built. `linklet-adapters/tests/handshake.rs` demonstrates that.
+fn begin_session(
+    request: &Request,
+    expected: &Token,
+    session: &mut Option<Box<dyn Sealed>>,
+) -> Result<String, WireError> {
+    let value = json::parse(&request.body)
+        .map_err(|error| WireError::BadRequest(format!("the handshake is not JSON: {error}")))?;
+    let peer = wire::handshake_public_from_json(&value)?;
+    let peer = EphemeralPublic::from_bytes(peer)
+        .map_err(|error| WireError::BadRequest(error.to_string()))?;
+
+    let (ours, established) = HkdfChannel
+        .accept(expected.expose().as_bytes(), &peer)
+        .map_err(|error| WireError::BadRequest(error.to_string()))?;
+
+    // Replacing rather than adding: one connection carries one handshake. A second
+    // one would silently orphan the first session and leave the caller sealing with
+    // a key the agent no longer holds, which fails in a way that looks like a wrong
+    // token.
+    *session = Some(established);
+
+    Ok(json::write(&wire::handshake_to_json(ours.as_bytes())))
+}
+
+/// Serves one connection: read, answer, and possibly read again.
+///
+/// **Two messages at most, and the first must be the handshake.** The handshake
+/// cannot protect itself -- the initiator cannot derive a key until it has the
+/// responder's public key -- so the exchange has to happen before the command can
+/// be sealed. Doing both on one connection is what keeps the agent stateless: a
+/// session that had to survive between connections would need a table, an eviction
+/// policy, and therefore a way to be exhausted.
 ///
 /// Errors are answered rather than logged and dropped. A peer that gets nothing
-/// back has to guess whether the agent is slow, dead, or refusing, and guessing
-/// is what this project exists to remove.
+/// back has to guess whether the agent is slow, dead, or refusing, and guessing is
+/// what this project exists to remove.
 pub fn serve_connection(mut stream: TcpStream, expected: &Token) {
-    let (status, body) = match read_request(&stream) {
-        Ok(request) => answer(&request, expected),
-        Err(error) => (
-            400,
-            json::write(&wire::wire_error_to_json(&WireError::BadRequest(
-                error.to_string(),
-            ))),
-        ),
-    };
+    let mut session: Option<Box<dyn Sealed>> = None;
 
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Unknown",
-    };
-    let _ = write_reply(&mut stream, status, reason, &body);
+    loop {
+        let (status, body, keep_going) = match read_request(&stream) {
+            Ok(request) => answer(&request, expected, &mut session),
+            Err(error) => (
+                400,
+                json::write(&wire::wire_error_to_json(&WireError::BadRequest(
+                    error.to_string(),
+                ))),
+                false,
+            ),
+        };
+
+        let reason = match status {
+            200 => "OK",
+            400 => "Bad Request",
+            401 => "Unauthorized",
+            404 => "Not Found",
+            405 => "Method Not Allowed",
+            500 => "Internal Server Error",
+            _ => "Unknown",
+        };
+        if write_reply(&mut stream, status, reason, &body).is_err() {
+            return;
+        }
+
+        // Only a handshake keeps the connection open, and only so that the sealed
+        // request can follow on it. Everything else closes, because a connection
+        // that stays open is a connection someone has to time out.
+        if !keep_going {
+            return;
+        }
+    }
 }
