@@ -18,6 +18,7 @@ the change that made it wrong.
 | How do I call this from an agent? | `docs/MCP.md` |
 | How will my work be judged? | `docs/review-m1.md` |
 | Is the tool surface understandable? | `docs/tool-readability.md` |
+| What went wrong on the way here? | `docs/retrospective.md` |
 | What is the state of the code? | below |
 
 ## What kind of document is it
@@ -65,6 +66,7 @@ message, or nothing.
 | `docs/decisions.md` | decision | the choices that are not obvious from the code |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
 | `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
+| `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |
 
 ## The code
 
