@@ -33,6 +33,7 @@ mod probe;
 mod target;
 pub mod testbed;
 mod tool;
+pub mod transfer;
 pub mod wire;
 
 pub use error::TargetError;
