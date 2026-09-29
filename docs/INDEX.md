@@ -68,7 +68,7 @@ message, or nothing.
 | `docs/rationale.md` | decision | why each rule exists, read when changing one |
 | `docs/decisions.md` | decision | the choices that are not obvious from the code |
 | `docs/framing.md` | rule | the frame format, and the defences that live outside it |
-| `docs/transfer.md` | rule | moving a file: the design and its thirteen failure modes |
+| `docs/transfer.md` | rule | moving a file: the design and its fourteen failure modes |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
 | `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
 | `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |

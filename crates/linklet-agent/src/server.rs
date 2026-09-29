@@ -138,13 +138,23 @@ fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>, root: &
         return;
     };
 
+    let _ = write_reply(connection, session.as_mut(), &reply);
+}
+
+/// Seals one reply and writes it, saying whether it went.
+///
+/// One place for the seal-and-write, because three callers do it and each has to get the
+/// same two things right: one buffer reused rather than allocated per message (T10), and
+/// both results checked (`docs/framing.md` item 4).
+fn write_reply(connection: &mut Connection, session: &mut dyn Sealed, reply: &Json) -> bool {
     let mut sealed = Vec::new();
     if session
-        .seal_into(json::write(&reply).as_bytes(), &mut sealed)
-        .is_ok()
+        .seal_into(json::write(reply).as_bytes(), &mut sealed)
+        .is_err()
     {
-        let _ = connection.write_frame(Kind::Sealed, &sealed);
+        return false;
     }
+    connection.write_frame(Kind::Sealed, &sealed).is_ok()
 }
 
 /// What an answered request leaves to be sent.
@@ -201,14 +211,17 @@ fn answer(
 ///
 /// The manifest is checked **in full, before a chunk is read**: the size against the
 /// ceiling (T3, and half of T11), the shape of the digest, and the path against the
-/// configured root (T1, the most severe item in the document). Only then does the
-/// receiving start, and `linklet_adapters`' transfer module is where the rest of the
-/// numbered failures are defended -- the `.part`, the running total, the digest
-/// comparison, and the rename.
+/// configured root (T1, the most severe item in the document). Then the acceptance goes
+/// out -- **before the body** -- and only then does the receiving start.
 ///
-/// Every failure is a **refusal** rather than a closed connection: the caller learns
-/// which check failed, and by the time this returns a failure the `.part` has been
-/// deleted and the real path was never touched.
+/// That order is T14, and it was found on a real machine rather than reasoned about: the
+/// sender has the file ready and streams it as soon as the manifest is written, so a
+/// refusal that is written while the sender is still sending is a refusal the sender never
+/// reads. See [`wire::manifest_accepted`].
+///
+/// Every failure is a **refusal** rather than a closed connection: the caller learns which
+/// check failed, and by the time this returns a failure the `.part` has been deleted and
+/// the real path was never touched.
 fn receive(
     connection: &mut Connection,
     session: &mut dyn Sealed,
@@ -219,6 +232,13 @@ fn receive(
         Ok(target) => target,
         Err(error) => return wire::reply_refused(&error.to_string()),
     };
+
+    // Answer the manifest before reading a byte of the file. A sender that has not been
+    // answered here has sent nothing, which is what stops the refusal below from racing
+    // the body -- and what gives the sender a reason to wait.
+    if !write_reply(connection, session, &wire::manifest_accepted(manifest)) {
+        return wire::reply_refused("the acceptance could not be sent");
+    }
 
     match receive_body(connection, session, manifest, &target) {
         Ok(outcome) => wire::encode_transfer_reply(&outcome),

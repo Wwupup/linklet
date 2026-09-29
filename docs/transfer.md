@@ -73,8 +73,10 @@ at all.
 ```
 one connection:
   frame 0      Kind::Hello  -> the handshake, in the clear
-  frame 1      Kind::Sealed -> seal(manifest)   { op: "push", path, bytes, sha256 }
-  frame 2..k   Kind::Sealed -> seal(chunk)      k = ceil(bytes / CHUNK)
+  frame 1      Kind::Sealed -> seal(manifest)      { op: "push", path, bytes, sha256 }
+  frame 2      Kind::Sealed -> seal(accepted)      { accepted: true, bytes }
+  frame 3..k   Kind::Sealed -> seal(chunk)         k = ceil(bytes / CHUNK)
+  frame k+1    Kind::Sealed -> seal(result)        { bytes, sha256 }
 
 CHUNK = 1 MiB, well under MAX_PAYLOAD, so a chunk never meets the frame ceiling
 ```
@@ -84,6 +86,13 @@ there because a manifest and a command arrive on the same connection in the same
 It rides *alongside* the manifest's three fields rather than wrapping them, so the
 message a receiver reads first **is** the manifest -- which is what the design needs,
 since the size in it is what bounds the message count.
+
+The **accepted** frame is T14 below, and it is a separate message rather than a field on
+the result for a reason worth stating: the sender needs an answer *before* it sends the
+body, and the result can only be computed after the body has arrived. Its shape carries
+`accepted` and no `sha256` while a result carries `sha256` and no `accepted`, because two
+reply shapes that overlap on `bytes` alone would let a client read an acceptance as a
+result.
 
 **The other direction is the same shape with the manifest on the other side**, because
 the size has to come from whoever holds the file:
@@ -98,10 +107,16 @@ one connection:
 
 The manifest is a *reply* here and a *request* there, and that is the whole difference
 between the two operations from the wire's point of view. Both sides therefore run the
-same receiver, and the same thirteen failures apply in both directions -- including
+same receiver, and **the same fourteen failures apply in both directions** -- including
 T1, which is about to be read as much as about to be written: without the root a pull
 would read any file on the machine, which is a different severity of mistake and not a
 smaller one.
+
+A pull has no *accepted* frame, and it does not need one: the host is the receiver and it
+knows the size and the digest before the body arrives, so its refusal is its own and
+already in hand. What it can do is close while the agent is mid-write, and the agent then
+reports a broken connection to nobody. That is recorded rather than fixed: the side that
+has something to say is the one that refused.
 
 Streaming on both ends: read 1 MiB, seal it, frame it, write it. **The file is never
 in memory whole**, on either side.
@@ -191,6 +206,27 @@ one transfer per connection*, the same rule the two-message protocol already had
 told the transfer failed. Retrying overwrites it, which is safe, so the honest
 resolution is **to declare the operation idempotent** rather than to build a
 transaction. That is written down rather than left for a caller to guess.
+
+**T14. The receiver's refusal never reaches the sender.** The sender has the whole file
+ready, so it streams the body as soon as the manifest is written. A receiver that decides
+at the manifest -- the path is outside its root, the size is over its ceiling -- therefore
+writes its refusal while the sender is still sending, and then closes **with the sender's
+unread chunks in its receive queue**. Windows resets a socket closed in that state, and a
+reset discards what the peer had not read yet: the refusal is destroyed in transit. What
+the caller reported was *"the agent closed the connection without answering"* -- true, and
+no help at all to whoever pushed a build to the wrong place.
+
+*Stopped by answering the manifest before the body*: the receiver's acceptance is a
+message, so the sender has something to wait for and sends nothing it is about to have
+refused. That also removes the work a doomed transfer would cost the receiver, which
+draining the refused body would have paid instead.
+
+**This one was found on a real machine, and not one of the loopback tests could lose the
+race reliably**: on loopback the sender usually wins and the refusal gets read in time, so
+every test passed while a real link failed on every refusal. The test that pins it is
+therefore about the order rather than the outcome --
+`crates/linklet-client/tests/manifest_refusal.rs` runs a fake agent that refuses and then
+looks at the socket, so a sender that streams first is caught deterministically.
 
 ## What is deliberately not in this milestone
 

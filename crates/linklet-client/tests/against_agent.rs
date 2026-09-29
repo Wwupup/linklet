@@ -605,9 +605,25 @@ fn a_push_that_the_agent_refuses_says_so_and_is_not_a_transport_failure() {
 
     // And a real one: the agent's root, asked to receive a file whose path is a
     // directory that does not exist, refuses rather than failing halfway.
+    //
+    // **The reason has to survive the trip, and that is not a detail.** This assertion was
+    // `matches!(error, CallError::Refused(_))` and passed on loopback while a real machine
+    // reported "the agent closed the connection without answering" every time: the sender
+    // streamed the body before reading the agent's answer, so the agent's close -- with
+    // those bytes unread -- reset the connection and destroyed the refusal. See T14 in
+    // `docs/transfer.md` and `tests/manifest_refusal.rs`, which reproduces it
+    // deterministically.
     let error = push(&agent.address, &source, r"no\such\directory\build.exe")
         .expect_err("the directory does not exist");
-    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    match &error {
+        CallError::Refused(reason) => {
+            assert!(
+                reason.contains("no\\such\\directory") || reason.contains("cannot find"),
+                "the refusal should name the path the agent could not write: {reason}"
+            );
+        }
+        other => panic!("a refusal has to arrive as a refusal, and got {other:?}"),
+    }
     assert!(
         !agent
             .root

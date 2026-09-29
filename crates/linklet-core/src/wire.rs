@@ -420,8 +420,59 @@ pub fn transfer_outcome_from_reply(reply: &Reply) -> Result<TransferOutcome, Wir
 }
 
 /// The reply to a pull: the manifest of what is about to arrive.
+///
+/// A pull needs this because the size has to come from whoever holds the file, and the
+/// receiver needs it before the first chunk so it knows how many to expect. A push does
+/// **not** use it -- an accepted push is answered with [`manifest_accepted`], which is a
+/// different shape on purpose.
 pub fn manifest_reply(manifest: &Manifest) -> Json {
     reply_result(Json::Object(manifest_fields(manifest)))
+}
+
+/// The receiver's answer to a push's manifest: that it has read it, and what it will take.
+///
+/// This message exists because of a failure found on a real machine, and `docs/transfer.md`
+/// T14 is the whole of it. The sender has the file ready and nothing to stop it streaming,
+/// so when the receiver refuses at the manifest the sender is already writing; the receiver
+/// then closes with those unread bytes in its queue, Windows resets that connection, and the
+/// reset destroys the refusal the sender never got round to reading. The sender reported
+/// "the agent closed the connection without answering" -- true, and useless.
+///
+/// So the receiver answers the manifest before the body, and the sender waits for that
+/// answer. The size is echoed back for the sender to check: a receiver that accepted a
+/// different number has read a different manifest, and that is worth finding out here
+/// rather than from a digest.
+///
+/// **Deliberately not a [`TransferOutcome`].** An acceptance carries `accepted` and no
+/// `sha256`; a result carries `sha256` and no `accepted`. Two reply shapes overlapping on
+/// `bytes` alone is how a client comes to read an acceptance as an outcome.
+pub fn manifest_accepted(manifest: &Manifest) -> Json {
+    reply_result(object! { "accepted" => true, "bytes" => manifest.bytes as i64 })
+}
+
+/// The size a receiver said it would take, out of its answer to a manifest.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal, is not an acceptance, or carries
+/// no size.
+pub fn accepted_bytes_from_reply(reply: &Reply) -> Result<u64, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest(
+            "the manifest was refused".to_string(),
+        ));
+    };
+    if value.get("accepted").and_then(Json::as_bool) != Some(true) {
+        return Err(WireError::BadRequest(
+            "the reply is not an acceptance of the manifest".to_string(),
+        ));
+    }
+    match value.get("bytes") {
+        Some(Json::Int(bytes)) if *bytes >= 0 => Ok(*bytes as u64),
+        _ => Err(WireError::BadRequest(
+            "an acceptance needs a byte count".to_string(),
+        )),
+    }
 }
 
 /// A reply that carries an answer.

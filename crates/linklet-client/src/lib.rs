@@ -248,6 +248,36 @@ pub fn push(
         session.as_mut(),
         &Request::Push(manifest.clone()),
     )?;
+
+    // **The receiver's answer to the manifest, read before the body is sent.** This is T14,
+    // and it was found on a real machine rather than reasoned about: the sender has the
+    // whole file ready, so without this it streams the body into a receiver that may already
+    // have refused -- and the receiver's close, with those unread chunks in its queue, makes
+    // Windows reset the connection, which destroys the refusal before this side reads it.
+    // What the caller saw was "the agent closed the connection without answering".
+    //
+    // Two further replies are read on this connection: this one, and the transfer's result.
+    // The default budget of two messages is the handshake and one reply, so it is raised here
+    // rather than left to coincide.
+    connection.set_message_limit(connection.messages_read() + 2);
+    match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)? {
+        Reply::Refused(reason) => return Err(CallError::Refused(reason)),
+        Reply::Result(value) => {
+            let reply = Reply::Result(value);
+            let accepted = wire::accepted_bytes_from_reply(&reply).map_err(|error| {
+                CallError::Protocol(format!("the agent did not accept the manifest: {error}"))
+            })?;
+            // A receiver that accepted a different number has read a different manifest,
+            // and finding that out here beats finding it out from a digest.
+            if accepted != manifest.bytes {
+                return Err(CallError::Protocol(format!(
+                    "the agent accepted {accepted} bytes and {} were declared",
+                    manifest.bytes
+                )));
+            }
+        }
+    }
+
     send_body(&mut connection, session.as_mut(), local, &manifest).map_err(transfer_failure)?;
 
     match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)? {
@@ -324,7 +354,6 @@ fn transfer_failure(failure: TransferFailure) -> CallError {
         | TransferFailure::NotAFile { .. } => CallError::Protocol(failure.to_string()),
     }
 }
-
 /// Opens a connection and completes a handshake on it.
 ///
 /// The initiator's half of the handshake is dropped inside this function, and that

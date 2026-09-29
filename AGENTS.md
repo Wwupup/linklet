@@ -18,7 +18,7 @@ you are about to change a rule, not before.
 | `docs/decisions.md` | before arguing with a choice that looks wrong -- it may already be recorded as wrong |
 | `docs/retrospective.md` | before starting work, so the six failures are not paid for twice |
 | `docs/framing.md` | before touching the wire format or a connection |
-| `docs/transfer.md` | before moving a file: thirteen failure modes with a defence for each |
+| `docs/transfer.md` | before moving a file: fourteen failure modes with a defence for each |
 | `docs/smoke.md` | before claiming anything works on a real machine |
 | `docs/INDEX.md` | the map of this project, for keeping it current |
 

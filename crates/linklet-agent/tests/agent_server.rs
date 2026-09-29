@@ -39,6 +39,12 @@ const TEST_TOKEN: &str = "test-token-0123456789";
 /// A token that is well formed and not the one the agent holds.
 const WRONG_TOKEN: &str = "wrong-token-0123456789";
 
+/// A digest of the right shape, for the manifests these tests send.
+///
+/// Not all zeros: digits have no case, so a digest made of them cannot check that a
+/// comparison is case-sensitive -- a mistake made once already in `tests/transfer_paths.rs`.
+const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 /// A budget for the tests' own reads, long enough that a slow machine never
 /// misfires and short enough that a broken agent fails the suite quickly.
 const TEST_BUDGET: Duration = Duration::from_secs(30);
@@ -175,6 +181,16 @@ impl Conversation {
     /// have, and a body that is not a request at all. Going through the type would
     /// make those untestable, and they are exactly the messages an attacker sends.
     fn ask_json(&mut self, body: &str) -> Reply {
+        self.send_json(body);
+        self.read_one()
+    }
+
+    /// Writes one request, and reads nothing.
+    ///
+    /// Separate from [`Conversation::ask_json`] because the order matters for a
+    /// transfer: the sender writes the manifest and then waits for an answer, and a
+    /// test that could not stop between those two points could not check that.
+    fn send_json(&mut self, body: &str) {
         let sealed = self
             .session
             .seal(body.as_bytes())
@@ -182,7 +198,10 @@ impl Conversation {
         self.connection
             .write_frame(Kind::Sealed, &sealed)
             .expect("writing the request");
+    }
 
+    /// Reads one reply, opening it or reading a refusal that came in the clear.
+    fn read_one(&mut self) -> Reply {
         let frame = self
             .connection
             .read_frame(Kind::Sealed)
@@ -198,23 +217,39 @@ impl Conversation {
         })
     }
 
-    /// Sends a push request, then the file it describes, and returns the reply.
+    /// Sends a push request, waits for the answer to the manifest, and only then sends
+    /// the file -- if the manifest was accepted at all.
     ///
-    /// The manifest frame first and then one frame per chunk, which is the shape
-    /// `docs/transfer.md` describes. The body is sent from memory rather than through
-    /// `linklet_adapters`' sender on purpose: that function reads a file, and this test
-    /// is about what the *agent* does with the messages.
+    /// **The order is the client's, and it is the point of T14**: a sender that streams
+    /// before the receiver has answered puts the file on the wire behind a refusal its own
+    /// close will destroy. A helper that sent the body first would hide exactly the failure
+    /// this shape exists to prevent, which is what it did until a real machine found it.
+    ///
+    /// The body is sent from memory rather than through `linklet_adapters`' sender on
+    /// purpose: that function reads a file, and this test is about what the *agent* does
+    /// with the messages.
     fn push(&mut self, manifest: &Manifest, body: &[u8]) -> Reply {
-        let request = json::write(&wire::request_to_json(&wire::Request::Push(
+        self.send_json(&json::write(&wire::request_to_json(&wire::Request::Push(
             manifest.clone(),
-        )));
-        let sealed = self
-            .session
-            .seal(request.as_bytes())
-            .expect("sealing the manifest");
+        ))));
+
+        // Two replies are read on this connection from here: the answer to the manifest and
+        // the transfer's result. The default budget is the handshake and one reply, so the
+        // sender raises it -- exactly as `linklet-client` does, for exactly this reason.
         self.connection
-            .write_frame(Kind::Sealed, &sealed)
-            .expect("writing the manifest");
+            .set_message_limit(self.connection.messages_read() + 2);
+
+        let answer = self.read_one();
+        if matches!(answer, Reply::Refused(_)) {
+            // Refused at the manifest, so no chunk is sent -- which is the property the
+            // caller is asserting by getting this back.
+            return answer;
+        }
+        let accepted = wire::accepted_bytes_from_reply(&answer).expect("an acceptance");
+        assert_eq!(
+            accepted, manifest.bytes,
+            "the agent accepted a different size from the one declared"
+        );
 
         for chunk in body.chunks(CHUNK) {
             let sealed = self.session.seal(chunk).expect("sealing a chunk");
@@ -223,11 +258,7 @@ impl Conversation {
                 .expect("writing a chunk");
         }
 
-        let frame = self
-            .connection
-            .read_frame(Kind::Sealed)
-            .expect("the agent answers a push");
-        open(&mut self.session, &frame)
+        self.read_one()
     }
 }
 
@@ -644,6 +675,45 @@ fn a_frame_of_the_wrong_kind_is_refused_with_the_reason_in_it() {
 }
 
 // --- pushing a file ----------------------------------------------------------
+
+#[test]
+fn the_agent_answers_a_push_manifest_before_any_of_the_file_is_sent() {
+    // **Found on a real machine and not on loopback**, which is the whole reason this
+    // test is written as an order rather than as an outcome.
+    //
+    // The sender streams the body as soon as it has written the manifest, so a receiver
+    // that decides at the manifest has to say so *before* the body arrives. Otherwise it
+    // writes the refusal and closes with the sender's unread chunks in its receive queue
+    // -- and Windows resets a socket closed in that state, which destroys the refusal the
+    // sender had not read yet. What the sender reports instead is "the agent closed the
+    // connection without answering": true, and no help at all to whoever pushed a build
+    // to the wrong place.
+    //
+    // On loopback the reset usually loses the race and the refusal arrives; over a real
+    // link it lost it every time with a kilobyte of body. So what is checked here is the
+    // property that makes it deterministic: **no chunk is sent, and an answer comes back
+    // anyway.**
+    let agent = Agent::start();
+    let mut conversation = agent.sealed();
+    // Short, so a regression fails this test in seconds rather than in the default
+    // thirty. Nothing about the transfer needs longer.
+    conversation.connection.set_budget(Duration::from_secs(5));
+
+    conversation.send_json(&json::write(&wire::request_to_json(&Request::Push(
+        Manifest {
+            path: r"..\..\escaped.exe".to_string(),
+            bytes: 1024,
+            sha256: DIGEST.to_string(),
+        },
+    ))));
+
+    let reply = conversation.read_one();
+    let reason = refusal(reply);
+    assert!(
+        reason.contains("..") || reason.contains("escaped"),
+        "the refusal should name what it refused: {reason}"
+    );
+}
 
 #[test]
 fn a_pushed_file_lands_under_the_root_and_the_agent_reports_its_digest() {
