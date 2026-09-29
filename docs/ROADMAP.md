@@ -92,14 +92,31 @@ must not live (the decision).
 
 ## M5 -- being useful from an agent, and being honest about it
 
-- [ ] the MCP surface, deliberately **few and coarse**: one call per intent,
+- [x] the MCP surface, deliberately **few and coarse**: one call per intent,
       not one call per endpoint
-- [ ] the whole tool description fits in a paragraph, without caveats
+- [x] the whole tool description fits in a paragraph, without caveats
 - [ ] a check on the process itself: hand the tool list to a model that has not
-      seen this repository and see whether it can pick the right call
+      seen this repository and see whether it can pick the right call -- **not
+      done, and it is the one that tests the claim.** The other two check the
+      surface; this one checks whether the surface works on a reader with no
+      other context, which is the only question that matters and the one a test
+      cannot answer.
 
 *What you learn here:* why a tool description that needs a manual is a symptom
 of a bad interface, which is where this project came from.
+
+**What actually happened.** The surface is one tool, `check`, with a
+sixty-character description. Three rules keep it there, and they are enforced
+rather than remembered: `tests/tool_surface.rs` asserts the tool count, forbids a
+description from naming another tool, and gives every description a
+120-character budget. The reference point being guarded against had 13,758
+characters across seventeen tools, and no single step in it was ever wrong.
+
+Three capabilities that were planned here are **absent rather than stubbed**:
+`exec`, `logs` and file transfer. All three need something on the far side to
+talk to and there is nothing there yet, and rule 3 in `tool.rs` says a tool that
+answers "not implemented" is worse than a missing one. They arrive with the agent
+that serves them, which is the next thing.
 
 ---
 

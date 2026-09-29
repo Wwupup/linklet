@@ -13,6 +13,7 @@ the change that made it wrong.
 | Why does a rule exist? | `docs/rationale.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |
+| How do I call this from an agent? | `docs/MCP.md` |
 | How will my work be judged? | `docs/review-m1.md` |
 | What is the state of the code? | below |
 
