@@ -72,11 +72,11 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 
 | path | state | what it is |
 |---|---|---|
-| `crates/linklet-core/` | M1-M3 done | decisions; no I/O, no dependencies |
-| `crates/linklet-adapters/` | M2 done | sockets: the one place that opens one |
-| `crates/linklet-agent/` | M6 done | the target side: one file, one dependency |
-| `crates/linklet-client/` | M6 done | the host side of the agent protocol |
-| `crates/linklet-cli/` | M3 done | argv in, text out, exit code |
+| `crates/linklet-core/` | done | decisions. No I/O; `serde_json` is the only dependency, and it computes |
+| `crates/linklet-adapters/` | done | sockets and crypto: the only place either happens |
+| `crates/linklet-agent/` | done | the target side: binds a port, runs commands |
+| `crates/linklet-client/` | done | the host side of the agent protocol |
+| `crates/linklet-cli/` | done | argv in, text out, exit code |
 
 | file | what it holds |
 |---|---|
@@ -85,13 +85,24 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/error.rs` | `TargetError`, one variant per way to fail |
 | `crates/linklet-core/src/probe.rs` | the `Probe` trait, `check_targets`, the limits |
 | `crates/linklet-core/src/outcome.rs` | the output format and the exit codes: the contract |
+| `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
+| `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
+| `crates/linklet-core/src/auth.rs` | the token, and the constant-time comparison that is the point of it |
+| `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
+| `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
+| `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
+| `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
+| `crates/linklet-agent/src/http.rs` | the two-message connection, and the refusals |
+| `crates/linklet-agent/src/execute.rs` | running a command, and killing the tree it started |
+| `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |
-| `crates/linklet-core/tests/target_parsing.rs` | the specification for `parse_targets` |
-| `crates/linklet-core/tests/probe_check.rs` | reachability policy, against a fake probe |
-| `crates/linklet-core/tests/output_contract.rs` | the line format and exit codes, pinned |
-| `crates/linklet-core/tests/architecture.rs` | the layer rule, checked not trusted |
-| `crates/linklet-adapters/tests/tcp_probe.rs` | the part that needs a real socket |
+| `crates/linklet-core/tests/architecture.rs` | the layer rule and the dependency allowlist, checked not trusted |
+| `crates/linklet-core/tests/auth_secret.rs` | the token rules, and a timing test for the comparison |
+| `crates/linklet-adapters/tests/handshake.rs` | forward secrecy and the man in the middle |
+| `crates/linklet-adapters/tests/channel_sealing.rs` | confidentiality, integrity, ordering |
+| `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |
+| `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 
 ## Keeping this true
