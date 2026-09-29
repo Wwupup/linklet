@@ -6,9 +6,23 @@ by the next person, usually in the other direction.
 
 ---
 
-## D1. `linklet-core` has no dependencies. `linklet-adapters` has several.
+## D1. `linklet-core` depends on no crate that does I/O.
 
-**Decided at the skeleton, reconfirmed at the channel.**
+**Decided at the skeleton, narrowed twice since.**
+
+Originally: `linklet-core` depends on no crate at all. It now allows
+`serde_json`, and the rule was rewritten rather than quietly broken.
+
+What the rule was always protecting is that core does no I/O -- its tests need no
+network, no files and no cleanup, so they run in milliseconds and cannot fail for a
+reason outside the code. A crate that parses JSON and touches nothing does not
+threaten that.
+
+What was wrong was the wording. "Depends on nothing" is satisfied by a rule rather
+than a reason, so it stayed in force past the point where its reason applied. The
+gate now takes a named allowlist where every entry carries a sentence explaining
+why that crate does no I/O, and a second test checks the list actually matches the
+manifest -- an allowlist that matches nothing looks green and admits everything.
 
 The core is where the decisions live, and a decision that links against a library
 is a decision that cannot be tested without that library. `linklet-core` having an
@@ -28,6 +42,18 @@ I/O.
 `linklet-adapters/src/channel.rs` implements it with `chacha20poly1305`, `hkdf`
 and `sha2`. The core still has no dependencies; the arithmetic is in crates other
 people have attacked.
+
+### What the JSON swap cost, stated rather than glossed
+
+Eleven tests used to assert the exact words the old parser produced, and one asserted
+an exact byte offset. None of those assertions survive, because the words and the
+offset convention are `serde_json`'s now. The tests assert properties instead:
+malformed input is refused, the refusal carries words, and the position is inside the
+input and moves with the problem.
+
+That is a genuine loss of specificity. It is also the honest boundary: a test that
+asserts a dependency's phrasing is a test that breaks when the dependency is
+patched, and a suite that cries wolf gets ignored.
 
 ### The part of this that went wrong
 
@@ -60,7 +86,7 @@ affected tools that read git's configuration -- which cargo does, because of
 
 | component | hand-written | why it is defensible, or not |
 |---|---|---|
-| JSON codec | yes, 660 lines | RFC 8259 is exact and every case is testable against it. **Defensible, but `serde_json` is zero lines and was the wrong call on effort alone.** |
+| JSON codec | **was**, 672 lines; now 345 delegating to `serde_json` | It was correct and tested, and it was still the wrong call: it parsed untrusted input from the network, and a hand-written parser in that position is the classic remote-vulnerability shape. The 345 lines that remain are the domain enum and the two conversions between it and `serde_json`, not a parser. |
 | HTTP (client and server) | yes, ~300 lines each | Only `Content-Length` framing, one request per connection, in a protocol this project owns both ends of. Defensible. |
 | MCP framing | yes, ~240 lines | Newline-delimited JSON-RPC, no batching, no negotiation. Defensible. |
 | SHA-256 | **deleted** | Not defensible. Published vectors and it still failed three times. |

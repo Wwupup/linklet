@@ -234,439 +234,116 @@ impl std::fmt::Display for JsonError {
 
 impl std::error::Error for JsonError {}
 
-fn error<T>(message: impl Into<String>, at: usize) -> Result<T, JsonError> {
-    Err(JsonError {
-        message: message.into(),
-        at,
-    })
+/// Turns a parsing failure into one carrying a byte offset.
+///
+/// `serde_json` reports a line and a column; this project's callers are protocol
+/// readers who want an offset into what they sent. The conversion is a walk over
+/// the input and it is worth doing rather than changing the contract: "at byte
+/// 402" is actionable and "line 3 column 12" makes the reader count.
+///
+/// A column is a character position while `at` is a byte offset. They agree for
+/// ASCII, which is what this project's wire format is, and a multi-byte character
+/// before the error would make the offset approximate. That is recorded rather
+/// than hidden: the alternative is counting characters instead of bytes and being
+/// wrong for the ASCII case that actually happens.
+fn locate(error: &serde_json::Error, text: &str) -> usize {
+    let column = error.column().saturating_sub(1);
+    let line = error.line();
+    if line <= 1 {
+        return column;
+    }
+
+    let mut offset = 0usize;
+    for (index, part) in text.split_inclusive('\n').enumerate() {
+        if index + 1 == line {
+            return offset + column;
+        }
+        offset += part.len();
+    }
+    text.len()
 }
 
-/// Reads one JSON value from the whole of `text`.
+/// Reads one JSON value.
 ///
-/// Trailing whitespace is allowed; trailing anything else is not, because a
-/// stdio protocol that silently ignores half a line is a protocol that ignores
-/// the half carrying the mistake.
+/// **The parsing is `serde_json`'s, and that is the point of this function.** Its
+/// only job is to turn the result into this project's vocabulary and the failure
+/// into this project's error type. A hand-written parser once lived here -- some
+/// six hundred lines of it, with thirty tests -- and it was removed not because it
+/// was wrong but because of where it sits: on the path that reads untrusted input
+/// from the network, and that is the last place to keep code whose bugs only a
+/// fuzzer finds.
 ///
 /// # Errors
 ///
-/// Returns [`JsonError`] with the byte offset of the first thing that did not
-/// fit. It never panics and never loops: a hand-written parser fed by a network
-/// peer is the classic place for a hang, and the tests here include inputs built
-/// to provoke one.
+/// [`JsonError`] when the text is not exactly one JSON value.
 pub fn parse(text: &str) -> Result<Json, JsonError> {
-    let bytes = text.as_bytes();
-    let mut parser = Parser { bytes, at: 0 };
-    parser.skip_whitespace();
-    let value = parser.value()?;
-    parser.skip_whitespace();
-    if parser.at != bytes.len() {
-        return error("trailing data after the value", parser.at);
-    }
-    Ok(value)
-}
-
-struct Parser<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl Parser<'_> {
-    fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.at).copied()
-    }
-
-    fn skip_whitespace(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
-            self.at += 1;
-        }
-    }
-
-    fn literal(&mut self, rest: &str, value: Json) -> Result<Json, JsonError> {
-        let start = self.at;
-        self.at += 1; // the first character, already matched by the caller
-        for byte in rest.bytes() {
-            match self.peek() {
-                Some(found) if found == byte => self.at += 1,
-                _ => return error("incomplete literal", start),
+    serde_json::from_str::<serde_json::Value>(text)
+        .map(from_value)
+        .map_err(|error| {
+            let at = locate(&error, text);
+            JsonError {
+                message: error.to_string(),
+                at,
             }
-        }
-        // A literal followed by a letter is a different, invalid word: `nulll`
-        // must not parse as `null` with a trailing `l` that the caller then has
-        // to notice.
-        if matches!(self.peek(), Some(c) if c.is_ascii_alphanumeric()) {
-            return error("literal followed by a letter", start);
-        }
-        Ok(value)
-    }
-
-    fn value(&mut self) -> Result<Json, JsonError> {
-        match self.peek() {
-            None => error("input ended where a value was expected", self.at),
-            Some(b'n') => self.literal("ull", Json::Null),
-            Some(b't') => self.literal("rue", Json::Bool(true)),
-            Some(b'f') => self.literal("alse", Json::Bool(false)),
-            Some(b'"') => self.string().map(Json::Str),
-            Some(b'[') => self.array(),
-            Some(b'{') => self.object(),
-            Some(b'-' | b'0'..=b'9') => self.number(),
-            Some(other) => error(
-                format!(
-                    "unexpected byte {:?} where a value was expected",
-                    other as char
-                ),
-                self.at,
-            ),
-        }
-    }
-
-    fn string(&mut self) -> Result<String, JsonError> {
-        let start = self.at;
-        self.at += 1; // opening quote
-        let mut out = String::new();
-
-        loop {
-            let Some(byte) = self.peek() else {
-                return error("string was never closed", start);
-            };
-            match byte {
-                b'"' => {
-                    self.at += 1;
-                    return Ok(out);
-                }
-                b'\\' => {
-                    self.at += 1;
-                    let Some(escape) = self.peek() else {
-                        return error("escape at end of input", self.at);
-                    };
-                    self.at += 1;
-                    match escape {
-                        b'"' => out.push('"'),
-                        b'\\' => out.push('\\'),
-                        b'/' => out.push('/'),
-                        b'b' => out.push('\u{8}'),
-                        b'f' => out.push('\u{c}'),
-                        b'n' => out.push('\n'),
-                        b'r' => out.push('\r'),
-                        b't' => out.push('\t'),
-                        b'u' => out.push(self.unicode_escape()?),
-                        other => {
-                            return error(
-                                format!("unknown escape \\{}", other as char),
-                                self.at - 1,
-                            );
-                        }
-                    }
-                }
-                // A raw control character is invalid in JSON. Rejecting it
-                // matters for this protocol: a bare newline inside a string
-                // would split one message into two on a line-delimited
-                // transport, which is a bug that shows up as a parse failure on
-                // the *next* message.
-                0x00..=0x1f => {
-                    return error("unescaped control character in string", self.at);
-                }
-                _ => {
-                    // Multi-byte UTF-8 is copied byte by byte and validated by
-                    // `from_utf8` at the end, so an invalid sequence is one
-                    // error rather than a byte-by-byte guess.
-                    let start_of_char = self.at;
-                    let len = utf8_len(byte);
-                    self.at += len;
-                    if self.at > self.bytes.len() {
-                        return error("string ended inside a character", start_of_char);
-                    }
-                    match std::str::from_utf8(&self.bytes[start_of_char..self.at]) {
-                        Ok(text) => out.push_str(text),
-                        Err(_) => return error("invalid UTF-8 in string", start_of_char),
-                    }
-                }
-            }
-        }
-    }
-
-    /// Reads the four hex digits after `\u`, joining a surrogate pair if one
-    /// follows.
-    fn unicode_escape(&mut self) -> Result<char, JsonError> {
-        let first = self.hex4()?;
-
-        // A high surrogate is only half a character; the low half must follow,
-        // and treating it as a character on its own would put a lone surrogate
-        // into a `String`, which `char` cannot represent.
-        if (0xd800..0xdc00).contains(&first) {
-            if self.peek() != Some(b'\\') {
-                return error("high surrogate not followed by a low one", self.at);
-            }
-            self.at += 1;
-            if self.peek() != Some(b'u') {
-                return error("high surrogate not followed by \\u", self.at);
-            }
-            self.at += 1;
-            let second = self.hex4()?;
-            if !(0xdc00..0xe000).contains(&second) {
-                return error(
-                    "second half of a surrogate pair is not a low surrogate",
-                    self.at,
-                );
-            }
-            let combined = 0x10000 + ((first - 0xd800) << 10) + (second - 0xdc00);
-            return char::from_u32(combined).ok_or_else(|| JsonError {
-                message: "surrogate pair is not a character".into(),
-                at: self.at,
-            });
-        }
-
-        if (0xdc00..0xe000).contains(&first) {
-            return error("low surrogate with no high one before it", self.at);
-        }
-
-        char::from_u32(first).ok_or_else(|| JsonError {
-            message: "escape is not a character".into(),
-            at: self.at,
         })
-    }
-
-    fn hex4(&mut self) -> Result<u32, JsonError> {
-        let start = self.at;
-        let mut value = 0u32;
-        for _ in 0..4 {
-            let Some(byte) = self.peek() else {
-                return error("\\u escape was cut short", start);
-            };
-            let digit = (byte as char).to_digit(16).ok_or_else(|| JsonError {
-                message: format!("{:?} is not a hex digit in a \\u escape", byte as char),
-                at: self.at,
-            })?;
-            value = value * 16 + digit;
-            self.at += 1;
-        }
-        Ok(value)
-    }
-
-    fn number(&mut self) -> Result<Json, JsonError> {
-        let start = self.at;
-        if self.peek() == Some(b'-') {
-            self.at += 1;
-        }
-
-        let digits_start = self.at;
-        while matches!(self.peek(), Some(b'0'..=b'9')) {
-            self.at += 1;
-        }
-        if self.at == digits_start {
-            return error("a minus sign with no digits after it", start);
-        }
-
-        let mut is_float = false;
-        if self.peek() == Some(b'.') {
-            is_float = true;
-            self.at += 1;
-            let fraction_start = self.at;
-            while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.at += 1;
-            }
-            if self.at == fraction_start {
-                return error("a decimal point with no digits after it", start);
-            }
-        }
-        if matches!(self.peek(), Some(b'e' | b'E')) {
-            is_float = true;
-            self.at += 1;
-            if matches!(self.peek(), Some(b'+' | b'-')) {
-                self.at += 1;
-            }
-            let exponent_start = self.at;
-            while matches!(self.peek(), Some(b'0'..=b'9')) {
-                self.at += 1;
-            }
-            if self.at == exponent_start {
-                return error("an exponent with no digits after it", start);
-            }
-        }
-
-        let text = std::str::from_utf8(&self.bytes[start..self.at]).map_err(|_| JsonError {
-            message: "number is not text".into(),
-            at: start,
-        })?;
-
-        if is_float {
-            return text.parse::<f64>().map(Json::Float).map_err(|_| JsonError {
-                message: "number is out of range for f64".into(),
-                at: start,
-            });
-        }
-
-        // An integer too large for i64 becomes a float rather than an error:
-        // MCP carries byte counts and identifiers, and a peer that sends
-        // 18446744073709551615 has sent a number, not a mistake. Losing
-        // precision is reported by the type, which is why this is not silent.
-        text.parse::<i64>().map(Json::Int).or_else(|_| {
-            text.parse::<f64>().map(Json::Float).map_err(|_| JsonError {
-                message: "number is out of range".into(),
-                at: start,
-            })
-        })
-    }
-
-    fn array(&mut self) -> Result<Json, JsonError> {
-        let start = self.at;
-        self.at += 1; // [
-        let mut items = Vec::new();
-        self.skip_whitespace();
-
-        if self.peek() == Some(b']') {
-            self.at += 1;
-            return Ok(Json::Array(items));
-        }
-
-        loop {
-            self.skip_whitespace();
-            items.push(self.value()?);
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => self.at += 1,
-                Some(b']') => {
-                    self.at += 1;
-                    return Ok(Json::Array(items));
-                }
-                Some(_) => return error("expected ',' or ']' in array", self.at),
-                None => return error("array was never closed", start),
-            }
-        }
-    }
-
-    fn object(&mut self) -> Result<Json, JsonError> {
-        let start = self.at;
-        self.at += 1; // {
-        let mut entries = BTreeMap::new();
-        self.skip_whitespace();
-
-        if self.peek() == Some(b'}') {
-            self.at += 1;
-            return Ok(Json::Object(entries));
-        }
-
-        loop {
-            self.skip_whitespace();
-            if self.peek() != Some(b'"') {
-                return error("object key must be a string", self.at);
-            }
-            let key = self.string()?;
-            self.skip_whitespace();
-            if self.peek() != Some(b':') {
-                return error("expected ':' after object key", self.at);
-            }
-            self.at += 1;
-            self.skip_whitespace();
-            let value = self.value()?;
-            // A duplicate key keeps the last value, as most parsers do. Recorded
-            // rather than silent: the alternative, rejecting the message, would
-            // break a peer that sent one by accident and nothing would be gained.
-            entries.insert(key, value);
-
-            self.skip_whitespace();
-            match self.peek() {
-                Some(b',') => self.at += 1,
-                Some(b'}') => {
-                    self.at += 1;
-                    return Ok(Json::Object(entries));
-                }
-                Some(_) => return error("expected ',' or '}' in object", self.at),
-                None => return error("object was never closed", start),
-            }
-        }
-    }
 }
 
-/// How many bytes the UTF-8 character starting with `first` occupies.
+/// Writes one JSON value.
 ///
-/// A leading byte that cannot start a character reports 1, so the slice is
-/// non-empty and `from_utf8` produces the error rather than this function
-/// inventing one.
-fn utf8_len(first: u8) -> usize {
-    match first {
-        0x00..=0x7f => 1,
-        0xc0..=0xdf => 2,
-        0xe0..=0xef => 3,
-        0xf0..=0xf7 => 4,
-        _ => 1,
-    }
-}
-
-/// Writes a value as JSON text, with no trailing newline.
-///
-/// # Errors
-///
-/// Never. The signature returns a `String` because there is no input for which
-/// writing fails: any [`Json`] has a JSON form. A `Result` here would be a
-/// `Result` that is always `Ok`, which teaches callers to ignore it.
+/// Returns a `String` rather than a `Result` because it cannot fail: every [`Json`]
+/// converts to a `serde_json::Value`, and serializing one of those cannot fail. The
+/// `expect` below is that argument written down, not a hope -- if it ever fires, the
+/// conversion above is the bug and not the serialization.
 pub fn write(value: &Json) -> String {
-    let mut out = String::new();
-    write_into(value, &mut out);
-    out
+    serde_json::to_string(&to_value(value)).expect("a JSON value always serializes")
 }
 
-fn write_into(value: &Json, out: &mut String) {
+/// `serde_json`'s value, as this project's.
+fn from_value(value: serde_json::Value) -> Json {
     match value {
-        Json::Null => out.push_str("null"),
-        Json::Bool(true) => out.push_str("true"),
-        Json::Bool(false) => out.push_str("false"),
-        Json::Int(number) => out.push_str(&number.to_string()),
-        Json::Float(number) => {
-            // JSON has no NaN or infinity, and `to_string` would emit exactly
-            // those words, producing a document no parser accepts. `null` is the
-            // honest thing to put on the wire for a number that has no JSON
-            // form.
-            if number.is_finite() {
-                out.push_str(&number.to_string());
-            } else {
-                out.push_str("null");
-            }
-        }
-        Json::Str(text) => write_string(text, out),
-        Json::Array(items) => {
-            out.push('[');
-            for (index, item) in items.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                write_into(item, out);
-            }
-            out.push(']');
-        }
-        Json::Object(entries) => {
-            out.push('{');
-            for (index, (key, item)) in entries.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                write_string(key, out);
-                out.push(':');
-                write_into(item, out);
-            }
-            out.push('}');
-        }
+        serde_json::Value::Null => Json::Null,
+        serde_json::Value::Bool(b) => Json::Bool(b),
+        // Integers and floats are two variants here and one in `serde_json`. A
+        // number that fits an `i64` is an integer and anything else is a float,
+        // which is what the hand-written parser did and therefore what the tests
+        // in `tests/json_codec.rs` expect. Since `Json` no longer does the
+        // parsing, those tests are now regression tests for this conversion --
+        // which is exactly what they should be.
+        serde_json::Value::Number(number) => match number.as_i64() {
+            Some(integer) => Json::Int(integer),
+            None => Json::Float(number.as_f64().unwrap_or(f64::NAN)),
+        },
+        serde_json::Value::String(text) => Json::Str(text),
+        serde_json::Value::Array(items) => Json::Array(items.into_iter().map(from_value).collect()),
+        serde_json::Value::Object(fields) => Json::Object(
+            fields
+                .into_iter()
+                .map(|(k, v)| (k, from_value(v)))
+                .collect(),
+        ),
     }
 }
 
-fn write_string(text: &str, out: &mut String) {
-    out.push('"');
-    for character in text.chars() {
-        match character {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            // Every other control character has no short escape, and JSON
-            // forbids them raw. This is the branch that keeps a line-delimited
-            // transport intact: one raw newline here would be two messages.
-            c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
-            }
-            c => out.push(c),
-        }
+/// This project's value, as `serde_json`'s.
+fn to_value(value: &Json) -> serde_json::Value {
+    match value {
+        Json::Null => serde_json::Value::Null,
+        Json::Bool(b) => serde_json::Value::Bool(*b),
+        Json::Int(integer) => serde_json::Value::Number((*integer).into()),
+        Json::Float(float) => serde_json::Number::from_f64(*float)
+            .map(serde_json::Value::Number)
+            // NaN and infinity have no JSON representation. `null` is what the
+            // hand-written writer produced, and the alternative is a panic for a
+            // value the parser cannot produce and a caller would have to construct
+            // by hand.
+            .unwrap_or(serde_json::Value::Null),
+        Json::Str(text) => serde_json::Value::String(text.clone()),
+        Json::Array(items) => serde_json::Value::Array(items.iter().map(to_value).collect()),
+        Json::Object(fields) => serde_json::Value::Object(
+            fields
+                .iter()
+                .map(|(k, v)| (k.clone(), to_value(v)))
+                .collect(),
+        ),
     }
-    out.push('"');
 }

@@ -19,10 +19,16 @@ you are about to change a rule, not before.
 
 ## 1. Dependency direction
 
-`linklet-core` does no I/O and depends on no crate.
+`linklet-core` does no I/O, and depends on no crate that does.
 
-- The compiler enforces it: `core` has no `[dependencies]`, and
-  `tests/architecture.rs` fails if one appears.
+- Enforced by `tests/architecture.rs`, which allows a named list of
+  pure-computation crates and refuses everything else. Adding one means writing
+  down why it does no I/O.
+- The reason, since the wording changed once already: core tests need no network,
+  no files and no cleanup, so they run in milliseconds. A crate that computes and
+  touches nothing does not threaten that. "Depends on nothing" was satisfied by a
+  rule rather than a reason, and it stayed in force past the point where its reason
+  applied -- see `docs/decisions.md`.
 - Direction is `cli -> adapters -> core`. Never the reverse.
 - Something in `core` needs I/O? It belongs in `adapters`, behind a trait
   `core` defines.

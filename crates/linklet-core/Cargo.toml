@@ -17,6 +17,7 @@ description = "Pure decision logic for linklet: parsing, validation, policy. No 
 # The test in `tests/architecture.rs` fails if a dependency appears here.
 # ---------------------------------------------------------------------------
 [dependencies]
+serde_json = "1.0.151"
 
 [lints]
 workspace = true

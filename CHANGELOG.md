@@ -33,6 +33,29 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Changed
 
+- **The JSON codec is `serde_json`.** Six hundred and seventy-two lines of
+  hand-written parser and writer became three hundred and forty-five: the domain
+  enum, and the two conversions between it and `serde_json`. It was correct and it
+  was tested, and it was still the wrong call -- it parsed untrusted input from the
+  network, which is the last place to keep code whose bugs only a fuzzer finds. All
+  call sites are unchanged, and the thirty codec tests now test the conversion.
+- **The tests stopped asserting error wording and exact offsets, and that is a
+  real reduction in what is checked.** Eleven tests pinned the phrases a parser in
+  this repository produced ("unknown escape", "incomplete literal"). Those phrases
+  now come from `serde_json`, so pinning them would pin a dependency
+  internals -- a test that goes red on a patch release while nothing is wrong, which
+  trains a reader to ignore it. What is still asserted is the part that was ever a
+  contract: malformed input is refused, the refusal says something, and the position
+  it reports lies inside the input and moves when the problem moves. The offset
+  convention also differs by one byte -- `serde_json` points into a bad literal
+  rather than at its first character -- and that difference is recorded rather than
+  smoothed over.
+- **Rule 1 was rewritten, not broken.** `linklet-core` may now depend on crates
+  that do no I/O. The old wording said "depends on no crate", and that is satisfied
+  by a rule rather than a reason, so it stayed in force past the point where its
+  reason applied. The gate now takes a named allowlist where each entry carries a
+  sentence saying why that crate is pure computation.
+
 - **The project may now depend on vetted crates, in the adapters.** The rule that
   kept `linklet-core` dependency-free was being read as a rule about the whole
   project, and it was applied past the point where its reason held: a SHA-256 was
@@ -108,6 +131,29 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Changed
 
+- **The JSON codec is `serde_json`.** Six hundred and seventy-two lines of
+  hand-written parser and writer became three hundred and forty-five: the domain
+  enum, and the two conversions between it and `serde_json`. It was correct and it
+  was tested, and it was still the wrong call -- it parsed untrusted input from the
+  network, which is the last place to keep code whose bugs only a fuzzer finds. All
+  call sites are unchanged, and the thirty codec tests now test the conversion.
+- **The tests stopped asserting error wording and exact offsets, and that is a
+  real reduction in what is checked.** Eleven tests pinned the phrases a parser in
+  this repository produced ("unknown escape", "incomplete literal"). Those phrases
+  now come from `serde_json`, so pinning them would pin a dependency
+  internals -- a test that goes red on a patch release while nothing is wrong, which
+  trains a reader to ignore it. What is still asserted is the part that was ever a
+  contract: malformed input is refused, the refusal says something, and the position
+  it reports lies inside the input and moves when the problem moves. The offset
+  convention also differs by one byte -- `serde_json` points into a bad literal
+  rather than at its first character -- and that difference is recorded rather than
+  smoothed over.
+- **Rule 1 was rewritten, not broken.** `linklet-core` may now depend on crates
+  that do no I/O. The old wording said "depends on no crate", and that is satisfied
+  by a rule rather than a reason, so it stayed in force past the point where its
+  reason applied. The gate now takes a named allowlist where each entry carries a
+  sentence saying why that crate is pure computation.
+
 - `dispatch` takes a `ToolRunner` rather than a closure per capability. With one
   tool the closure read fine; with two it would have been two closures and a
   signature that was the least readable thing in the file.
@@ -175,6 +221,29 @@ skeleton and M5.
   so without one there is no call to make.
 
 ### Changed
+
+- **The JSON codec is `serde_json`.** Six hundred and seventy-two lines of
+  hand-written parser and writer became three hundred and forty-five: the domain
+  enum, and the two conversions between it and `serde_json`. It was correct and it
+  was tested, and it was still the wrong call -- it parsed untrusted input from the
+  network, which is the last place to keep code whose bugs only a fuzzer finds. All
+  call sites are unchanged, and the thirty codec tests now test the conversion.
+- **The tests stopped asserting error wording and exact offsets, and that is a
+  real reduction in what is checked.** Eleven tests pinned the phrases a parser in
+  this repository produced ("unknown escape", "incomplete literal"). Those phrases
+  now come from `serde_json`, so pinning them would pin a dependency
+  internals -- a test that goes red on a patch release while nothing is wrong, which
+  trains a reader to ignore it. What is still asserted is the part that was ever a
+  contract: malformed input is refused, the refusal says something, and the position
+  it reports lies inside the input and moves when the problem moves. The offset
+  convention also differs by one byte -- `serde_json` points into a bad literal
+  rather than at its first character -- and that difference is recorded rather than
+  smoothed over.
+- **Rule 1 was rewritten, not broken.** `linklet-core` may now depend on crates
+  that do no I/O. The old wording said "depends on no crate", and that is satisfied
+  by a rule rather than a reason, so it stayed in force past the point where its
+  reason applied. The gate now takes a named allowlist where each entry carries a
+  sentence saying why that crate is pure computation.
 
 - **The project may now depend on vetted crates, in the adapters.** The rule that
   kept `linklet-core` dependency-free was being read as a rule about the whole

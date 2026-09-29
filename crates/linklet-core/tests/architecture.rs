@@ -78,18 +78,80 @@ fn declared_dependencies(crate_name: &str) -> Vec<String> {
 /// It is also the demonstration of the point: the rule was written down in
 /// `AGENTS.md` and `README.md` first, where it is a wish, and it became real
 /// when it moved here.
+/// The crates `linklet-core` may depend on, and why each one is allowed.
+///
+/// # Why this replaced a rule that said "nothing"
+///
+/// The original rule was that `linklet-core` depends on no crate at all, and the
+/// reason behind it was never the count: it was that **core does no I/O**. Its
+/// tests need no network, no files and no cleanup, so they run in milliseconds and
+/// cannot fail for a reason outside the code. That property is worth defending and
+/// it is still defended here.
+///
+/// What was wrong was the wording. "Depends on nothing" is satisfied by a rule and
+/// not by a reason, so it stayed in force past the point where its reason applied
+/// -- and while the crate registry looked unreachable it was read as a rule about
+/// the whole project, which is how a SHA-256 came to be written by hand. Nothing
+/// about a pure-computation library threatens the property above.
+///
+/// So the rule is narrower and explicit: **core may depend on crates that compute
+/// and touch nothing.** Every entry is a decision, and adding one means arguing
+/// that the crate does no I/O -- not that it would be convenient.
+const ALLOWED_DEPENDENCIES: &[(&str, &str)] = &[(
+    "serde_json",
+    "parses and writes JSON, and does nothing else: no files, no sockets, no \
+     clock, no environment. It replaced six hundred lines of hand-written codec \
+     that sat on the path reading untrusted input from the network, which is the \
+     last place to keep code whose bugs only a fuzzer finds.",
+)];
+
 #[test]
-fn core_has_no_dependencies() {
-    let offenders = declared_dependencies("linklet-core");
+fn core_depends_only_on_crates_that_do_no_io() {
+    let declared = declared_dependencies("linklet-core");
+    let offenders: Vec<&String> = declared
+        .iter()
+        .filter(|line| {
+            !ALLOWED_DEPENDENCIES
+                .iter()
+                .any(|(name, _)| line.contains(name))
+        })
+        .collect();
 
     assert!(
         offenders.is_empty(),
-        "linklet-core must not depend on anything, but it declares {offenders:?}.\n\
+        "linklet-core must not depend on anything that does I/O, but it declares \
+         {offenders:?}.\n\
          If the new code needs I/O, it belongs in linklet-adapters behind a trait \
          that linklet-core defines -- see AGENTS.md rule 1.\n\
-         If it genuinely does not, the entry may be a test-only dependency, and \
-         belongs under [dev-dependencies] instead."
+         If it genuinely does no I/O, add it to ALLOWED_DEPENDENCIES above with a \
+         sentence saying why, so the next reader sees the argument rather than the \
+         exception."
     );
+}
+
+/// Guards the guard, for the allowlist.
+///
+/// A filter whose names all fail to match would pass every dependency through and
+/// look green, which is the failure an allowlist is most likely to have. This
+/// checks that each entry actually matches something the manifest declares, and
+/// that each one carries a reason.
+#[test]
+fn the_allowlist_actually_matches_a_real_dependency() {
+    let declared = declared_dependencies("linklet-core");
+
+    for (name, reason) in ALLOWED_DEPENDENCIES {
+        assert!(
+            declared.iter().any(|line| line.contains(name)),
+            "{name} is on the allowlist but is not declared. An entry that matches \
+             nothing hides a typo, and a typo in a name here would let the real \
+             crate through unexamined."
+        );
+        assert!(
+            !reason.trim().is_empty(),
+            "{name} is allowed with no reason given, which makes it an exception \
+             rather than a decision."
+        );
+    }
 }
 
 /// Guards the guard.
