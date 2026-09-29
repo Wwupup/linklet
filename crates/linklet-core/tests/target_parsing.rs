@@ -1,18 +1,19 @@
 //! The specification for `parse_targets`, written before the implementation.
 //!
-//! Run `cargo test -p linklet-core` now: it fails, and it must fail for the
-//! reason we intend (`unimplemented!`), not because the tests do not compile.
+//! It was written first and observed failing first -- 19 tests, all failing on
+//! the same `unimplemented!` rather than on a compile error. That order is the
+//! point: a specification written after the code describes whatever the code
+//! does, including its mistakes.
 //!
 //! Note what is absent from this file: no network, no files, no temporary
 //! directory, no cleanup, no timing. That is what "the core is pure" buys --
-//! these tests are a specification that runs in microseconds, so there is
-//! never a reason not to run them.
-
-// A panic in a test is not a bug; it *is* the failure signal. So the "no
-// unwrap in library code" rule (AGENTS.md rule 6) does not apply in this file.
-// The allow is scoped here on purpose: granting it workspace-wide would also
-// silence it in `src/`, where a panic is a defect the caller cannot handle.
-#![allow(clippy::unwrap_used)]
+//! the whole specification runs in about 20 milliseconds, so there is never a
+//! reason not to run it.
+//!
+//! Failures use `expect` with a message naming the case rather than bare
+//! `unwrap`, so a red run says which input broke instead of saying that an
+//! `Option` was `None` somewhere. That is why this file needs no
+//! `#[allow(clippy::unwrap_used)]`: there is nothing to allow.
 
 use linklet_core::{Host, Port, Target, TargetError, parse_targets};
 
@@ -189,6 +190,25 @@ fn a_trailing_colon_with_no_port_is_refused() {
         err_of("a:"),
         TargetError::PortMissing {
             spec: "a:".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_port_with_no_host_in_front_of_it_is_refused() {
+    // ":80" names a machine that was never written. The port is perfectly good
+    // and there is nothing to connect to, so this is `PortMissing` -- the same
+    // variant as "a:" -- rather than `PortNotANumber`, which would blame the
+    // half of the spec that is correct.
+    //
+    // This test was missing when the rule order was first written down, and the
+    // documentation named the case anyway (step 6). A rule in prose with no test
+    // under it is the failure this repository is about: the next person reads
+    // the sentence, believes it, and finds out otherwise from a user.
+    assert_eq!(
+        err_of(":80"),
+        TargetError::PortMissing {
+            spec: ":80".to_string()
         }
     );
 }
