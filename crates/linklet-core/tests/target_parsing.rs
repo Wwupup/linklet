@@ -1,9 +1,17 @@
-//! The specification for `parse_targets`, written before the implementation.
+//! The specification for `parse_targets`.
 //!
-//! It was written first and observed failing first -- 19 tests, all failing on
-//! the same `unimplemented!` rather than on a compile error. That order is the
-//! point: a specification written after the code describes whatever the code
-//! does, including its mistakes.
+//! The tests were written before the implementation. The *red run* was not, and
+//! that is worth recording rather than tidying away: the first version of the
+//! implementation was written and then run against this file, and only then was
+//! the specification found to contradict itself -- `"a"` was expected to fail as
+//! `PortNotANumber { port: "" }`, an error named "the port is not a number"
+//! answering a spec with no port in it. Writing the code first is how that went
+//! unnoticed for as long as it did.
+//!
+//! The rule this file exists to serve is in `docs/LEARNING.md`: watch the test
+//! fail first, and check that it fails for the reason you meant. A test never
+//! seen failing is not evidence of anything, and neither is a specification
+//! nobody has read back.
 //!
 //! Note what is absent from this file: no network, no files, no temporary
 //! directory, no cleanup, no timing. That is what "the core is pure" buys --
