@@ -15,17 +15,27 @@ use crate::TargetError;
 ///
 /// So this type carries the text unchanged, and the question "does this name
 /// exist" belongs to the adapter that resolves it, at the moment it tries.
+///
+/// What [`parse_targets`] does enforce is narrow, and deliberately so: a host
+/// is a non-empty run of characters with no colon and no whitespace. That is
+/// all. `"!!!"` and `"not-a-host..really"` pass it, because this crate has no
+/// way to tell a strange name from a clever one -- and refusing a name that a
+/// real resolver would have accepted is the more expensive mistake. The check
+/// that matters for those is the connection attempt, which produces a failure
+/// naming the host.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Host(String);
 
 impl Host {
-    /// Wraps text that has already been checked to be a usable host.
+    /// Wraps text as a host, without checking it.
     ///
     /// Public mainly so that a *caller writing an expectation* can build one --
     /// a test needs to say "I expect this target", and a type with no
-    /// constructor cannot be named in an answer. The checked route in is still
-    /// [`parse_targets`]; using this to read input skips the validation, which
-    /// is exactly why the parser does not use it on raw input.
+    /// constructor cannot be named in an answer. Nothing is validated here, and
+    /// that is not an oversight: [`parse_targets`] is the way in for input,
+    /// because it is the piece that knows the grammar. There is very little to
+    /// check anyway -- whatever this is handed, the connection attempt is what
+    /// decides whether it means anything.
     pub fn new(text: impl Into<String>) -> Self {
         Self(text.into())
     }
@@ -42,12 +52,23 @@ impl std::fmt::Display for Host {
     }
 }
 
-/// A TCP port that is known to be in `1..=65535`.
+/// A TCP port.
 ///
-/// The range check happens once, in [`parse_targets`]. Every later layer can
-/// therefore take a `Port` and stop asking whether it is valid -- which is the
-/// general shape of a good type: it makes an invalid state unrepresentable
-/// rather than making every caller re-check for it.
+/// Two guarantees, and it is worth knowing which one comes from where:
+///
+/// - **The range is the type's.** A `Port` holds a `u16`, so a value out of
+///   `0..=65535` cannot be represented. There is no check to get wrong.
+/// - **"Someone meant it" is the parser's.** Zero and 65536 are in range for a
+///   `u16` and are not ports; [`parse_targets`] is what refuses them.
+///
+/// The range check therefore happens once, in the parser, and every later layer
+/// can take a `Port` and stop asking whether it is valid. What is *not* true is
+/// that the type makes an invalid port unrepresentable -- [`Port::new`] is
+/// public and will happily hold `0`. The first draft of this comment claimed
+/// otherwise, which was a guarantee the type never had. What actually holds is
+/// narrower and worth stating precisely: every `Port` that came out of
+/// [`parse_targets`] is valid, and that is the only route a caller has for
+/// reading input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Port(u16);
 
@@ -89,10 +110,52 @@ pub struct Target {
 ///
 /// ```text
 /// input   := spec ("," spec)*
-/// spec    := host [":" port]
+/// spec    := host ":" port
 /// host    := one or more characters, with no ":" and no whitespace
 /// port    := digits, value 1..=65535
 /// ```
+///
+/// Note what the grammar does **not** say: there is no `[":" port]`, so a spec
+/// without a port is not a shorter form of a spec, it is not a spec. The
+/// default port is a decision that belongs to the caller, not a guess made
+/// here -- guessing it would make `"a"` mean something in this tool that the
+/// caller never said.
+///
+/// The grammar is permissive about hosts on purpose: `host` is not a hostname
+/// grammar, and `"!!!"` fits it. See [`Host`] for why refusing a strange name
+/// would cost more than accepting one.
+///
+/// # The order the rules are applied in
+///
+/// A spec can break more than one rule at once, and then the *error* depends on
+/// which rule is checked first. That is not an implementation detail: if it is
+/// left unstated, two reasonable implementations disagree, both look right, and
+/// whoever wrote the second one spends an afternoon believing they are wrong.
+///
+/// The order below is the specification. Each step applies to the whole spec
+/// (after trimming), never to a fragment:
+///
+/// 1. the input, trimmed, is not empty -- else [`TargetError::EmptyInput`]
+/// 2. the spec, trimmed, is not empty -- else [`TargetError::EmptySpec`]. This
+///    is what a trailing comma hits.
+/// 3. the spec contains no whitespace -- else
+///    [`TargetError::WhitespaceInSpec`]. **Before any splitting**: `"a:1 b:2"`
+///    is one spec containing a space, and reporting `PortNotANumber` for it
+///    would describe a fragment the caller never wrote as a separate thing.
+/// 4. split at the **last** `:`; if there is none, the port is absent --
+///    [`TargetError::PortMissing`]
+/// 5. the port text is not empty -- else [`TargetError::PortMissing`]
+/// 6. the host text is not empty -- else [`TargetError::PortMissing`]. A port
+///    with nothing in front of it names a machine that was never written, and
+///    there is no better error for "you wrote `:80`".
+/// 7. the port text is all ASCII digits -- else
+///    [`TargetError::PortNotANumber`]
+/// 8. the port value is in `1..=65535`, saturating to `u64::MAX` rather than
+///    "too big to parse" -- else [`TargetError::PortOutOfRange`]
+///
+/// The failing cases in `tests/target_parsing.rs` each break exactly one rule,
+/// except where a test says otherwise. That is deliberate: a test that breaks
+/// two rules at once is testing the order, not the rule, and should say so.
 ///
 /// - Whitespace around a spec is not part of it, so `" a:1 , b:2 "` is two
 ///   targets.
@@ -101,8 +164,10 @@ pub struct Target {
 ///   that the input does not matter.
 /// - The port separator is the **last** `:`, so `::1:80` means host `::1`,
 ///   port `80`.
-/// - A spec with no port at all is also an error. The default port is a
-///   decision that belongs to the caller, not a guess made here.
+/// - The three ways a port can be wrong are three different errors, because a
+///   caller acts differently on each: absent ([`TargetError::PortMissing`]),
+///   not a number ([`TargetError::PortNotANumber`]), out of range
+///   ([`TargetError::PortOutOfRange`]).
 ///
 /// # Errors
 ///

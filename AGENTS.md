@@ -31,17 +31,22 @@ observed failing is not evidence of anything.
 
 ## 3. Definition of done
 
-A change is done when all four hold:
+A change is done when all of these hold:
 
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
 ...and the documentation that the change makes untrue has been updated in the
 same commit. A doc that describes last week's behaviour is worse than no doc,
 because it is believed.
+
+The fourth line is not decoration: `cargo doc` treats a broken link between two
+documentation comments as a warning and carries on, so a `[`PortMissing`]` that
+stopped resolving stays broken and stays invisible.
 
 ## 4. Commits
 

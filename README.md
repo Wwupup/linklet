@@ -58,6 +58,7 @@ dependencies, so it *cannot* open a socket or read a file.
 cargo test --workspace          # the only command you need to start
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 ```
 
 Read `AGENTS.md` before your first commit. `docs/ROADMAP.md` says where the

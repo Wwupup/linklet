@@ -34,10 +34,11 @@ Take one task. A task is one test that does not pass yet.
    cargo fmt --all
    cargo clippy --workspace --all-targets -- -D warnings
    cargo test --workspace
+   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
    ```
 
-   All three, every time. They take under a second on a warm cache, so there
-   is no reason to skip one, and every reason not to: a lint that is allowed to
+   All four, every time. They take under a second on a warm cache, so there is
+   no reason to skip one, and every reason not to: a check that is allowed to
    fail once is allowed to fail forever.
 
 6. **Commit one logical change.** See `AGENTS.md` rule 4.

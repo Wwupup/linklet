@@ -113,6 +113,25 @@ fn a_host_may_contain_a_hyphen_or_a_dot() {
     );
 }
 
+#[test]
+fn a_host_that_is_nonsense_is_still_accepted() {
+    // This test asserts that nothing is asserted about hostnames, and that is
+    // its purpose. `"!!!"` cannot be a hostname, and passing it through is the
+    // intended behaviour: deciding what a hostname looks like is the resolver's
+    // job, and this layer has no way to do it. A parser that "helpfully"
+    // rejected strange names would also reject real ones it had not thought of,
+    // and the failure would land on a user with a name that does resolve.
+    //
+    // The test is here so that the looseness is a decision rather than an
+    // accident: if someone later tightens the host rule, this fails, and they
+    // have to argue with a test that says why rather than with a person who
+    // remembers.
+    assert_eq!(
+        parse_targets("!!!:80").expect("the host grammar is permissive on purpose"),
+        vec![t("!!!", 80)]
+    );
+}
+
 // --- what must be refused, and how it must be explained ----------------------
 
 #[test]
@@ -137,6 +156,29 @@ fn whitespace_inside_a_spec_is_refused() {
         err_of("a b:1"),
         TargetError::WhitespaceInSpec {
             spec: "a b:1".to_string()
+        }
+    );
+}
+
+#[test]
+fn a_space_after_the_colon_is_still_a_whitespace_error() {
+    // This one pins the *order* of the rules, not the rules themselves, and it
+    // is the case where two reasonable implementations disagree.
+    //
+    // "a:1 b:2" breaks two rules at once: it contains a space, and "1 b" is not
+    // a number. An implementation that splits on the colon first reports
+    // `PortNotANumber { port: "1 b" }`; one that checks whitespace first
+    // reports `WhitespaceInSpec`. Both are defensible, so the specification has
+    // to pick one -- an unstated rule like this is where two correct-looking
+    // programs diverge, and where the second author concludes they are wrong.
+    //
+    // The whole spec contains whitespace, so the error names the whole spec.
+    // Reporting a fragment ("1 b") as the problem would describe a string the
+    // caller never wrote as a separate thing.
+    assert_eq!(
+        err_of("a:1 b:2"),
+        TargetError::WhitespaceInSpec {
+            spec: "a:1 b:2".to_string()
         }
     );
 }
@@ -196,11 +238,18 @@ fn a_port_out_of_range_is_refused_and_the_number_is_reported() {
 fn a_spec_with_no_port_at_all_is_refused() {
     // The default port is the caller's decision. Guessing it here would make
     // "a" mean something different in this tool than in the caller's head.
+    //
+    // This is the same fact as `"a:"` above -- no port was named -- so it is
+    // the same error. It was `PortNotANumber { port: "" }` in the first draft
+    // of this specification, which was wrong: an error named "the port is not a
+    // number" cannot be the right answer for a spec where no port was written.
+    // An error type that needs a comment to explain which input reaches it is
+    // the wrong type, and the cost of that is paid by whoever implements the
+    // parser -- they write the code that makes the misleading message true.
     assert_eq!(
         err_of("a"),
-        TargetError::PortNotANumber {
-            spec: "a".to_string(),
-            port: String::new()
+        TargetError::PortMissing {
+            spec: "a".to_string()
         }
     );
 }

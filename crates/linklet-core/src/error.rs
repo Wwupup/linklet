@@ -17,7 +17,10 @@ pub enum TargetError {
         /// The spec, after trimming.
         spec: String,
     },
-    /// The port was empty, for example `"a:"`.
+    /// A spec named no port at all, with or without a trailing `:`, for example
+    /// `"a"` or `"a:"`. Both are the same fact -- there is no port here -- and
+    /// reporting them as different errors would make the caller handle one
+    /// situation twice.
     PortMissing {
         /// The spec, after trimming.
         spec: String,
