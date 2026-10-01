@@ -116,7 +116,7 @@ belongs in, and why the overlap itself cannot be tested in the core.
 of a bad interface, which is where this project came from.
 
 **What the experiment found.** Run and recorded in
-`docs/tool-readability.md`, with its method, its result and two flaws in how it
+`experiments/m5-tool-readability.md`, with its method, its result and two flaws in how it
 was run. The short version: four of five readers refused to fabricate rather
 than guessing an argument, and every refusal named the missing thing. That was
 not the property the experiment was designed to test, and it is the more valuable
@@ -602,7 +602,7 @@ on everything in this list -- which is why reading it beats designing from scrat
       M4 that was wrong -- M4 is concurrency across targets -- and that is corrected here.
 
 **What not to copy.** lanlink's surface is seventeen tools; five of them are the job family,
-which is one intent, and `docs/tool-readability.md` is the measurement of what that costs.
+which is one intent, and `experiments/m5-tool-readability.md` is the measurement of what that costs.
 Its passphrase-derived token is also not needed here: linklet's token is never transmitted,
 so it has no carrier to protect, and a derivation would be a security decision with a
 minimum length and no rate limiting behind it.

@@ -14,13 +14,13 @@ the change that made it wrong.
 | Why is it built this way? | `docs/decisions.md` |
 | How does the wire format work? | `docs/framing.md` |
 | What does a version number mean, and what is a release? | `docs/VERSIONING.md` |
+| Why did this command fail in a way that looks like a bug? | `docs/machine.md` |
 | How does a file transfer work? | `docs/transfer.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |
 | What kind of test does this get? | `docs/testing.md` |
 | How do I call this from an agent? | `docs/MCP.md` |
 | How will my work be judged? | `docs/review-m1.md` |
-| Is the tool surface understandable? | `docs/tool-readability.md` |
 | What went wrong on the way here? | `docs/retrospective.md` |
 | How do I test against a real machine? | `docs/smoke.md` |
 | What is the state of the code? | below |
@@ -71,9 +71,20 @@ message, or nothing.
 | `docs/framing.md` | rule | the frame format, and the defences that live outside it |
 | `docs/transfer.md` | rule | moving a file: the design and its fourteen failure modes |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
-| `docs/tool-readability.md` | decision | the M5 experiment, its result and its flaws |
 | `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |
 | `docs/smoke.md` | rule | the real-machine layer: what it claims, and what it needs |
+| `docs/machine.md` | current | what this machine does to commands, and what it cost to find out |
+
+## The experiments
+
+Not documentation. **An experiment is evidence about a decision, kept so it can be re-run, and
+it is deliberately not under `docs/`** -- nothing routes a reader here looking for how to do
+something, which is what `docs/` is for. `experiments/` holds the method and the raw runs, so a
+result whose reasoning lives in somebody's memory cannot be mistaken for one that has none.
+
+| path | what it measured |
+|---|---|
+| `experiments/m5-tool-readability.md` | whether a reader with no context can pick the right call from the tool descriptions alone -- and the boundary it found, which is that a short description cannot say *when* to prefer a tool |
 
 ## The code
 

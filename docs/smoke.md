@@ -115,7 +115,7 @@ Three things about that block, all of them learned by doing it on a real machine
 
 - **The script's directory must have no space in it.** The command inside is quoted and
   `cmd` handles that; what breaks is anything that goes on to build another command line
-  out of it -- the same trap `AGENTS.md` section 8 describes for a command sent to a
+  out of it -- the same trap `docs/machine.md` describes for a command sent to a
   target. `C:\linklet` is the choice for that reason.
 - **`schtasks /ST` wants a time and warns if it is in the past.** The warning is noise
   for a task that is only ever started by hand with `/Run`.

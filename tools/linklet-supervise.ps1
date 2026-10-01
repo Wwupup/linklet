@@ -26,8 +26,8 @@
 #   * **It backs off.** An agent that dies instantly on startup -- a port already taken, a root
 #     that does not exist -- would otherwise be started thousands of times a minute.
 #
-# ASCII only, and no quotes anywhere a target's `cmd` might rewrite them: see AGENTS.md
-# section 8 for what a command sent to a target does to quote characters.
+# ASCII only, and no quotes anywhere a target's `cmd` might rewrite them: see docs/machine.md
+# for what a command sent to a target does to quote characters.
 
 [CmdletBinding()]
 param(
