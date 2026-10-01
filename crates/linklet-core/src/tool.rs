@@ -162,6 +162,21 @@ pub trait ToolRunner {
     /// supply are part of it, because an empty list without them is the shape
     /// `docs/ROADMAP.md` M10 records as dangerous.
     fn ps(&self, agent: &str, filter: &crate::process::Filter) -> ToolOutcome;
+
+    /// Stops something on the agent's machine.
+    ///
+    /// Takes the whole [`crate::wire::KillRequest`] rather than its parts, unlike the two
+    /// capabilities above, and the reason is that the parts are not independent: whether a
+    /// request is safe depends on what it names, on whether the caller meant it, and on what
+    /// it is willing to consider -- and a signature of four loose arguments is one someone
+    /// can call with the force flag in the wrong place. The tool schema is where a caller's
+    /// arguments are checked; this is where they are carried.
+    ///
+    /// **A request that must not be attempted is an `Err(Refusal)` on the agent**, and the
+    /// implementation reports it as a failed call rather than as a report: "nothing was
+    /// attempted" and "nothing was killed" are different answers, and only one of them means
+    /// the caller should think again.
+    fn kill(&self, agent: &str, request: &crate::wire::KillRequest) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -520,6 +535,44 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "kill",
+            // The one description that has to carry a warning, because this is the one tool
+            // whose mistake cannot be undone. "Stop processes" says what it does; "on a
+            // remote linklet agent's machine" says where, which is the fact a reader must
+            // not have to guess before using it.
+            description: "Stop processes on a remote linklet agent's machine.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "pid": {
+                            "type": "integer",
+                            "description": "stop this one process; never needs confirmed"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "stop processes whose image name is exactly this"
+                        },
+                        "confirmed": {
+                            "type": "boolean",
+                            "description": "required for name: it can match more than one process"
+                        },
+                        "candidates_cmdline": {
+                            "type": "string",
+                            "description": "only consider processes whose command line contains this"
+                        }
+                    },
+                    "required": ["agent"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -642,6 +695,64 @@ pub fn dispatch(
                 exclude: optional_str(arguments, "exclude")?,
             };
             Ok(runner.ps(&agent, &filter))
+        }
+        "kill" => {
+            reject_unknown(
+                arguments,
+                &["agent", "pid", "name", "confirmed", "candidates_cmdline"],
+            )?;
+            let agent = required_str(arguments, "agent")?;
+
+            // **A name or a pid, and never both.** The wire refuses a request that names
+            // neither, and a request naming both would need a rule for which wins -- which
+            // is the kind of rule that is discovered in a diff rather than written in one.
+            let by_pid = match arguments.get("pid") {
+                Some(Json::Int(pid)) if *pid > 0 => Some(*pid as u32),
+                Some(Json::Int(pid)) => {
+                    return Err(ToolError::BadArgument {
+                        name: "pid",
+                        problem: format!("{pid} is not a process identifier"),
+                    });
+                }
+                Some(_) => {
+                    return Err(ToolError::BadArgument {
+                        name: "pid",
+                        problem: "expected a number".to_string(),
+                    });
+                }
+                None => None,
+            };
+
+            let to_kill = match (by_pid, optional_str(arguments, "name")?) {
+                (Some(pid), None) => crate::process::ToKill::Pid(pid),
+                (None, Some(name)) => crate::process::ToKill::Name(name),
+                (Some(_), Some(_)) => {
+                    return Err(ToolError::BadArgument {
+                        name: "name",
+                        problem: "give a pid or a name, not both".to_string(),
+                    });
+                }
+                (None, None) => {
+                    return Err(ToolError::BadArgument {
+                        name: "pid",
+                        problem: "one of pid or name is required".to_string(),
+                    });
+                }
+            };
+
+            let request = crate::wire::KillRequest {
+                to_kill,
+                // The tool's word for it is `confirmed`, and it is a different word on
+                // purpose: an agent reading a schema sees "confirmed" and knows it is being
+                // asked to mean it, where `force` reads like a technical switch.
+                force: arguments.get("confirmed").and_then(Json::as_bool) == Some(true),
+                candidates: crate::process::Filter {
+                    cmdline: optional_str(arguments, "candidates_cmdline")?,
+                    ..crate::process::Filter::any()
+                },
+                exclude: None,
+            };
+            Ok(runner.kill(&agent, &request))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }

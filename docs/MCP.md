@@ -13,7 +13,7 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Six tools.**
+**Seven tools.**
 
 | tool | question it answers |
 |---|---|
@@ -21,6 +21,7 @@ client starts the process and talks to it.
 | `testbed` | does a machine match a testbed specification file |
 | `exec` | run a command on a remote agent and return its output |
 | `ps` | what is running on a remote agent's machine |
+| `kill` | stop something running on a remote agent's machine |
 | `push` | copy one local file to a remote agent |
 | `pull` | copy one file back from a remote agent |
 
@@ -41,6 +42,12 @@ a real machine, where `count: 0` was one step from overwriting a running binary.
 `ps` is therefore not "exec with a different command"; its **result** is a
 listing, and the listing carries what was examined, what filter was applied and
 what the machine could not say.
+
+The seventh is `kill`, and it is a tool rather than a command-line `taskkill`
+through `exec` for one reason: **a refusal is something an interface has and a
+command line does not.** This tool will not stop the agent that is serving it, and
+it will not do a bulk match that was not confirmed. Through `exec` both of those
+are one careless string away, and the caller learns about it afterwards.
 
 That is also the argument for why these are separate rather than one tool with
 several argument sets. `check` needs nothing but an address; `testbed` needs a

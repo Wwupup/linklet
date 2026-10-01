@@ -31,6 +31,7 @@ struct FakeRun {
     exec_calls: RefCell<Vec<(String, String, u64)>>,
     transfer_calls: RefCell<Vec<(String, String, String)>>,
     ps_calls: RefCell<Vec<(String, linklet_core::process::Filter)>>,
+    kill_calls: RefCell<Vec<(String, linklet_core::wire::KillRequest)>>,
 }
 
 impl FakeRun {
@@ -48,6 +49,10 @@ impl FakeRun {
     /// the direction would be asserting on a value dispatch does not pass it.
     fn transfer_calls(&self) -> Vec<(String, String, String)> {
         self.transfer_calls.borrow().clone()
+    }
+
+    fn kill_calls(&self) -> Vec<(String, linklet_core::wire::KillRequest)> {
+        self.kill_calls.borrow().clone()
     }
 
     fn ps_calls(&self) -> Vec<(String, linklet_core::process::Filter)> {
@@ -109,12 +114,95 @@ impl ToolRunner for FakeRun {
                          elevated cannot read another user's command line",
         )
     }
+
+    fn kill(&self, agent: &str, request: &linklet_core::wire::KillRequest) -> ToolOutcome {
+        self.kill_calls
+            .borrow_mut()
+            .push((agent.to_string(), request.clone()));
+        ToolOutcome::ok("killed 1 of 1\n5144 app.exe")
+    }
+}
+
+#[test]
+fn the_kill_tool_takes_a_pid_or_a_name_and_says_which_it_took() {
+    use linklet_core::process::ToKill;
+
+    let fake = FakeRun::default();
+    dispatch(
+        "kill",
+        &object! { "agent" => Json::str("10.0.0.5:8787"), "pid" => 5144_i64 },
+        &fake,
+    )
+    .expect("a pid is never gated");
+    dispatch(
+        "kill",
+        &object! {
+            "agent" => Json::str("10.0.0.5:8787"),
+            "name" => Json::str("app.exe"),
+            "confirmed" => true,
+        },
+        &fake,
+    )
+    .expect("a name the caller confirmed");
+
+    let calls = fake.kill_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].1.to_kill, ToKill::Pid(5144));
+    assert!(!calls[0].1.force, "a pid needs no confirmation");
+    assert_eq!(calls[1].1.to_kill, ToKill::Name("app.exe".to_string()));
+    assert!(calls[1].1.force, "the caller's confirmation has to arrive");
+}
+
+#[test]
+fn the_kill_tool_refuses_to_guess_between_a_pid_and_a_name() {
+    // Both would need a rule for which wins, and neither is a kill with no target -- it is a
+    // message that arrived wrong, and guessing is how it becomes a process nobody named.
+    let fake = FakeRun::default();
+
+    for (arguments, expected) in [
+        (
+            object! { "agent" => Json::str("a:1"), "pid" => 5144_i64, "name" => Json::str("app.exe") },
+            "name",
+        ),
+        (object! { "agent" => Json::str("a:1") }, "pid"),
+    ] {
+        let error = dispatch("kill", &arguments, &fake).expect_err("should be refused");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?} in {error}"
+        );
+    }
+    assert!(fake.kill_calls().is_empty(), "nothing may be stopped");
+}
+
+#[test]
+fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out() {
+    // Without this, stopping a build by name stops every copy of it on the machine. The
+    // filter is what makes a bulk stop bounded, and it has to survive the surface.
+    let fake = FakeRun::default();
+    dispatch(
+        "kill",
+        &object! {
+            "agent" => Json::str("a:1"),
+            "name" => Json::str("app.exe"),
+            "confirmed" => true,
+            "candidates_cmdline" => Json::str(r"C:\deploy\app.exe"),
+        },
+        &fake,
+    )
+    .expect("a valid call");
+
+    let calls = fake.kill_calls();
+    assert_eq!(
+        calls[0].1.candidates.cmdline.as_deref(),
+        Some(r"C:\deploy\app.exe")
+    );
 }
 
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_six_tools() {
+fn there_are_exactly_seven_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -124,14 +212,14 @@ fn there_are_exactly_six_tools() {
     // `tools()`: an agent that cannot send a file cannot install a build, and one that
     // cannot bring a log back has to ask for it in a command's output instead.
     //
-    // The seventh is `ps`, and its question is the one the deploy loop cannot be closed
-    // without: **is the old build still running.** `exec` cannot answer it -- `tasklist`
-    // through `exec` returns text an agent has to parse, with none of the counts that make
-    // an empty answer readable, which is the mistake `docs/ROADMAP.md` M10 records from a
-    // real machine.
+    // The seventh and eighth are `ps` and `kill`, and together they are the deploy loop:
+    // **is the old build still running, and stop it.** `exec` cannot answer either --
+    // `tasklist` through `exec` returns text with none of the counts that make an empty
+    // answer readable, and `taskkill` through it cannot refuse to stop the agent, because a
+    // refusal is something an interface has and a command line does not.
     assert_eq!(
         tools().len(),
-        6,
+        7,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
@@ -140,7 +228,7 @@ fn there_are_exactly_six_tools() {
     let names: Vec<&str> = tools().iter().map(|tool| tool.name).collect();
     assert_eq!(
         names,
-        vec!["check", "testbed", "exec", "push", "pull", "ps"]
+        vec!["check", "testbed", "exec", "push", "pull", "ps", "kill"]
     );
 }
 
@@ -444,6 +532,9 @@ fn bad_news_is_not_an_error() {
         }
         fn ps(&self, _agent: &str, _filter: &linklet_core::process::Filter) -> ToolOutcome {
             ToolOutcome::ok("0 of 214 match")
+        }
+        fn kill(&self, _agent: &str, _request: &linklet_core::wire::KillRequest) -> ToolOutcome {
+            ToolOutcome::ok("killed 0 of 1\\nfailed 5144 app.exe")
         }
     }
 

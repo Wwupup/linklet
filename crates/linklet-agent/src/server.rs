@@ -296,6 +296,20 @@ fn answer(
         Ok(Request::Ps(filter)) => Response::Sealed(wire::encode_ps_reply(
             &linklet_adapters::list_processes(&filter),
         )),
+        // The one request that changes the machine rather than looking at it. The guard runs
+        // in the adapter, **before `taskkill` is ever started**: a bulk match that was not
+        // forced, and a request that would stop the agent itself, both come back as a
+        // refusal with nothing attempted -- which is a different answer from a report saying
+        // nothing was killed, and the difference is whether the caller should try again.
+        Ok(Request::Kill(kill)) => match linklet_adapters::kill_processes(
+            &kill.to_kill,
+            kill.force,
+            kill.exclude.as_deref(),
+            &kill.candidates,
+        ) {
+            Ok(report) => Response::Sealed(wire::encode_kill_reply(&report)),
+            Err(refusal) => Response::Sealed(wire::reply_refused(&refusal.to_string())),
+        },
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.

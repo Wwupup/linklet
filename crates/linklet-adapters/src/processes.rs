@@ -24,7 +24,10 @@
 
 use std::process::Command;
 
-use linklet_core::process::{Filter, Listing, Process, apply, could_not_enumerate};
+use linklet_core::process::{
+    Filter, KillReport, Listing, Process, Refusal, Target, ToKill, apply, could_not_enumerate,
+    plan_kill,
+};
 
 /// The most processes this will look at.
 ///
@@ -63,8 +66,193 @@ pub fn list(filter: &Filter) -> Listing {
     apply(parsed.processes, filter, parsed.unreadable)
 }
 
-/// What one run of `tasklist` produced.
+/// Every process on this machine, unfiltered and uncapped.
 ///
+/// **The reply has a ceiling and this does not**, and the distinction is load-bearing.
+/// [`linklet_core::process::MAX_LISTED`] exists so that one reply cannot be the thing that
+/// fails -- a busy machine has hundreds of processes and the reply is one frame -- but a
+/// caller that used the capped listing to decide what to kill would not find a process past
+/// the ceiling. The failure that produces is the worst one available here: `matched: 0` for
+/// a process that is running, read by a deploy loop as a clean machine.
+///
+/// This was found by a test rather than by reading: the deploy-loop test looked for a `ping`
+/// with `--name` (which found it, and `ps` is capped the same way) and then asked to kill it
+/// by pid through an unfiltered listing, where the process was past the ceiling and simply
+/// was not there. **A cap on what is reported must not be a cap on what is acted on.**
+///
+/// Still bounded by [`MAX_READ`], which bounds the reading rather than the answer.
+fn read_everything() -> Parsed {
+    match Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH"])
+        .output()
+    {
+        Ok(output) => parse_tasklist(&String::from_utf8_lossy(&output.stdout)),
+        // No lines and no processes, so the caller sees an empty machine. Both callers of
+        // this treat an unreadable machine as "cannot say" rather than as "nothing there",
+        // which is why returning nothing here is safe.
+        Err(_) => Parsed::default(),
+    }
+}
+
+/// Stops the processes a caller asked to stop.
+///
+/// # What it refuses, before running anything
+///
+/// The decision is [`linklet_core::process::plan_kill`] and it is pure: a bulk request that
+/// was not forced, and a request that would stop the agent itself or the process that
+/// started it. Both come back as an [`Err(Refusal)`](Refusal) with **nothing attempted**,
+/// which is a different answer from a report showing nothing was killed.
+///
+/// The pids that may not be killed are worked out here because they are facts about this
+/// running process: the agent's own, and its parent's -- the shell or scheduler that
+/// launched it, which on this bench is what would take the agent down with it.
+///
+/// # Errors
+///
+/// [`Refusal`] when the request must not be attempted. Everything else comes back as a
+/// [`KillReport`], including the processes the machine would not stop: a `taskkill` that
+/// failed is a result about the machine and not a failure of the call.
+pub fn kill(
+    to_kill: &ToKill,
+    force: bool,
+    exclude: Option<&str>,
+    filter: &Filter,
+) -> Result<KillReport, Refusal> {
+    // **Filtered first, then mapped -- and read from the uncapped list.** The filter is what
+    // bounds a bulk match to one build rather than everything with a similar name, and the
+    // uncapped read is what stops a process past the reply's ceiling from being invisible to
+    // a request that names it. See `read_everything`.
+    let candidates: Vec<Target> =
+        linklet_core::process::matching(read_everything().processes, filter)
+            .iter()
+            .map(|process| Target {
+                pid: process.pid,
+                name: process.name.clone(),
+            })
+            .collect();
+
+    let (protected, note) = protected_pids();
+
+    let planned = plan_kill(to_kill, force, exclude, &candidates, &protected)?;
+
+    let mut report = KillReport {
+        matched: planned.len(),
+        killed: Vec::new(),
+        excluded: Vec::new(),
+        failed: Vec::new(),
+        notes: note.into_iter().collect(),
+    };
+
+    for target in planned {
+        if stop(target.pid) {
+            report.killed.push(target);
+        } else {
+            report.failed.push(target);
+        }
+    }
+
+    Ok(report)
+}
+
+/// The pids this agent must not stop, and a note when the guard is weaker than it should be.
+///
+/// The agent's own pid is always protected. Its **parent** is protected too, because on
+/// Windows the process that started the agent may be a shell whose exit takes the agent with
+/// it -- and on this bench that is exactly how it was launched, so killing the parent is an
+/// indirect way of killing the agent.
+///
+/// # Why the second half can be missing, and why that is said out loud
+///
+/// The parent is read from the machine with `wmic`, which newer Windows builds are
+/// deprecating. **A failure here does not fail the kill** -- the agent's own pid is still
+/// guarded, which is the case that matters -- but it does make the guard narrower, and a
+/// caller that believes the parent is safe when it is not could kill the agent through it.
+/// So the note travels with the report instead of being dropped: the same argument as every
+/// other note in this module.
+fn protected_pids() -> (Vec<u32>, Option<String>) {
+    let own = std::process::id();
+    match parent_pid(own) {
+        Some(parent) => (vec![own, parent], None),
+        None => (
+            vec![own],
+            Some(
+                "the parent process could not be read, so only the agent itself is guarded: \
+                 stopping whatever started it may take the agent down too"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
+/// The parent of a process, out of `wmic`'s own output.
+///
+/// `tasklist` does not report it. `None` says "not known" rather than guessing a number
+/// that might belong to something else -- a wrong pid here would protect an arbitrary
+/// process or fail to protect the right one, and both are worse than the narrower guard the
+/// note above describes.
+fn parent_pid(pid: u32) -> Option<u32> {
+    let output = Command::new("wmic")
+        .args([
+            "process",
+            "where",
+            &format!("ProcessId={pid}"),
+            "get",
+            "ParentProcessId",
+            "/value",
+        ])
+        .output()
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("ParentProcessId="))
+        .and_then(|value| value.trim().parse().ok())
+}
+
+/// Whether a process is gone after being asked to stop.
+///
+/// `taskkill /T /F`: the tree, so that a program's own children go with it -- the same
+/// reason `execute.rs` uses it for a deadline. `/F` because a task that ignores a polite
+/// close would otherwise be reported as killed while it is still running, and this report is
+/// what a deploy loop trusts before overwriting a file.
+///
+/// A failure is `false` and not an error: `taskkill` exits non-zero when the process is
+/// already gone, which is the outcome the caller wanted, so the answer is checked against
+/// the machine rather than against the exit code.
+fn stop(pid: u32) -> bool {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output();
+
+    !exists(pid)
+}
+
+/// Whether a pid is in the machine's process list.
+///
+/// **`tasklist` filtered by pid, and not the ordinary listing.** The ordinary one is capped
+/// at [`linklet_core::process::MAX_LISTED`] for the reply, so a process just past that
+/// ceiling would look absent -- and a kill that reported success on a process which is still
+/// running is exactly the answer a deploy loop must not be given. The filtered form returns
+/// the one pid or the "no tasks" notice, and the notice is read as "gone" because that is
+/// what it says.
+fn exists(pid: u32) -> bool {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .output();
+
+    let Ok(output) = output else {
+        // The list could not be read, so "gone" cannot be claimed. Reporting the process as
+        // still running sends the caller to look again; reporting it as stopped would send
+        // the caller to overwrite a file a live process is holding.
+        return true;
+    };
+
+    !parse_tasklist(&String::from_utf8_lossy(&output.stdout))
+        .processes
+        .is_empty()
+}
+
+/// What one run of `tasklist` produced.
 /// Not a [`Listing`]: a filter has not been applied yet, and the count of lines that could
 /// not be read is a fact about the output rather than about the answer.
 #[derive(Debug, Default, PartialEq, Eq)]

@@ -28,7 +28,7 @@ use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
 use linklet_core::json;
 use linklet_core::transfer::TransferError;
-use linklet_core::wire::{self, Reply, Request, RunOutcome, RunRequest, WireError};
+use linklet_core::wire::{self, KillRequest, Reply, Request, RunOutcome, RunRequest, WireError};
 
 /// Why a call could not be completed.
 ///
@@ -330,6 +330,53 @@ pub fn ps(
 
     wire::ps_listing_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
 }
+
+/// Stops something on an agent's machine.
+///
+/// # The two refusals, and why they are refusals rather than reports
+///
+/// [`linklet_core::process::Refusal::NotForced`] for anything that can match more than one
+/// process, and [`linklet_core::process::Refusal::WouldKillItself`] when the request would
+/// stop the agent or the process that started it. Both arrive as [`CallError::Refused`] and
+/// both mean **nothing was attempted**, which is a different answer from a report showing
+/// nothing was killed: the first says the caller should decide again, the second says the
+/// machine has nothing to do.
+///
+/// The guard runs on the agent and not here, because whether it applies depends on what is
+/// running there and on which process is answering -- neither of which this side can see.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know what happened, including the
+/// two refusals above.
+pub fn kill(
+    address: &AgentAddress,
+    request: &KillRequest,
+) -> Result<linklet_core::process::KillReport, CallError> {
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    // A kill lists the machine and then stops what it found, so it is allowed more time than
+    // a handshake: `--name` on a busy machine is a `tasklist` plus a `taskkill` per match.
+    let reply = ask(
+        &mut connection,
+        session.as_mut(),
+        &Request::Kill(request.clone()),
+        KILL_ALLOWANCE,
+    )?;
+
+    match reply {
+        Reply::Refused(reason) => Err(CallError::Refused(reason)),
+        Reply::Result(_) => wire::kill_report_from_reply(&reply)
+            .map_err(|error| CallError::Protocol(error.to_string())),
+    }
+}
+
+/// How long a kill may take.
+///
+/// Longer than a handshake, because the work behind it is a process list and then one
+/// `taskkill` per match -- and each of those waits for the process to be confirmed gone. Ten
+/// seconds is generous for a handful of matches and still bounded, which is the point of
+/// having a number.
+const KILL_ALLOWANCE: Duration = Duration::from_secs(30);
 
 /// Brings one file back from a path under the agent's transfer root.
 ///

@@ -32,7 +32,7 @@ use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
-use linklet_core::wire::{self, RunRequest};
+use linklet_core::wire::{self, KillRequest, RunRequest};
 use linklet_core::{
     CheckError, DEFAULT_BUDGET_SECONDS, DEFAULT_EXEC_TIMEOUT_SECONDS, ExitCode, MAX_AT_ONCE,
     MAX_TARGETS, Report, Summary, ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for,
@@ -51,6 +51,7 @@ usage:
   linklet testbed check <spec-file> <target>
   linklet exec --agent <host:port> [options] <command...>
   linklet ps --agent <host:port> [options]
+  linklet kill --agent <host:port> (--pid <n> | --name <exact> | --contains <text>) [options]
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -79,6 +80,22 @@ about the listing:
   matched and what filter was applied. An empty list is only readable next to that
   summary, which is why it is always printed -- and exit 1 rather than 0 when the
   machine could not be read completely.
+
+options for kill:
+  --pid <n>           stop this one process
+  --name <text>       stop every process whose image name is exactly this
+  --contains <text>   stop every process whose image name contains this
+  --yes               required for --name and --contains: they can match several
+  --exclude <text>    do not stop processes whose image name contains this
+  --candidates-name <text>     only consider processes matching this first
+  --candidates-cmdline <text>  only consider processes whose command line matches
+
+about stopping things:
+  A pid is never gated, because a number is one process. A name is, because a build
+  and its helper often share one. Stopping the agent itself is refused on the target
+  and the refusal names the process -- filtering it out here would report success
+  while the one process the caller named kept running. Exit 1 means something the
+  request matched is still running.
 
 about mcp:
   Speaks the Model Context Protocol on stdin and stdout, for an AI agent to
@@ -180,6 +197,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("ps") {
         return run_ps(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("kill") {
+        return run_kill(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -436,6 +457,10 @@ impl ToolRunner for LiveRunner {
 
     fn ps(&self, agent: &str, filter: &linklet_core::process::Filter) -> ToolOutcome {
         ps_on(agent, filter, token_from_environment().as_ref())
+    }
+
+    fn kill(&self, agent: &str, request: &KillRequest) -> ToolOutcome {
+        kill_on(agent, request, token_from_environment().as_ref())
     }
 }
 
@@ -795,8 +820,181 @@ fn complete_from_text(text: &str) -> bool {
         && !text.contains("\nnote: ")
 }
 
-/// Asks an agent what is running and renders what it said.
+/// Stops something on an agent's machine.
 ///
+/// # The two things this will not do without being asked twice
+///
+/// `--name` and `--contains` can match more than one process, so they need `--yes`: a build
+/// and its helper often share a name, and killing both on a typo is an act that cannot be
+/// undone. `--pid` never needs it, because a number is one process.
+///
+/// **Stopping the agent itself is refused on the machine, not here**, and the refusal names
+/// the process. That is not politeness: if this side filtered it out instead, the caller
+/// would read a report saying everything else was killed and never learn that the one
+/// process it named is still running.
+///
+/// The exit code is `check`'s and not `exec`'s -- there is no command whose status could be
+/// passed through. `0` when everything the request matched is gone, `1` when something is
+/// still there, `3` when the call could not be made or was refused.
+fn run_kill(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut to_kill: Option<linklet_core::process::ToKill> = None;
+    let mut force = false;
+    let mut exclude: Option<String> = None;
+    let mut candidates = linklet_core::process::Filter::any();
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        let mut value = |flag: &str| -> Result<String, u8> {
+            words.next().cloned().ok_or_else(|| {
+                eprintln!("linklet: {flag} needs a value");
+                ExitCode::USAGE
+            })
+        };
+        let mut set_target = |target: linklet_core::process::ToKill| -> Result<(), u8> {
+            if to_kill.is_some() {
+                eprintln!("linklet: kill takes one of --pid, --name or --contains, not several");
+                return Err(ExitCode::USAGE);
+            }
+            to_kill = Some(target);
+            Ok(())
+        };
+
+        match argument.as_str() {
+            "--agent" => match value("--agent") {
+                Ok(got) => agent = Some(got),
+                Err(code) => return code,
+            },
+            "--pid" => {
+                let Ok(text) = value("--pid") else {
+                    return ExitCode::USAGE;
+                };
+                let Ok(pid) = text.parse::<u32>() else {
+                    eprintln!("linklet: --pid needs a process identifier, got {text:?}");
+                    return ExitCode::USAGE;
+                };
+                if let Err(code) = set_target(linklet_core::process::ToKill::Pid(pid)) {
+                    return code;
+                }
+            }
+            "--name" => {
+                let Ok(text) = value("--name") else {
+                    return ExitCode::USAGE;
+                };
+                if let Err(code) = set_target(linklet_core::process::ToKill::Name(text)) {
+                    return code;
+                }
+            }
+            "--contains" => {
+                let Ok(text) = value("--contains") else {
+                    return ExitCode::USAGE;
+                };
+                if let Err(code) = set_target(linklet_core::process::ToKill::Matching(text)) {
+                    return code;
+                }
+            }
+            "--exclude" => match value("--exclude") {
+                Ok(got) => exclude = Some(got),
+                Err(code) => return code,
+            },
+            "--candidates-name" => match value("--candidates-name") {
+                Ok(got) => candidates.name = Some(got),
+                Err(code) => return code,
+            },
+            "--candidates-cmdline" => match value("--candidates-cmdline") {
+                Ok(got) => candidates.cmdline = Some(got),
+                Err(code) => return code,
+            },
+            "--yes" => force = true,
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: kill needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+    let Some(to_kill) = to_kill else {
+        eprintln!("linklet: kill needs one of --pid, --name or --contains");
+        return ExitCode::USAGE;
+    };
+
+    let request = KillRequest {
+        to_kill,
+        force,
+        candidates,
+        exclude,
+    };
+
+    let outcome = kill_on(&agent, &request, token_from_environment().as_ref());
+    println!("{}", outcome.text);
+
+    if outcome.is_error {
+        return ExitCode::REFUSED;
+    }
+
+    // A report that says something is still there is exit 1: the call was made and the
+    // machine has not done what was asked. `killed 0 of 1` is read by `complete_from_kill`
+    // rather than by counting lines, for the same reason the listing's summary is.
+    match kill_complete_from_text(&outcome.text) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::NOT_ALL_ALIVE,
+    }
+}
+
+/// Whether a rendered kill says everything it matched is gone.
+///
+/// The first line is `killed <n> of <m>`, so a report where the two numbers differ is a
+/// report about something still running. Read out of the text rather than out of the
+/// [`linklet_core::process::KillReport`], which `kill_on` has already rendered, for the same
+/// reason `exit_code_from_text` is: the alternative is threading one fact through two
+/// parameters.
+fn kill_complete_from_text(text: &str) -> bool {
+    let Some(first) = text.lines().next() else {
+        return false;
+    };
+    let Some(rest) = first.strip_prefix("killed ") else {
+        return false;
+    };
+    let Some((killed, matched)) = rest.split_once(" of ") else {
+        return false;
+    };
+
+    match (
+        killed.trim().parse::<usize>(),
+        matched.trim().parse::<usize>(),
+    ) {
+        // Only when both parsed and agree. An unreadable line is not evidence that
+        // something is gone, so it is exit 1 -- the same direction every other answer in
+        // this tool takes when it cannot tell.
+        (Ok(killed), Ok(matched)) => killed == matched,
+        _ => false,
+    }
+}
+
+/// Stops something on an agent's machine and renders what happened.
+///
+/// Shared by the command and the tool, like `ps_on`, so that the two cannot disagree about
+/// what a refusal looks like.
+fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    match linklet_client::kill(&address, request) {
+        Ok(report) => ToolOutcome::ok(linklet_core::process::render_kill(&report)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
+}
+
+/// Asks an agent what is running and renders what it said.
 /// Shared by the command and the tool, like `exec_on` and `transfer_on`, so that the two
 /// cannot disagree about what a failure looks like.
 fn ps_on(

@@ -15,9 +15,10 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use linklet_client::{AgentAddress, CallError, ps};
+use linklet_client::{AgentAddress, CallError, kill, ps, run};
 use linklet_core::auth::Token;
-use linklet_core::process::{Filter, Incomplete, Listing};
+use linklet_core::process::{Filter, Incomplete, Listing, ToKill};
+use linklet_core::wire::{KillRequest, RunRequest};
 
 /// The token these tests configure the agent with.
 const TEST_TOKEN: &str = "test-token-0123456789";
@@ -250,4 +251,173 @@ fn a_ps_call_to_a_machine_with_no_agent_is_a_transport_failure_and_not_an_empty_
         matches!(error, CallError::Transport(_) | CallError::NoReply { .. }),
         "{error:?}"
     );
+}
+
+// --- and the loop the whole item is for --------------------------------------
+
+/// Starts a process on the agent's machine that lives for about `minutes`, and returns the
+/// name to look for it by.
+///
+/// **Started through `exec` and deliberately not waited for.** `exec` blocks until the
+/// command exits, so this runs on its own thread and the test proceeds: what is being set up
+/// is a process that outlives the request that started it, which is exactly the shape
+/// `spawn` will eventually provide. Until then this is the honest way to produce one, and it
+/// is why the `exec` thread is left to finish on its own rather than joined.
+fn start_a_marker(agent: &Agent) -> String {
+    // Long enough that the test always stops it rather than racing it: the process has to
+    // outlive the two calls that look for it and stop it. `ping -n 40` was written first and
+    // the race was lost -- the marker exited on its own between the `ps` and the `kill`, and
+    // the failure read as the filter not matching.
+    let command = "ping -n 600 127.0.0.1";
+    let address = agent.address.clone();
+    std::thread::spawn(move || {
+        let _ = run(
+            &address,
+            &RunRequest {
+                command: command.to_string(),
+                timeout_seconds: 60,
+            },
+        );
+    });
+
+    // The image name of what `cmd` starts for that command. `exec` runs through `cmd /C`,
+    // so the process that lives is the ping, not the shell.
+    "PING.EXE".to_string()
+}
+
+#[test]
+fn the_deploy_loop_can_be_closed_look_start_and_stop() {
+    // **What M10 says cannot be done without a person.** Kill the old build, push, start,
+    // confirm it stayed up -- and the two halves that were missing are `ps` and `kill`.
+    // This closes the loop with a real process on a real machine: find it, confirm it is
+    // running, stop it by pid, and confirm it is gone.
+    let agent = Agent::start();
+    let marker = start_a_marker(&agent);
+
+    // Look. The wait is for the ping to actually exist; a `ps` immediately after the request
+    // can beat the shell that has to start it.
+    let mut found = None;
+    for _ in 0..40 {
+        let listing = ps(
+            &agent.address,
+            &Filter {
+                name: Some(marker.clone()),
+                ..Filter::any()
+            },
+        )
+        .expect("the agent should answer");
+        if let Some(process) = listing.processes.first() {
+            found = Some(process.pid);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let pid = found.unwrap_or_else(|| panic!("{marker} never appeared in a listing"));
+
+    // Stop it, by number -- the one request that is never gated, because a pid is one
+    // process and the caller has already said which.
+    let report = kill(
+        &agent.address,
+        &KillRequest {
+            to_kill: ToKill::Pid(pid),
+            force: false,
+            candidates: Filter::any(),
+            exclude: None,
+        },
+    )
+    .expect("the agent should answer");
+
+    assert_eq!(report.matched, 1, "{report:#?}");
+    assert_eq!(report.killed.len(), 1, "it should be gone: {report:#?}");
+    assert_eq!(report.killed[0].pid, pid);
+    assert!(report.complete(), "{report:#?}");
+
+    // And confirm it. Looking at the machine again is the only thing that makes the report
+    // evidence rather than a claim.
+    let after = ps(
+        &agent.address,
+        &Filter {
+            name: Some(marker.clone()),
+            ..Filter::any()
+        },
+    )
+    .expect("the agent should answer");
+    assert!(
+        !after.processes.iter().any(|process| process.pid == pid),
+        "the process is still there after being killed: {after:#?}"
+    );
+}
+
+#[test]
+fn a_request_that_would_stop_the_agent_is_refused_over_the_socket() {
+    // The guard, end to end: refused before `taskkill` runs, and the refusal reaches the
+    // caller as a refusal rather than as a transport failure -- which matters here more than
+    // anywhere, because the one process that could not answer is the one being asked about.
+    let agent = Agent::start();
+
+    let error = kill(
+        &agent.address,
+        &KillRequest {
+            to_kill: ToKill::Matching("linklet-agent".to_string()),
+            force: true,
+            candidates: Filter::any(),
+            exclude: None,
+        },
+    )
+    .expect_err("this would stop the agent");
+
+    let CallError::Refused(reason) = &error else {
+        panic!("a refusal, and not a dropped connection: {error:?}");
+    };
+    assert!(reason.contains("agent"), "{reason}");
+
+    // And the agent is still serving, which is the fact the refusal was protecting.
+    assert!(
+        ps(&agent.address, &Filter::any()).is_ok(),
+        "the agent should still be answering"
+    );
+}
+
+#[test]
+fn a_bulk_match_that_was_not_forced_is_refused_over_the_socket() {
+    let agent = Agent::start();
+
+    let error = kill(
+        &agent.address,
+        &KillRequest {
+            to_kill: ToKill::Matching("explorer".to_string()),
+            force: false,
+            candidates: Filter::any(),
+            exclude: None,
+        },
+    )
+    .expect_err("a bulk match without --yes");
+
+    let CallError::Refused(reason) = &error else {
+        panic!("a refusal, and not a dropped connection: {error:?}");
+    };
+    assert!(reason.contains("--yes"), "{reason}");
+}
+
+#[test]
+fn a_pid_that_is_not_running_is_a_report_of_nothing_and_not_a_failure() {
+    // "Make sure it is gone" is an ordinary intent, and a machine where it never existed is
+    // that intent already satisfied. What a caller must not be handed either way is a
+    // transport failure, which would send it looking at the network.
+    let agent = Agent::start();
+
+    let report = kill(
+        &agent.address,
+        &KillRequest {
+            to_kill: ToKill::Pid(4_000_000),
+            force: false,
+            candidates: Filter::any(),
+            exclude: None,
+        },
+    )
+    .expect("the agent should answer");
+
+    assert_eq!(report.matched, 0, "{report:#?}");
+    assert!(report.matched_nothing());
+    assert!(report.complete(), "nothing was left running");
 }

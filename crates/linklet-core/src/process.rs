@@ -340,6 +340,24 @@ pub fn could_not_enumerate(reason: &str, filter: &Filter) -> Listing {
     }
 }
 
+/// The processes a filter accepts, **with no ceiling**.
+///
+/// The half of [`apply`] that decides rather than the half that reports, and it is public
+/// because a caller that is going to *act* on the answer must not read a capped one: a kill
+/// that could not see a process past [`MAX_LISTED`] would report `matched: 0` for something
+/// that is running, and a deploy loop reads that as a clean machine. **A cap on what is
+/// reported must not be a cap on what is acted on.**
+///
+/// This was found by a test rather than by reading it: the deploy-loop test found its marker
+/// with `--name` and then asked to kill it by pid, and the pid was past the ceiling in the
+/// unfiltered listing `kill` was reading.
+pub fn matching(processes: Vec<Process>, filter: &Filter) -> Vec<Process> {
+    processes
+        .into_iter()
+        .filter(|process| filter.accepts(process))
+        .collect()
+}
+
 /// Applies a filter to what the machine reported.
 ///
 /// `total` is counted **before** the filter and `count` after, so a caller can tell "no
@@ -349,10 +367,7 @@ pub fn apply(processes: Vec<Process>, filter: &Filter, unreadable: usize) -> Lis
     let total = processes.len();
     let unanswerable = filter.unanswerable(&processes);
 
-    let mut matched: Vec<Process> = processes
-        .into_iter()
-        .filter(|process| filter.accepts(process))
-        .collect();
+    let mut matched = matching(processes, filter);
 
     let truncated = matched.len() > MAX_LISTED;
     matched.truncate(MAX_LISTED);
@@ -388,6 +403,243 @@ fn notes_for(unanswerable: &[Field], unreadable: usize) -> Vec<String> {
     }
 
     notes
+}
+
+/// What a caller asked to stop.
+///
+/// An enum rather than two optional fields, because killing one named process and killing
+/// every process with a name are different acts and only one of them is safe to do by
+/// accident. The type makes the dangerous one impossible to express casually: it has to be
+/// asked for by name.
+///
+/// The matching side is [`Refusal`]'s business rather than this type's -- what a wildcard
+/// matches is a regex's question, and this is the shape of the request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToKill {
+    /// One process, by the number it was given.
+    ///
+    /// Never gated: a pid is one process, and a caller that names one has already said
+    /// which.
+    Pid(u32),
+    /// One process with exactly this image name, whatever its pid.
+    ///
+    /// **Gated behind `force`**, because a name is not an identity: on a machine running
+    /// several copies of a build, "stop `app.exe`" stops all of them, and the caller may
+    /// have meant the one it started.
+    Name(String),
+    /// Every process whose image name contains this text.
+    ///
+    /// Gated, and the gating is the point: `--name app` matches a build, a test harness and
+    /// whatever else someone named similarly, and a tool that did that on a typo would be a
+    /// tool nobody runs twice.
+    Matching(String),
+}
+
+impl ToKill {
+    /// Whether this request can match more than one process.
+    pub fn is_bulk(&self) -> bool {
+        !matches!(self, Self::Pid(_))
+    }
+
+    /// How this request reads in a refusal.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Pid(pid) => format!("process {pid}"),
+            Self::Name(name) => format!("{name:?}"),
+            Self::Matching(text) => format!("every process matching {text:?}"),
+        }
+    }
+}
+
+/// What a kill request refused to do, and why.
+///
+/// Not a [`KillReport`], because a refusal here means **nothing was attempted** -- the
+/// difference between "the machine would not let me" and "I decided not to ask" is the
+/// difference between a report and a refusal, and folding them together would make a
+/// caller read a result to find out whether it had asked for something dangerous.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// A bulk request that was not forced.
+    NotForced {
+        /// What it would have done.
+        what: String,
+    },
+    /// A name or match that would have taken the agent itself.
+    ///
+    /// **Refused before the command runs, and not filtered out of the results.** Filtering
+    /// would be the silent version: a caller that asked to stop `linklet-agent` would get a
+    /// report saying the kill succeeded on everything else, and the one process it actually
+    /// named would be missing from it. Refusing says what happened.
+    WouldKillItself {
+        /// The names that matched, which is what the caller has to act on.
+        names: Vec<String>,
+    },
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotForced { what } => write!(
+                f,
+                "{what} can match more than one process, and killing is not undoable: \
+                 pass --yes if that is what you meant"
+            ),
+            Self::WouldKillItself { names } => write!(
+                f,
+                "{} is the agent serving this request, or the process that started it: \
+                 stopping it would end the conversation before the answer could be sent",
+                names.join(", ")
+            ),
+        }
+    }
+}
+
+/// One process a kill request will act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// The process identifier.
+    pub pid: u32,
+    /// The image name, which is what a reader recognises.
+    pub name: String,
+}
+
+/// What a kill did, in the four pieces a reader needs.
+///
+/// **The pieces are the point**, and they are the same argument `ps` is built on: a name
+/// match that was deliberately not killed is a **failure and not a clean result**, because
+/// reading `killed: []` as "it was already gone" is how a caller comes to overwrite a file
+/// a live process is holding. `matched` counts everything the request found, so an empty
+/// `killed` list can never be read on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillReport {
+    /// How many processes the request matched, including any that were not killed.
+    pub matched: usize,
+    /// The processes that are gone.
+    pub killed: Vec<Target>,
+    /// The processes that were deliberately not touched, and why.
+    pub excluded: Vec<Target>,
+    /// The processes the machine would not stop.
+    pub failed: Vec<Target>,
+    /// What the machine could not tell us about the guard, one sentence each.
+    ///
+    /// A narrower guard is a real weakening and is said rather than implied -- the same
+    /// argument as [`Listing::notes`]. Empty when the guard is what it should be.
+    pub notes: Vec<String>,
+}
+
+impl KillReport {
+    /// Whether everything the request matched is gone.
+    ///
+    /// **`false` for a name match that was deliberately not killed**, which is the case a
+    /// caller most needs to see: it means the machine still has the process the caller
+    /// asked about, whatever the `killed` list says.
+    pub fn complete(&self) -> bool {
+        self.excluded.is_empty() && self.failed.is_empty()
+    }
+
+    /// The processes still running, as far as this report knows.
+    pub fn still_running(&self) -> Vec<&Target> {
+        self.excluded.iter().chain(self.failed.iter()).collect()
+    }
+
+    /// Whether anything at all was found.
+    pub fn matched_nothing(&self) -> bool {
+        self.matched == 0
+    }
+}
+
+/// Decides what a kill request will act on, refusing the two things it must not do.
+///
+/// Pure, and separated from running `taskkill` for the same reason the filter is separated
+/// from running `tasklist`: everything that can be wrong here is a decision, and a decision
+/// that can only be tested by killing something is a decision that stops being tested.
+///
+/// # Errors
+///
+/// [`Refusal::NotForced`] for a bulk request without `force`, and
+/// [`Refusal::WouldKillItself`] when the request would take a protected process. Both mean
+/// **nothing was attempted**.
+///
+/// `protected` is the pids the caller cannot afford to lose -- the agent's own and the
+/// process that started it -- and it is an argument rather than a constant because this
+/// module does not know them and should not: they are facts about a running process, and
+/// this crate has no running processes.
+pub fn plan_kill(
+    to_kill: &ToKill,
+    force: bool,
+    exclude: Option<&str>,
+    candidates: &[Target],
+    protected: &[u32],
+) -> Result<Vec<Target>, Refusal> {
+    if to_kill.is_bulk() && !force {
+        return Err(Refusal::NotForced {
+            what: to_kill.describe(),
+        });
+    }
+
+    let matches = |target: &Target| match to_kill {
+        ToKill::Pid(pid) => target.pid == *pid,
+        ToKill::Name(name) => target.name.eq_ignore_ascii_case(name),
+        ToKill::Matching(text) => target.name.to_lowercase().contains(&text.to_lowercase()),
+    };
+
+    let matched: Vec<&Target> = candidates.iter().filter(|target| matches(target)).collect();
+
+    let protected_names: Vec<String> = matched
+        .iter()
+        .filter(|target| protected.contains(&target.pid))
+        .map(|target| target.name.clone())
+        .collect();
+    if !protected_names.is_empty() {
+        return Err(Refusal::WouldKillItself {
+            names: protected_names,
+        });
+    }
+
+    // The exclusion is applied last, after the refusal above: a caller that asked to kill
+    // the agent cannot have that refusal quietly dropped by excluding it. Refusing is the
+    // honest answer even when the exclusion would have prevented the harm.
+    Ok(matched
+        .into_iter()
+        .filter(|target| {
+            !exclude.is_some_and(|text| target.name.to_lowercase().contains(&text.to_lowercase()))
+        })
+        .cloned()
+        .collect())
+}
+
+/// A report for a request that was refused before anything ran.
+///
+/// **Carries the processes the refusal was about**, so that a caller reading only the
+/// report can see what it almost did. `matched` is zero because nothing was matched for
+/// killing -- the request never got that far.
+pub fn refused_kill() -> KillReport {
+    KillReport {
+        matched: 0,
+        killed: Vec::new(),
+        excluded: Vec::new(),
+        failed: Vec::new(),
+        notes: Vec::new(),
+    }
+}
+
+/// Renders a kill as the lines a person or an agent reads.
+///
+/// The first line is a count, and it is always the same shape as `ps`'s summary for the
+/// same reason: `killed 0 of 1` cannot be mistaken for "there was nothing there", which
+/// `killed:` followed by nothing can.
+pub fn render_kill(report: &KillReport) -> String {
+    let mut out = format!("killed {} of {}\n", report.killed.len(), report.matched);
+    for target in &report.killed {
+        out.push_str(&format!("{} {}\n", target.pid, target.name));
+    }
+    for target in &report.excluded {
+        out.push_str(&format!("excluded {} {}\n", target.pid, target.name));
+    }
+    for target in &report.failed {
+        out.push_str(&format!("failed {} {}\n", target.pid, target.name));
+    }
+    out.trim_end().to_string()
 }
 
 /// Renders a listing as the lines a person or an agent reads.
@@ -686,5 +938,231 @@ mod tests {
             text.contains("note: cannot enumerate the process list: cannot run tasklist"),
             "and the reason is in the notes: {text}"
         );
+    }
+
+    #[test]
+    fn the_filter_that_acts_has_no_ceiling_even_though_the_one_that_reports_does() {
+        // **The bug this pair of functions exists to prevent.** A listing is capped so one
+        // reply cannot fail; a kill must not be, or a process past the ceiling is invisible
+        // to a request that names it -- and `matched: 0` for a running process is what a
+        // deploy loop reads as a clean machine. Found by a test, not by reading: the
+        // deploy-loop test found its marker with `--name` and then could not kill it by pid.
+        let many: Vec<Process> = (0..MAX_LISTED as u32 + 40)
+            .map(|pid| Process::named(pid, "worker.exe"))
+            .collect();
+
+        assert_eq!(
+            matching(many.clone(), &Filter::any()).len(),
+            MAX_LISTED + 40,
+            "the filter that decides must see everything"
+        );
+        assert_eq!(
+            apply(many, &Filter::any(), 0).count(),
+            MAX_LISTED,
+            "and the one that reports must still be capped"
+        );
+    }
+
+    // --- what may be killed --------------------------------------------------
+
+    /// Three processes, one of which is the agent serving the request.
+    fn candidates() -> Vec<Target> {
+        vec![
+            Target {
+                pid: 10,
+                name: "app.exe".to_string(),
+            },
+            Target {
+                pid: 11,
+                name: "app-helper.exe".to_string(),
+            },
+            Target {
+                pid: 999,
+                name: "linklet-agent.exe".to_string(),
+            },
+        ]
+    }
+
+    /// The agent's own pid and the pid that started it.
+    const PROTECTED: [u32; 2] = [999, 1000];
+
+    #[test]
+    fn a_pid_is_killed_without_being_forced() {
+        // A pid is one process and the caller has already said which.
+        let planned = plan_kill(&ToKill::Pid(10), false, None, &candidates(), &PROTECTED)
+            .expect("one process by number");
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].pid, 10);
+    }
+
+    #[test]
+    fn a_name_that_would_take_more_than_one_process_has_to_be_forced() {
+        // **The safety property.** `--name app.exe` reads like one process and matches two
+        // on a machine running a build and its helper; a bulk kill on a typo is the act a
+        // tool must not perform by accident.
+        let refusal = plan_kill(
+            &ToKill::Matching("app".to_string()),
+            false,
+            None,
+            &candidates(),
+            &PROTECTED,
+        )
+        .expect_err("a bulk match without --yes");
+
+        let Refusal::NotForced { what } = &refusal else {
+            panic!("expected a refusal about forcing, got {refusal:?}");
+        };
+        assert!(what.contains("app"), "{refusal}");
+        assert!(
+            refusal.to_string().contains("--yes"),
+            "the refusal has to say how to proceed: {refusal}"
+        );
+    }
+
+    #[test]
+    fn a_forced_bulk_match_plans_every_process_it_matched() {
+        let planned = plan_kill(
+            &ToKill::Matching("app".to_string()),
+            true,
+            None,
+            &candidates(),
+            &PROTECTED,
+        )
+        .expect("forced");
+
+        assert_eq!(planned.len(), 2);
+        assert_eq!(planned[0].pid, 10);
+        assert_eq!(
+            planned[1].pid, 11,
+            "the helper matches too, which is why it is gated"
+        );
+    }
+
+    #[test]
+    fn a_request_that_would_stop_the_agent_is_refused_and_says_which_process() {
+        // **The guard that matters most.** Stopping the agent ends the conversation before
+        // the answer can be sent, so this has to be refused *before* the command runs --
+        // and it is a refusal rather than a filter, because a filter would report success
+        // on everything else while silently dropping the one process the caller named.
+        let refusal = plan_kill(
+            &ToKill::Matching("linklet-agent".to_string()),
+            true,
+            None,
+            &candidates(),
+            &PROTECTED,
+        )
+        .expect_err("this would stop the agent");
+
+        let Refusal::WouldKillItself { names } = &refusal else {
+            panic!("expected a refusal about the agent itself, got {refusal:?}");
+        };
+        assert_eq!(names, &["linklet-agent.exe".to_string()]);
+        assert!(
+            refusal.to_string().contains("agent serving this request"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn an_exclude_does_not_excuse_a_request_that_would_stop_the_agent() {
+        // The two could be combined to look harmless -- kill everything matching `agent`
+        // except `linklet-agent` -- and the answer is still no: the caller asked for
+        // something that would end the conversation, and being told so is more useful than
+        // a report about the processes that were not the point.
+        let refusal = plan_kill(
+            &ToKill::Matching("agent".to_string()),
+            true,
+            Some("linklet-agent"),
+            &candidates(),
+            &PROTECTED,
+        )
+        .expect_err("excluding it does not make the request safe");
+
+        assert!(
+            matches!(refusal, Refusal::WouldKillItself { .. }),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn a_name_excludes_itself_from_the_plan_but_the_match_is_still_reported() {
+        // The exclude is applied to what will be killed, and `matched` is counted before
+        // it -- so a report can say "I found three and stopped two", which is the sentence
+        // that keeps a deliberate exclusion from looking like a clean machine.
+        let planned = plan_kill(
+            &ToKill::Matching("app".to_string()),
+            true,
+            Some("helper"),
+            &candidates(),
+            &PROTECTED,
+        )
+        .expect("forced");
+
+        assert_eq!(planned.len(), 1);
+        assert_eq!(planned[0].pid, 10);
+    }
+
+    #[test]
+    fn a_name_that_matches_nothing_plans_nothing_and_is_not_an_error() {
+        // "Make sure it is gone" is an ordinary intent, and a machine where it never
+        // existed is that intent already satisfied.
+        let planned = plan_kill(&ToKill::Pid(4242), false, None, &candidates(), &PROTECTED)
+            .expect("nothing to kill is not a refusal");
+
+        assert!(planned.is_empty());
+    }
+
+    #[test]
+    fn a_kill_report_says_when_the_machine_still_has_the_process() {
+        // The shape a caller branches on, and the reason a report is not a bool:
+        // `killed: []` on its own is how "it was not there" and "it would not die" come to
+        // look the same, and only one of them is safe to deploy over.
+        let clean = KillReport {
+            matched: 1,
+            killed: vec![Target {
+                pid: 10,
+                name: "app.exe".to_string(),
+            }],
+            excluded: Vec::new(),
+            failed: Vec::new(),
+            notes: Vec::new(),
+        };
+        assert!(clean.complete());
+        assert!(clean.still_running().is_empty());
+
+        let partial = KillReport {
+            matched: 2,
+            killed: Vec::new(),
+            excluded: vec![Target {
+                pid: 999,
+                name: "linklet-agent.exe".to_string(),
+            }],
+            failed: vec![Target {
+                pid: 11,
+                name: "app-helper.exe".to_string(),
+            }],
+            notes: Vec::new(),
+        };
+        assert!(!partial.complete(), "two processes are still there");
+        assert_eq!(partial.still_running().len(), 2);
+    }
+
+    #[test]
+    fn a_kill_is_rendered_as_a_count_before_anything_else() {
+        // The same argument as the listing's summary: `killed 0 of 1` cannot be read as
+        // "there was nothing", which a bare list can.
+        let report = KillReport {
+            matched: 1,
+            killed: Vec::new(),
+            excluded: Vec::new(),
+            failed: vec![Target {
+                pid: 10,
+                name: "app.exe".to_string(),
+            }],
+            notes: Vec::new(),
+        };
+
+        assert_eq!(render_kill(&report), "killed 0 of 1\nfailed 10 app.exe");
     }
 }

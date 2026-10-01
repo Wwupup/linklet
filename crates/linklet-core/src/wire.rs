@@ -53,12 +53,15 @@ const OP_PULL: &str = "pull";
 /// The request that asks what is running on the agent's machine.
 const OP_PS: &str = "ps";
 
+/// The request that stops something on the agent's machine.
+const OP_KILL: &str = "kill";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run, push, pull, ps";
+const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -333,6 +336,36 @@ pub enum Request {
     /// comes back is a [`crate::process::Listing`], which is a list **and** the counts and
     /// notes that make an empty list readable -- `docs/ROADMAP.md` M10.
     Ps(crate::process::Filter),
+    /// Stop something on the agent's machine.
+    ///
+    /// What to stop, whether the caller meant it, and which candidates to consider. The two
+    /// fields that decide whether this is allowed at all are [`KillRequest::force`] and
+    /// [`KillRequest::candidates`] -- a bulk match without the first is refused by name, and
+    /// the second is how a caller says "only among processes matching this", which is how
+    /// one build is stopped without stopping the test harness that shares its name.
+    Kill(KillRequest),
+}
+
+/// A request to stop something.
+///
+/// The shape a caller builds, and the shape [`crate::process::plan_kill`] then decides
+/// about. The decision is deliberately **not** here: whether a request is safe depends on
+/// what is running and on which process is answering it, and neither is known to a type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillRequest {
+    /// What to stop.
+    pub to_kill: crate::process::ToKill,
+    /// Whether the caller meant it. Required for anything that can match more than one
+    /// process, and ignored for a pid.
+    pub force: bool,
+    /// Candidates to consider, before the match. An empty filter means the whole machine.
+    ///
+    /// This is what makes a bulk kill bounded: `--name app.exe --candidates --cmdline
+    /// C:\deploy\app.exe` stops the deployed build and not the copy someone is debugging in
+    /// another window.
+    pub candidates: crate::process::Filter,
+    /// Drop processes whose image name contains this, after the match.
+    pub exclude: Option<String>,
 }
 
 /// What the agent answers.
@@ -416,6 +449,33 @@ pub fn request_to_json(request: &Request) -> Json {
             entries.insert("op".to_string(), Json::str(OP_PS));
             Json::Object(entries)
         }
+        Request::Kill(kill) => {
+            let mut entries = match filter_to_json(&kill.candidates) {
+                Json::Object(entries) => entries,
+                _ => BTreeMap::new(),
+            };
+
+            // **`kill` is a tagged field rather than two optional ones.** A request that
+            // carried both a pid and a name would need a rule for which wins, and that rule
+            // is the kind of thing that is discovered while reading a diff rather than
+            // while writing one.
+            let (kind, what) = match &kill.to_kill {
+                crate::process::ToKill::Pid(pid) => ("pid", Json::Int(i64::from(*pid))),
+                crate::process::ToKill::Name(name) => ("name", Json::str(name)),
+                crate::process::ToKill::Matching(text) => {
+                    entries.insert("contains".to_string(), Json::Bool(true));
+                    ("name", Json::str(text))
+                }
+            };
+            entries.insert("kill".to_string(), Json::str(kind));
+            entries.insert(kind.to_string(), what);
+            entries.insert("force".to_string(), Json::Bool(kill.force));
+            if let Some(exclude) = &kill.exclude {
+                entries.insert("exclude_name".to_string(), Json::str(exclude));
+            }
+            entries.insert("op".to_string(), Json::str(OP_KILL));
+            Json::Object(entries)
+        }
     }
 }
 
@@ -447,6 +507,7 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
                 .to_string(),
         }),
         OP_PS => Ok(Request::Ps(filter_from_json(value)?)),
+        OP_KILL => Ok(Request::Kill(kill_request_from_json(value)?)),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),
@@ -999,6 +1060,175 @@ pub fn ps_listing_from_reply(reply: &Reply) -> Result<crate::process::Listing, W
 /// A listing, wrapped as a reply.
 pub fn encode_ps_reply(listing: &crate::process::Listing) -> Json {
     reply_result(ps_listing_to_json(listing))
+}
+
+/// A kill request from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field, for the same reason every other reader here
+/// does: a caller that sent a kill it can read a complaint about is a caller that does not
+/// have to work out why nothing happened. A request that names **neither** a pid nor a name
+/// is refused rather than defaulted -- a kill with no target is not a request to do nothing,
+/// it is a message that arrived wrong.
+pub fn kill_request_from_json(value: &Json) -> Result<KillRequest, WireError> {
+    let kind = value.get_str("kill").ok_or_else(|| {
+        WireError::BadRequest("kill: missing; one of \"pid\" or \"name\" is required".to_string())
+    })?;
+
+    let to_kill = match kind {
+        "pid" => match value.get("pid") {
+            Some(Json::Int(pid)) if *pid > 0 => crate::process::ToKill::Pid(*pid as u32),
+            Some(Json::Int(pid)) => {
+                return Err(WireError::BadRequest(format!(
+                    "pid: {pid} is not a process identifier"
+                )));
+            }
+            _ => {
+                return Err(WireError::BadRequest(
+                    "pid: missing or not a number".to_string(),
+                ));
+            }
+        },
+        "name" => {
+            let name = value
+                .get_str("name")
+                .ok_or_else(|| WireError::BadRequest("name: missing or not a string".to_string()))?
+                .to_string();
+            if value.get("contains").and_then(Json::as_bool) == Some(true) {
+                crate::process::ToKill::Matching(name)
+            } else {
+                crate::process::ToKill::Name(name)
+            }
+        }
+        other => {
+            return Err(WireError::BadRequest(format!(
+                "kill: {other:?} is not one of \"pid\" or \"name\""
+            )));
+        }
+    };
+
+    let force = value.get("force").and_then(Json::as_bool) == Some(true);
+    let exclude = match value.get("exclude_name") {
+        Some(Json::Str(text)) => Some(text.clone()),
+        Some(_) => {
+            return Err(WireError::BadRequest(
+                "exclude_name: not a string".to_string(),
+            ));
+        }
+        None => None,
+    };
+
+    Ok(KillRequest {
+        to_kill,
+        force,
+        candidates: filter_from_json(value)?,
+        exclude,
+    })
+}
+
+/// A kill report as the result of a reply.
+///
+/// `matched` is written even when it is zero, because it is the number that keeps an empty
+/// list from being read as a clean machine -- the same argument as [`ps_listing_to_json`].
+pub fn kill_report_to_json(report: &crate::process::KillReport) -> Json {
+    let targets = |targets: &[crate::process::Target]| -> Json {
+        Json::Array(
+            targets
+                .iter()
+                .map(|target| {
+                    object! {
+                        "pid" => i64::from(target.pid),
+                        "name" => target.name,
+                    }
+                })
+                .collect(),
+        )
+    };
+
+    let notes: Vec<Json> = report.notes.iter().map(Json::str).collect();
+
+    object! {
+        "matched" => report.matched as i64,
+        "killed" => targets(&report.killed),
+        "excluded" => targets(&report.excluded),
+        "failed" => targets(&report.failed),
+        "complete" => report.complete(),
+        "notes" => Json::Array(notes),
+    }
+}
+
+/// A kill report out of a reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal -- a caller that wants the reason
+/// should match on [`Reply`] instead -- or when the result is not a report. A report missing
+/// its counts is not defaulted, for the reason the listing's is not: an agent that did not
+/// say how many processes it matched has not answered the question, and filling in zero
+/// would report a clean machine on no evidence.
+pub fn kill_report_from_reply(reply: &Reply) -> Result<crate::process::KillReport, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest(
+            "the kill request was refused".to_string(),
+        ));
+    };
+
+    let matched = match value.get("matched") {
+        Some(Json::Int(number)) if *number >= 0 => *number as usize,
+        _ => {
+            return Err(WireError::BadRequest(
+                "matched: missing or not a count".to_string(),
+            ));
+        }
+    };
+
+    let targets = |field: &str| -> Result<Vec<crate::process::Target>, WireError> {
+        let entries = value
+            .get(field)
+            .and_then(Json::as_array)
+            .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not an array")))?;
+
+        entries
+            .iter()
+            .map(|entry| {
+                let pid = match entry.get("pid") {
+                    Some(Json::Int(pid)) if *pid >= 0 => *pid as u32,
+                    _ => return Err(WireError::BadRequest("a target needs a pid".to_string())),
+                };
+                let name = entry
+                    .get_str("name")
+                    .ok_or_else(|| WireError::BadRequest("a target needs a name".to_string()))?
+                    .to_string();
+                Ok(crate::process::Target { pid, name })
+            })
+            .collect()
+    };
+
+    let notes = value
+        .get("notes")
+        .and_then(Json::as_array)
+        .map(|notes| {
+            notes
+                .iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(crate::process::KillReport {
+        matched,
+        killed: targets("killed")?,
+        excluded: targets("excluded")?,
+        failed: targets("failed")?,
+        notes,
+    })
+}
+
+/// A kill report, wrapped as a reply.
+pub fn encode_kill_reply(report: &crate::process::KillReport) -> Json {
+    reply_result(kill_report_to_json(report))
 }
 
 /// Whether a reply fits in the bytes one frame may carry.

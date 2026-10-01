@@ -3,12 +3,12 @@
 A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
-> **Status: M0-M7 done, both defects M10 found are fixed, and the agent keeps a log.**
-> Five crates, 447 tests, one command that runs every gate. A host can check
-> reachability, run a command on a target through a sealed channel, read what it did,
-> see what is running there, and move one file in either direction. See
-> `docs/ROADMAP.md` for what is next and what was parked, and `docs/decisions.md` for
-> the choices that are not obvious from the code.
+> **Status: M0-M7 done, both defects M10 found are fixed, and the deploy loop can be
+> closed from an agent.** Five crates, 464 tests, one command that runs every gate. A
+> host can check reachability, run a command on a target through a sealed channel, read
+> what it did, see what is running there, stop it, and move one file in either
+> direction. See `docs/ROADMAP.md` for what is next and what was parked, and
+> `docs/decisions.md` for the choices that are not obvious from the code.
 
 ## What it does
 
@@ -56,6 +56,23 @@ point**: `0 of 214 match, filter name=app.exe` cannot be read as a clean machine
 agent that treats an empty list as one will deploy over a running binary. For the same
 reason an incomplete listing -- one that could not read the machine, or could not check
 a field the caller filtered on -- exits 1 and says so in a note.
+
+```console
+$ linklet kill --agent 10.0.0.5:8787 --pid 5144
+killed 1 of 1
+5144 app.exe
+$ linklet kill --agent 10.0.0.5:8787 --name app.exe --yes
+killed 2 of 2
+5144 app.exe
+5150 app-helper.exe
+```
+
+`kill` takes a pid, an exact name, or a substring. **A name needs `--yes`** because it can
+match more than one process, and a pid never does because a number is one process. It will
+not stop the agent that is serving it, and that refusal comes from the target rather than
+from here: filtering it out locally would report success on everything else while the one
+process the caller named kept running. `killed 0 of 1` is exit 1 -- the machine did not do
+what was asked.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`

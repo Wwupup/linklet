@@ -51,6 +51,8 @@ pub enum Operation {
     Pull,
     /// Ask what is running on the machine.
     Ps,
+    /// Stop something on the machine.
+    Kill,
     /// Something arrived that was not a request this version knows.
     ///
     /// **Recorded rather than skipped**, and that is a decision: a sealed body that is not
@@ -69,6 +71,7 @@ impl Operation {
             Self::Push => "push",
             Self::Pull => "pull",
             Self::Ps => "ps",
+            Self::Kill => "kill",
             Self::Unknown => "unknown",
         }
     }
@@ -90,6 +93,7 @@ impl Operation {
             "push" => Some(Self::Push),
             "pull" => Some(Self::Pull),
             "ps" => Some(Self::Ps),
+            "kill" => Some(Self::Kill),
             "unknown" => Some(Self::Unknown),
             _ => None,
         }
@@ -428,6 +432,7 @@ mod tests {
             (Operation::Push, "push"),
             (Operation::Pull, "pull"),
             (Operation::Ps, "ps"),
+            (Operation::Kill, "kill"),
             (Operation::Unknown, "unknown"),
         ] {
             assert_eq!(operation.as_str(), name);
