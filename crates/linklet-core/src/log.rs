@@ -59,6 +59,8 @@ pub enum Operation {
     Grep,
     /// Read the end of a file on the machine.
     Tail,
+    /// List a path on the machine.
+    Ls,
     /// Something arrived that was not a request this version knows.
     ///
     /// **Recorded rather than skipped**, and that is a decision: a sealed body that is not
@@ -81,6 +83,7 @@ impl Operation {
             Self::Spawn => "spawn",
             Self::Grep => "grep",
             Self::Tail => "tail",
+            Self::Ls => "ls",
             Self::Unknown => "unknown",
         }
     }
@@ -106,6 +109,7 @@ impl Operation {
             "spawn" => Some(Self::Spawn),
             "grep" => Some(Self::Grep),
             "tail" => Some(Self::Tail),
+            "ls" => Some(Self::Ls),
             "unknown" => Some(Self::Unknown),
             _ => None,
         }
@@ -448,6 +452,7 @@ mod tests {
             (Operation::Spawn, "spawn"),
             (Operation::Grep, "grep"),
             (Operation::Tail, "tail"),
+            (Operation::Ls, "ls"),
             (Operation::Unknown, "unknown"),
         ] {
             assert_eq!(operation.as_str(), name);

@@ -28,6 +28,7 @@ pub mod channel;
 mod error;
 pub mod frame;
 pub mod json;
+pub mod listing;
 pub mod log;
 mod outcome;
 mod probe;

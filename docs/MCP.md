@@ -13,7 +13,7 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Ten tools.**
+**Eleven tools.**
 
 | tool | question it answers |
 |---|---|
@@ -25,6 +25,7 @@ client starts the process and talks to it.
 | `spawn` | start a program on a remote agent's machine, without waiting for it |
 | `grep` | find lines matching text in a file on a remote agent's machine |
 | `tail` | read the last lines of a file on a remote agent's machine |
+| `ls` | list a directory on a remote agent's machine |
 | `push` | copy one local file to a remote agent |
 | `pull` | copy one file back from a remote agent |
 
@@ -79,6 +80,14 @@ and "that file could not be opened" the same answer.
 pattern.** `ERROR|FATAL` finds nothing here and finds both there, which is a
 difference in capability rather than a smaller step, and `docs/ROADMAP.md` M10
 records it as the open question it is.
+
+The eleventh is `ls`, and it answers a question the others only assume: **is this
+path there at all, and what is beside it.** Before it, finding out what a target held
+meant guessing at names and reading refusals -- a `pull` of a file that is not there
+is a refusal about a path, and a `grep` of a directory is a failed search. It takes
+`ps`'s shape rather than being a bare list, and for `ps`'s reason: **an empty
+directory and a directory that is not there are the same `Vec` and opposite facts**,
+and a caller that confuses them concludes a machine has no logs.
 
 That is also the argument for why these are separate rather than one tool with
 several argument sets. `check` needs nothing but an address; `testbed` needs a

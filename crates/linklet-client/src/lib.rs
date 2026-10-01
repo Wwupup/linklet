@@ -29,8 +29,8 @@ use linklet_core::frame::Kind;
 use linklet_core::json;
 use linklet_core::transfer::TransferError;
 use linklet_core::wire::{
-    self, GrepRequest, KillRequest, Reply, Request, RunOutcome, RunRequest, SpawnRequest,
-    TailRequest, WireError,
+    self, GrepRequest, KillRequest, LsRequest, Reply, Request, RunOutcome, RunRequest,
+    SpawnRequest, TailRequest, WireError,
 };
 
 /// Why a call could not be completed.
@@ -332,6 +332,40 @@ pub fn ps(
     )?;
 
     wire::ps_listing_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
+}
+
+/// Lists a path on an agent's machine, without moving anything.
+///
+/// **The answer distinguishes an empty directory from one that is not there.** Both come
+/// back as no entries, and they are opposite facts: the first says the machine has no logs,
+/// the second says nobody looked. [`linklet_core::listing::Listing::found`] is where a caller
+/// branches, and the counts are beside it -- `docs/ROADMAP.md` M10's requirement that this be
+/// "the same shape as `ps`".
+///
+/// A file lists as one entry, so "is it there, and how big is it" is the same call.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know what is in the directory.
+/// **A path that is not there is not an error**: it is a listing whose `found` is false,
+/// because that is a fact about the machine rather than about the call.
+pub fn ls(
+    address: &AgentAddress,
+    request: &LsRequest,
+) -> Result<linklet_core::listing::Listing, CallError> {
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    let reply = ask(
+        &mut connection,
+        session.as_mut(),
+        &Request::Ls(request.clone()),
+        HANDSHAKE_ALLOWANCE,
+    )?;
+
+    match reply {
+        Reply::Refused(reason) => Err(CallError::Refused(reason)),
+        Reply::Result(_) => wire::ls_listing_from_reply(&reply)
+            .map_err(|error| CallError::Protocol(error.to_string())),
+    }
 }
 
 /// Searches a file on an agent's machine, without moving it.

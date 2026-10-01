@@ -65,12 +65,15 @@ const OP_GREP: &str = "grep";
 /// The request that reads the end of a file on the agent's machine.
 const OP_TAIL: &str = "tail";
 
+/// The request that lists a path on the agent's machine.
+const OP_LS: &str = "ls";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill, spawn, grep, tail";
+const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill, spawn, grep, tail, ls";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -370,6 +373,19 @@ pub enum Request {
     Grep(GrepRequest),
     /// Read the end of a file on the agent's machine.
     Tail(TailRequest),
+    /// List a path on the agent's machine.
+    ///
+    /// The one request whose answer is **about a directory**: what is in it, how many entries
+    /// there are, and whether it was there at all. `grep`, `tail`, `push` and `pull` all
+    /// assume a path exists; this is how a caller finds out without moving something to see.
+    Ls(LsRequest),
+}
+
+/// A request to list a path under the agent's transfer root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LsRequest {
+    /// The directory, or a single file, resolved against the agent's root.
+    pub path: String,
 }
 
 /// A request to search a file under the agent's transfer root.
@@ -582,6 +598,10 @@ pub fn request_to_json(request: &Request) -> Json {
             "path" => tail.path,
             "count" => tail.count as i64,
         },
+        Request::Ls(list) => object! {
+            "op" => OP_LS,
+            "path" => list.path,
+        },
     }
 }
 
@@ -617,6 +637,9 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
         OP_SPAWN => Ok(Request::Spawn(spawn_request_from_json(value)?)),
         OP_GREP => Ok(Request::Grep(grep_request_from_json(value)?)),
         OP_TAIL => Ok(Request::Tail(tail_request_from_json(value)?)),
+        OP_LS => Ok(Request::Ls(LsRequest {
+            path: required_text(value, "path")?,
+        })),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),
@@ -1680,6 +1703,127 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
 /// A search result, wrapped as a reply.
 pub fn encode_search_reply(search: &crate::search::Search) -> Json {
     reply_result(search_to_json(search))
+}
+
+/// A directory listing as JSON.
+///
+/// **`found` is always written**, and it is the field that keeps an empty directory from
+/// reading as a directory that is not there -- `docs/ROADMAP.md` M10's own requirement for
+/// this capability ("a list *and* the counts that make an empty one readable"), and the same
+/// argument as `searched` in [`search_to_json`].
+pub fn ls_listing_to_json(listing: &crate::listing::Listing) -> Json {
+    let entries: Vec<Json> = listing
+        .entries
+        .iter()
+        .map(|entry| {
+            let mut fields = BTreeMap::new();
+            fields.insert("name".to_string(), Json::str(&entry.name));
+            fields.insert("dir".to_string(), Json::Bool(entry.dir));
+            // Absent rather than null for a directory's size: `null` would be a second way to
+            // spell "not applicable", and the reader already has `dir` to branch on.
+            if let Some(size) = entry.size {
+                fields.insert("size".to_string(), Json::Int(size as i64));
+            }
+            if let Some(modified) = entry.modified {
+                fields.insert("modified".to_string(), Json::Int(modified));
+            }
+            Json::Object(fields)
+        })
+        .collect();
+
+    object! {
+        "path" => listing.path,
+        "entries" => Json::Array(entries),
+        "count" => listing.entries.len() as i64,
+        "total" => listing.total as i64,
+        "truncated" => listing.truncated,
+        "found" => listing.found,
+        "problem" => match &listing.problem {
+            Some(problem) => Json::str(problem),
+            None => Json::Null,
+        },
+    }
+}
+
+/// A directory listing out of a reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal, or when the result is not a
+/// listing. **`found` is required and not defaulted**: an agent that did not say whether the
+/// directory was there has not answered the question, and defaulting it to `true` would
+/// invent an empty directory out of a failure to look.
+pub fn ls_listing_from_reply(reply: &Reply) -> Result<crate::listing::Listing, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest("the listing was refused".to_string()));
+    };
+
+    let found = value
+        .get("found")
+        .and_then(Json::as_bool)
+        .ok_or_else(|| WireError::BadRequest("found: missing, or not true or false".to_string()))?;
+
+    let problem = match value.get("problem") {
+        Some(Json::Null) | None => None,
+        Some(Json::Str(problem)) => Some(problem.clone()),
+        Some(_) => return Err(WireError::BadRequest("problem: not a string".to_string())),
+    };
+
+    let entries_value = value
+        .get("entries")
+        .and_then(Json::as_array)
+        .ok_or_else(|| WireError::BadRequest("entries: missing or not an array".to_string()))?;
+
+    let mut entries = Vec::new();
+    for entry in entries_value {
+        let name = entry
+            .get_str("name")
+            .ok_or_else(|| WireError::BadRequest("an entry needs a name".to_string()))?
+            .to_string();
+        let dir = entry.get("dir").and_then(Json::as_bool) == Some(true);
+        let size = match entry.get("size") {
+            Some(Json::Int(size)) if *size >= 0 => Some(*size as u64),
+            Some(_) => {
+                return Err(WireError::BadRequest(
+                    "an entry's size is not a count".to_string(),
+                ));
+            }
+            None => None,
+        };
+        let modified = match entry.get("modified") {
+            Some(Json::Int(seconds)) => Some(*seconds),
+            _ => None,
+        };
+
+        entries.push(crate::listing::Entry {
+            name,
+            dir,
+            size,
+            modified,
+        });
+    }
+
+    let number = |field: &str| -> Result<usize, WireError> {
+        match value.get(field) {
+            Some(Json::Int(number)) if *number >= 0 => Ok(*number as usize),
+            Some(_) => Err(WireError::BadRequest(format!("{field}: not a count"))),
+            None => Err(WireError::BadRequest(format!("{field}: missing"))),
+        }
+    };
+
+    Ok(crate::listing::Listing {
+        entries,
+        total: number("total")?,
+        truncated: value.get("truncated").and_then(Json::as_bool) == Some(true),
+        path: value.get_str("path").unwrap_or_default().to_string(),
+        found,
+        problem,
+    })
+}
+
+/// A directory listing, wrapped as a reply.
+pub fn encode_ls_reply(listing: &crate::listing::Listing) -> Json {
+    reply_result(ls_listing_to_json(listing))
 }
 
 /// Whether a reply fits in the bytes one frame may carry.

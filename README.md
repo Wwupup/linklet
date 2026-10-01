@@ -4,12 +4,13 @@ A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
 > **Status: M0-M7 done, both defects M10 found are fixed, the deploy loop can be closed
-> from an agent, and a log can be searched where it lies.** Five crates, 494 tests, one
-> command that runs every gate. A host can check reachability, run a command on a target
-> through a sealed channel, read what it did, see what is running there, start something
-> that outlives the call, stop it again, search a file on the target without moving it,
-> and move one file in either direction. See `docs/ROADMAP.md` for what is next and what
-> was parked, and `docs/decisions.md` for the choices that are not obvious from the code.
+> from an agent, and a target's files can be looked at without moving them.** Five crates,
+> 504 tests, one command that runs every gate. A host can check reachability, run a command
+> on a target through a sealed channel, read what it did, see what is running there, start
+> something that outlives the call, stop it again, list and search a directory on the
+> target, and move one file in either direction. See `docs/ROADMAP.md` for what is next and
+> what was parked, and `docs/decisions.md` for the choices that are not obvious from the
+> code.
 
 ## What it does
 
@@ -122,6 +123,20 @@ OEM code page rather than from UTF-8.
 **The pattern is a substring.** `ERROR|FATAL` does not work; `--pattern ERROR` does.
 `docs/ROADMAP.md` records that as a difference from the reference implementation rather
 than as an equivalent.
+
+```console
+$ linklet ls --agent 10.0.0.5:8787 --from .
+3 of 3 entries in .
+archive/
+logs/
+build.log 18244 bytes
+```
+
+`ls` answers the question every other command assumes: **is this path there, and what is
+beside it.** It prints `name/` for a directory and `name size` for a file, then the same
+kind of summary `ps` prints. An empty directory says `0 of 0 entries`; a path that is not
+there says `could not list` and exits 1 -- the two are the same list and opposite facts, and
+only one of them means the machine has no logs.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`

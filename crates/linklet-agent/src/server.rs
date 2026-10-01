@@ -333,6 +333,13 @@ fn answer(
         Ok(Request::Tail(tail)) => Response::Sealed(wire::encode_search_reply(
             &linklet_adapters::tail(root, &tail.path, tail.count),
         )),
+        // The request that answers "what is in there" before a caller reads or pulls from it.
+        // A directory that is not there is a **listing whose `found` is false**, not an empty
+        // one: the two are the same `Vec` and opposite facts, and a caller that confused them
+        // would conclude a machine has no logs.
+        Ok(Request::Ls(list)) => Response::Sealed(wire::encode_ls_reply(
+            &linklet_adapters::list_directory(root, &list.path),
+        )),
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.

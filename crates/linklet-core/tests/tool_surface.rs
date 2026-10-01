@@ -145,6 +145,13 @@ impl ToolRunner for FakeRun {
             .push(format!("{agent}|tail|{}|{}", request.path, request.count));
         ToolOutcome::ok("2 lines in a.log, read as utf-8")
     }
+
+    fn ls(&self, agent: &str, request: &linklet_core::wire::LsRequest) -> ToolOutcome {
+        self.read_calls
+            .borrow_mut()
+            .push(format!("{agent}|ls|{}", request.path));
+        ToolOutcome::ok("1 of 1 entries in logs\nbuild.log 42 bytes")
+    }
 }
 
 #[test]
@@ -226,7 +233,7 @@ fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out()
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_ten_tools() {
+fn there_are_exactly_eleven_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -252,12 +259,17 @@ fn there_are_exactly_ten_tools() {
     // folding them would mean a `pattern` argument that is sometimes ignored. What they share
     // is the reason they exist at all: a pull is digest-verified and root-bounded and it is
     // **the wrong tool for a two-gigabyte log**, because the answer is in the file and the
-    // cost is moving it. Neither is `exec` with a command: a `findstr` through `exec` returns
-    // text with no count, no truncation and no encoding, and an empty result from it is
-    // indistinguishable from a file that could not be read.
+    // cost is moving it.
+    //
+    // The eleventh is `ls`, and it is the one that answers a question the others only assume:
+    // **is this path there at all, and what is beside it.** A `pull` of a file that is not
+    // there is a refusal about a path, and a `grep` of a directory is a failed search -- so
+    // before there was an `ls`, finding out what a target holds meant guessing at names and
+    // reading refusals. It is `ps`'s shape rather than a bare list for `ps`'s reason: an empty
+    // directory and a directory that is not there are the same `Vec` and opposite facts.
     assert_eq!(
         tools().len(),
-        10,
+        11,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
@@ -267,7 +279,7 @@ fn there_are_exactly_ten_tools() {
     assert_eq!(
         names,
         vec![
-            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep", "tail"
+            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep", "tail", "ls"
         ]
     );
 }
@@ -583,6 +595,9 @@ fn bad_news_is_not_an_error() {
             ToolOutcome::failed("the agent refused the request")
         }
         fn tail(&self, _agent: &str, _request: &linklet_core::wire::TailRequest) -> ToolOutcome {
+            ToolOutcome::failed("the agent refused the request")
+        }
+        fn ls(&self, _agent: &str, _request: &linklet_core::wire::LsRequest) -> ToolOutcome {
             ToolOutcome::failed("the agent refused the request")
         }
     }

@@ -32,7 +32,9 @@ use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
-use linklet_core::wire::{self, GrepRequest, KillRequest, RunRequest, SpawnRequest, TailRequest};
+use linklet_core::wire::{
+    self, GrepRequest, KillRequest, LsRequest, RunRequest, SpawnRequest, TailRequest,
+};
 use linklet_core::{
     CheckError, DEFAULT_BUDGET_SECONDS, DEFAULT_EXEC_TIMEOUT_SECONDS, ExitCode, MAX_AT_ONCE,
     MAX_TARGETS, Report, Summary, ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for,
@@ -55,6 +57,7 @@ usage:
   linklet spawn --agent <host:port> --output <remote> <command...>
   linklet grep --agent <host:port> --from <remote> --pattern <text> [options]
   linklet tail --agent <host:port> --from <remote> [--lines <n>]
+  linklet ls --agent <host:port> --from <remote>
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -232,6 +235,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("tail") {
         return run_tail(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("ls") {
+        return run_ls(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -504,6 +511,10 @@ impl ToolRunner for LiveRunner {
 
     fn tail(&self, agent: &str, request: &TailRequest) -> ToolOutcome {
         tail_on(agent, request, token_from_environment().as_ref())
+    }
+
+    fn ls(&self, agent: &str, request: &LsRequest) -> ToolOutcome {
+        ls_on(agent, request, token_from_environment().as_ref())
     }
 }
 
@@ -861,6 +872,101 @@ fn complete_from_text(text: &str) -> bool {
     !summary.contains("could not be read")
         && !summary.contains("unreadable")
         && !text.contains("\nnote: ")
+}
+
+/// Lists a path on an agent's machine and prints what is there.
+///
+/// The exit code is `check`'s: `0` when the listing arrived and the whole directory was read,
+/// `1` when it arrived and something about it is incomplete -- the path was not there, or the
+/// list was cut short -- and `3` when the call could not be made. **A path that is not there
+/// is exit 1 and not 3**, because the call *was* made: what went wrong is on the machine, and
+/// sending the reader to the network for a directory they typed wrong is the mistake the
+/// exit-code scheme exists to prevent.
+fn run_ls(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        let mut value = |flag: &str| -> Result<String, u8> {
+            words.next().cloned().ok_or_else(|| {
+                eprintln!("linklet: {flag} needs a value");
+                ExitCode::USAGE
+            })
+        };
+        match argument.as_str() {
+            "--agent" => match value("--agent") {
+                Ok(got) => agent = Some(got),
+                Err(code) => return code,
+            },
+            "--from" => match value("--from") {
+                Ok(got) => path = Some(got),
+                Err(code) => return code,
+            },
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: ls needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+    // A path is required rather than defaulted to the root. The root is the agent's own
+    // choice and a caller that asked for "everything" would get a listing of a directory it
+    // did not name, which is the shape of a guess.
+    let Some(path) = path else {
+        eprintln!("linklet: ls needs --from <path on the target>");
+        return ExitCode::USAGE;
+    };
+
+    let outcome = ls_on(
+        &agent,
+        &LsRequest { path },
+        token_from_environment().as_ref(),
+    );
+    println!("{}", outcome.text);
+
+    if outcome.is_error {
+        return ExitCode::REFUSED;
+    }
+
+    match listing_complete_from_text(&outcome.text) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::NOT_ALL_ALIVE,
+    }
+}
+
+/// Whether a rendered listing is the whole truth about the directory.
+///
+/// The first line is the summary and it carries both facts: a path that could not be read
+/// starts with "could not list", and a cut list says "stopped early". Read out of the text
+/// for the same reason `search_complete_from_text` is: the alternative is threading one fact
+/// through two parameters.
+fn listing_complete_from_text(text: &str) -> bool {
+    let summary = text.lines().next().unwrap_or_default();
+
+    !summary.starts_with("could not list") && !summary.contains("stopped early")
+}
+
+/// Lists a path on an agent's machine and renders what is there.
+///
+/// Shared by the command and the tool.
+fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    match linklet_client::ls(&address, request) {
+        Ok(listing) => ToolOutcome::ok(linklet_core::listing::render(&listing)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
 }
 
 /// Searches a file on an agent's machine and prints what it found.

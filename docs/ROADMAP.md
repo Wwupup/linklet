@@ -462,7 +462,7 @@ on everything in this list -- which is why reading it beats designing from scrat
       it otherwise needs `DETACHED_PROCESS`, which `std` does not expose safely -- the same
       refusal, for the same reason, as the agent's own `--detach`. A program that must outlive
       the console is started the way `docs/smoke.md` starts the agent: from the scheduler.
-- [-] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
+- [x] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
       log" is currently "pull it and grep locally", which is defensible -- the pull is
       digest-verified and root-bounded -- but it is wrong for a two-gigabyte log and it
       cannot answer "where is the last ERROR" without moving the whole file. lanlink's
@@ -472,14 +472,23 @@ on everything in this list -- which is why reading it beats designing from scrat
       lessons are worth copying verbatim: **a failed search must not read as "no matches"**,
       and the encoding is sniffed with an OEM code page fallback that *says which one won*.
 
-      **`grep` and `tail` are done; `ls` is not, so this item is half-checked.** What landed:
+      **All three are done**, and this item is checked. What landed:
       `linklet grep --agent <host:port> --from <remote> --pattern <text> [--last] [-i]
       [--context <n>] [--max <n>]`, `linklet tail --agent <host:port> --from <remote>
-      [--lines <n>]`, the two requests on the wire, and both as tools. The reading is done on
-      the target and only the answer crosses: a file past the sixteen-mebibyte ceiling is
-      read **from its end** for a `last` search, because the answer to "where is the last
-      ERROR" is near the end of a large file and a window taken from the front would answer
-      about the beginning -- not a smaller answer, a wrong one.
+      [--lines <n>]`, `linklet ls --agent <host:port> --from <remote>`, the three requests on
+      the wire, and all three as tools. The reading is done on the target and only the answer
+      crosses: a file past the sixteen-mebibyte ceiling is read **from its end** for a `last`
+      search, because the answer to "where is the last ERROR" is near the end of a large file
+      and a window taken from the front would answer about the beginning -- not a smaller
+      answer, a wrong one.
+
+      **`ls` answers what the others assume.** Before it, finding out what a target held
+      meant guessing at names and reading refusals. It takes `ps`'s shape rather than being a
+      bare list, because an empty directory and a directory that is not there are the same
+      `Vec` and opposite facts -- and a caller that confuses them concludes a machine has no
+      logs, which is how a deployment stops looking for them. `found`, the two counts and the
+      truncation are all in the reply for that reason, and a file lists as one entry so that
+      "is it there, and how big is it" is the same call.
 
       **The two lessons are the shape of the result, not a note about it.** `searched` and
       `problem` are always present, so a file that could not be read is never an empty list;
@@ -498,9 +507,10 @@ on everything in this list -- which is why reading it beats designing from scrat
       matches -- which is exactly what the sibling project does with `rg.exe`, and what its
       README warns about.
 
-      Still to do in this item: **`ls`** -- a directory listing rooted like a transfer, so an
-      agent can find out what is in a directory before reading or pulling from it. It is the
-      same shape as `ps`: a list *and* the counts that make an empty one readable.
+      **`ls` is the third, and it was the smallest of the three to build and the one that
+      changes what a caller can do.** `found` is in the reply and not inferred from an empty
+      list, for the reason this whole item exists: the two answers look identical and mean
+      opposite things.
 - [ ] **Discovery and fan-out.** Every call names one `host:port`; `check` is the only thing
       that takes many targets. lanlink scans the networks it is on, remembers what answered
       for the session, and takes a stable list from the environment -- and then runs the same

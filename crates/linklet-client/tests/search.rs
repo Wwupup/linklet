@@ -17,10 +17,10 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use linklet_client::{AgentAddress, grep, tail};
+use linklet_client::{AgentAddress, grep, ls, tail};
 use linklet_core::auth::Token;
 use linklet_core::search::{Direction, Encoding, Limit, Pattern};
-use linklet_core::wire::{GrepRequest, TailRequest};
+use linklet_core::wire::{GrepRequest, LsRequest, TailRequest};
 
 /// The token these tests configure the agent with.
 const TEST_TOKEN: &str = "test-token-0123456789";
@@ -338,6 +338,144 @@ fn a_file_past_the_ceiling_is_read_from_its_end_and_says_it_was_cut_short() {
             .iter()
             .any(|line| line.text.contains("FRONT-MARKER")),
         "and the front is outside it, which is what a last search is for"
+    );
+}
+
+#[test]
+fn an_empty_directory_is_not_a_directory_that_is_not_there() {
+    // **The distinction `ls` exists for, over a socket.** Both answers hold no entries and
+    // they are opposite facts: one says the machine has no logs, the other says nobody
+    // looked. A caller that confuses them stops looking for a file that is there.
+    let agent = Agent::start();
+    std::fs::create_dir(agent.root.join("empty")).expect("an empty directory");
+
+    let present = ls(
+        &agent.address,
+        &LsRequest {
+            path: "empty".to_string(),
+        },
+    )
+    .expect("the agent should answer");
+
+    assert!(present.found, "{present:#?}");
+    assert!(present.entries.is_empty());
+    assert_eq!(present.total, 0);
+    assert!(present.problem.is_none());
+
+    let absent = ls(
+        &agent.address,
+        &LsRequest {
+            path: "not-there".to_string(),
+        },
+    )
+    .expect("the agent should answer");
+
+    assert!(!absent.found, "a directory that is not there: {absent:#?}");
+    assert!(absent.entries.is_empty());
+    assert!(
+        absent
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.contains("not-there")),
+        "the reason should name the path: {absent:#?}"
+    );
+
+    // And the two renderings cannot be confused for each other either.
+    assert_eq!(
+        linklet_core::listing::render(&present),
+        "0 of 0 entries in empty"
+    );
+    assert!(linklet_core::listing::render(&absent).starts_with("could not list"));
+}
+
+#[test]
+fn a_listing_names_what_is_there_and_puts_directories_first() {
+    let agent = Agent::start();
+    std::fs::write(agent.root.join("build.log"), b"12 bytes here").expect("a file");
+    std::fs::create_dir(agent.root.join("archive")).expect("a directory");
+
+    let listing = ls(
+        &agent.address,
+        &LsRequest {
+            // `.` and not the empty string: the agent refuses an empty path, which is right
+            // -- a request with no path is one that arrived wrong -- and `.` is how a caller
+            // says "the root itself".
+            path: ".".to_string(),
+        },
+    )
+    .expect("the agent should answer");
+
+    assert!(listing.found, "{listing:#?}");
+    let names: Vec<&str> = listing
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, ["archive", "build.log"], "directories first");
+
+    let file = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "build.log")
+        .expect("the file");
+    assert_eq!(file.size, Some(13));
+    assert!(!file.dir);
+    assert!(file.modified.is_some(), "a real file has a real time");
+
+    let directory = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == "archive")
+        .expect("the directory");
+    assert!(directory.dir);
+    assert_eq!(
+        directory.size, None,
+        "a directory has no size a reader wants"
+    );
+}
+
+#[test]
+fn a_single_file_lists_as_one_entry() {
+    // "Is it there, and how big is it" is a legitimate question, and answering it with "that
+    // is not a directory" would make the caller guess a different command to ask it.
+    let agent = Agent::start();
+    std::fs::write(agent.root.join("build.log"), b"12345").expect("a file");
+
+    let listing = ls(
+        &agent.address,
+        &LsRequest {
+            path: "build.log".to_string(),
+        },
+    )
+    .expect("the agent should answer");
+
+    assert!(listing.found, "{listing:#?}");
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(listing.entries[0].name, "build.log");
+    assert_eq!(listing.entries[0].size, Some(5));
+}
+
+#[test]
+fn a_listing_outside_the_transfer_root_is_refused() {
+    // T1 of `docs/transfer.md`: a path that must not be written must not be enumerated
+    // either, or a listing becomes a way to map a machine this agent was not given.
+    let agent = Agent::start();
+
+    let listing = ls(
+        &agent.address,
+        &LsRequest {
+            path: r"..\..\Windows".to_string(),
+        },
+    )
+    .expect("the agent should answer");
+
+    assert!(!listing.found, "{listing:#?}");
+    assert!(
+        listing
+            .problem
+            .as_deref()
+            .is_some_and(|problem| problem.contains("..")),
+        "the refusal should name what it refused: {listing:#?}"
     );
 }
 

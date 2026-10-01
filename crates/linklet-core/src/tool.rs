@@ -200,6 +200,14 @@ pub trait ToolRunner {
 
     /// Reads the end of a file on the agent's machine, without moving it.
     fn tail(&self, agent: &str, request: &crate::wire::TailRequest) -> ToolOutcome;
+
+    /// Lists a path on the agent's machine, without moving anything.
+    ///
+    /// **The answer distinguishes an empty directory from one that is not there.** Both are
+    /// no entries and they are opposite facts; [`crate::listing::Listing::found`] is where a
+    /// caller branches, and the counts are beside it -- `docs/ROADMAP.md` M10 asks for this
+    /// tool to be "the same shape as `ps`".
+    fn ls(&self, agent: &str, request: &crate::wire::LsRequest) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -704,6 +712,31 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "ls",
+            // What it lists and where, in one sentence. "List a directory" alone would leave
+            // a reader unsure whether the directory is here or there, which is the one thing
+            // a caller must know before using it -- the same argument as `exec`'s.
+            description: "List a directory on a remote linklet agent's machine.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "the directory or file, under the agent's transfer root"
+                        }
+                    },
+                    "required": ["agent", "path"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -980,6 +1013,13 @@ pub fn dispatch(
                     count: count as usize,
                 },
             ))
+        }
+        "ls" => {
+            reject_unknown(arguments, &["agent", "path"])?;
+            let agent = required_str(arguments, "agent")?;
+            let path = required_str(arguments, "path")?;
+
+            Ok(runner.ls(&agent, &crate::wire::LsRequest { path }))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }
