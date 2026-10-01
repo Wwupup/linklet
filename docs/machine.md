@@ -65,3 +65,15 @@ conclusion before it was found.
   `%TEMP%` is `C:\Users\wuwei\AppData\Local\Temp`, which has no space either. `linklet exec`
   also runs the command in the *agent's* working directory, not in the caller's: a relative
   path is relative to wherever the agent was started.
+- **`actionlint` is installed at `%USERPROFILE%\.local\bin\actionlint.exe`** (1.7.12, digest
+  checked against the release's `checksums.txt`), and `tools/verify.ps1` runs it when it is on
+  `PATH`. Installing it was worth the ten minutes: the first push of the CI workflows came back
+  with *"Node.js 20 is deprecated"* for `actions/checkout@v4`, and **no local check would have
+  reported it** -- `actionlint` flags `@v3` as too old but not `@v4`, because its staleness
+  threshold lags GitHub's. The pins are guarded by `tests/ci_workflow.rs` and reviewed at
+  release time; `docs/VERSIONING.md` says how.
+- **Nothing in this session can see GitHub's own answers.** There is no `gh`, no `act`, and no
+  Docker on this machine, and no MCP server that reaches GitHub. What that means in practice:
+  a workflow can be linted and its shell parsed here, and whether the runner accepts it is only
+  known after a push. When a workflow fails, the message has to be brought back by hand --
+  which is why `docs/VERSIONING.md` lists what to check *before* pushing instead.

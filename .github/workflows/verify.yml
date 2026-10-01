@@ -1,4 +1,4 @@
-# The four gates, on every push and every pull request.
+# Every gate, on every push and every pull request.
 #
 # **This calls `tools/verify.ps1` and does not restate the four commands.** That script exists
 # because the rules were written in three files and a commit still went in red -- and its own
@@ -41,7 +41,7 @@ env:
 
 jobs:
   verify:
-    name: four gates
+    name: verify
     runs-on: windows-latest
 
     # The suite builds the workspace and runs ~570 tests that each spawn a real agent process. It
@@ -50,7 +50,15 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v4
+      # **`@v5` and not `@v4`, because v4 runs on Node 20 and GitHub is retiring it.** The first
+      # version of this file pinned v4 and GitHub sent a deprecation warning on the first push;
+      # v5's `action.yml` says `using: node24`.
+      #
+      # This is the one class of failure that nothing local catches. `actionlint` knows about
+      # runtimes and flags `actions/checkout@v3`, but not `@v4` -- its staleness threshold lags
+      # GitHub's deprecation -- so the pin is checked by reading the action's own `action.yml`
+      # rather than by a test here. `docs/VERSIONING.md` has the procedure.
+      - uses: actions/checkout@v5
 
       # **The toolchain is not named here.** `rust-toolchain.toml` pins it and carries the reason
       # -- "it compiles on my machine" is almost always a toolchain difference. Restating the
@@ -61,7 +69,7 @@ jobs:
       # here is what guarantees `cargo fmt` and `cargo clippy` exist rather than being one
       # runner-image change away from missing.
       - name: Install the pinned toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: "1.95.0"
           components: rustfmt, clippy
@@ -79,7 +87,7 @@ jobs:
       # One step, because the script is the definition of done. If a gate is added it is added
       # there, and this workflow picks it up without being edited -- which is the whole reason the
       # script exists.
-      - name: The four gates
+      - name: Verify
         shell: pwsh
         run: ./tools/verify.ps1
 

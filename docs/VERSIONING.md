@@ -56,7 +56,7 @@ state that gets refused, with a sentence saying so.
 
 ## Cutting a release
 
-**CI runs the four gates on every push, and that is all it can run.**
+**CI runs `tools/verify.ps1` on every push, and that is all it can run.**
 `.github/workflows/verify.yml` calls `tools/verify.ps1` on Windows. What no workflow can do
 is step 2 below, because it needs a machine on a network -- so this list is still a list a
 person works through, with one step already done for them.
@@ -68,7 +68,7 @@ a release was called 0.2.0 while every binary still reported 0.1.0.
 
 **Every step is a person running one command.**
 
-1. `pwsh tools/verify.ps1` -- the four gates. Nothing is committed red and nothing is released
+1. `pwsh tools/verify.ps1` -- every gate. Nothing is committed red and nothing is released
    red; this is the same command that guards a commit, and the same one CI runs.
 2. **Drive a real machine.** `pwsh tools/smoke.ps1 -Target <host:port>`, plus the commands the
    release added, by hand. `docs/smoke.md` is what that claim covers and what it does not. **A
@@ -94,6 +94,42 @@ a release was called 0.2.0 while every binary still reported 0.1.0.
 7. **Build and keep the binaries.** `cargo build --release`, and the two `.exe` files go
    wherever they are distributed from. `git` does not hold build output and must not --
    `docs/rationale.md` says why. The tag is the source, and the binaries are a function of it.
+8. **Read the action pins.** For each `uses:` in `.github/workflows/`, fetch that action's
+   `action.yml` and check its `runs.using`. `node24` is current and `node20` is a deprecation
+   warning waiting to arrive as an email. No local tool reports this -- see below.
+
+## The workflows, and what can be checked before pushing
+
+`tools/verify.ps1` runs `actionlint` when it is on `PATH` and **says so when it is not**: it is
+not a Rust tool, and nobody should have to install it to build this. To get it:
+
+```powershell
+# The Windows binary, digest-verified against the release's own checksums.txt.
+Invoke-WebRequest https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_windows_amd64.zip -OutFile "$env:TEMP\actionlint.zip"
+Expand-Archive "$env:TEMP\actionlint.zip" -DestinationPath "$env:USERPROFILE\.local\bin" -Force
+actionlint --version
+```
+
+**What it catches**: a misspelled `github.*` property, an action whose inputs do not exist, a
+`run:` body whose shell script does not parse, a `needs:` that names no job.
+
+**What it does not catch, and this was measured against this repository's own workflows**: it
+knows about action runtimes and flags `actions/checkout@v3` as *"too old to run on GitHub
+Actions"*, but it did **not** flag `@v4` when GitHub began retiring Node 20 -- its staleness
+threshold lags theirs. That failure arrived as an email after a push, which is why step 8 above
+exists.
+
+So the pins are guarded two ways and neither of them is the linter:
+
+1. **`crates/linklet-core/tests/ci_workflow.rs` fails on a branch pin.** `@master` moves under a
+   green build; `@vN` or a SHA does not. `dtolnay/rust-toolchain@master` was in the first
+   version of these workflows and is now `@v1`.
+2. **The release checklist reads the pins** (step 8). The runtime is GitHub's and not this
+   machine's, so there is nothing local to ask; `action.yml` is the answer and it is one line
+   to read.
+
+A major tag is the deliberate choice over a commit SHA: a SHA is the most reproducible and the
+least maintainable, and the maintainability half is what bit.
 
 ## Rolling back
 

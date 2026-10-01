@@ -1,5 +1,5 @@
 #!/usr/bin/env pwsh
-# The four gates, in one place, so that no reader has to be trusted to run them.
+# Every gate, in one place, so that no reader has to be trusted to run them.
 #
 # This script exists because of a specific failure. The rules were written, the
 # gates were documented in three files, and a commit still went in red: the
@@ -68,7 +68,29 @@ Invoke-Gate 'cargo doc -D warnings' {
     }
 }
 
-# 5. The layer rule, as an inventory rather than as a prohibition.
+# 5. The workflows, if a linter is on PATH.
+#
+#    **Optional on purpose, and it says so when it is missing.** `actionlint` is not a Rust
+#    tool and not something a contributor should have to install to build this: a gate that
+#    fails for want of an unrelated binary is a gate people learn to skip. What it catches is
+#    real though -- a misspelled `github.*` property, an action whose inputs do not exist, a
+#    shell script inside a `run:` that does not parse -- and every one of those is otherwise
+#    discovered by pushing and waiting for an email.
+#
+#    **What it does not catch, measured and worth writing down**: it knows about action
+#    runtimes and flags `actions/checkout@v3`, but it did not flag `@v4` when GitHub began
+#    retiring Node 20 -- its staleness threshold lags theirs. The pin itself is guarded by
+#    `crates/linklet-core/tests/ci_workflow.rs`; this guards the rest of the file.
+if (Get-Command actionlint -ErrorAction SilentlyContinue) {
+    Invoke-Gate 'actionlint (workflows)' {
+        actionlint
+    }
+}
+else {
+    Write-Host '==> actionlint (workflows): skipped, not on PATH' -ForegroundColor Yellow
+}
+
+# 6. The layer rule, as an inventory rather than as a prohibition.
 #
 #    `tests/architecture.rs` already fails if the core gains a dependency, and
 #    that test is the one that matters. This line is the other half: it prints

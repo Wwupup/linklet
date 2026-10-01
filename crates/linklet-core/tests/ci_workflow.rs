@@ -141,3 +141,49 @@ fn the_workflows_that_build_do_not_pin_a_toolchain_of_their_own() {
         }
     }
 }
+
+#[test]
+fn every_action_is_pinned_to_a_version_tag_and_not_a_branch() {
+    // **A branch is a moving target, and one was already here.** `dtolnay/rust-toolchain@master`
+    // meant the toolchain installer could change under a green build with nothing in this
+    // repository having changed -- the opposite of what `rust-toolchain.toml` pins the toolchain
+    // for. It has a `v1` tag; both workflows use that now.
+    //
+    // A major tag is the deliberate choice over a commit SHA. A SHA is the most reproducible and
+    // the least maintainable, and the failure that prompted this test is the maintainability
+    // half: a SHA nobody bumps stays on a runtime GitHub eventually retires, and a retired
+    // runtime arrives as an email rather than as a red build. `docs/VERSIONING.md` says how the
+    // pins are reviewed, and why `actions/checkout@v4` was one of them.
+    for (name, text) in workflows() {
+        for line in text.lines() {
+            let line = line.trim();
+            let rest = line
+                .strip_prefix("- uses:")
+                .or_else(|| line.strip_prefix("uses:"))
+                .map(str::trim);
+            let Some(reference) = rest else {
+                continue;
+            };
+
+            let Some((action, version)) = reference.trim_matches('"').split_once('@') else {
+                panic!(
+                    "{name}: `{reference}` names no version at all, so it tracks the default \
+                        branch"
+                );
+            };
+
+            // Forty hex characters is a commit SHA and is allowed. Everything else has to look
+            // like a tag, because that is the thing a person can look up.
+            let is_sha = version.len() == 40 && version.chars().all(|c| c.is_ascii_hexdigit());
+            let is_tag = version
+                .strip_prefix('v')
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|first| first.is_ascii_digit());
+            assert!(
+                is_sha || is_tag,
+                "{name}: `{action}@{version}` is neither a version tag nor a commit SHA. A \
+                 branch moves under a green build; pin `vN` or a SHA."
+            );
+        }
+    }
+}

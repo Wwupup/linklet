@@ -123,7 +123,7 @@ documented in three files, a commit went in red anyway, and the rules were fine 
 ran them. A workflow that listed the four commands again would be that same mistake one level
 up, with two lists to keep in step and the CI copy being the one nobody tries locally.
 
-**CI does not change what a green run means.** It covers exactly the four gates, on one
+**CI does not change what a green run means.** It covers the same gates, on one
 machine, the same way a person does. The layer that needs a second machine is still missing,
 still open, and still named above.
 
