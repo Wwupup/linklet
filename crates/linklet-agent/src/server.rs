@@ -164,6 +164,19 @@ fn answer_one(
     match reply {
         Response::Sealed(reply) => {
             let wrote = write_reply(connection, session.as_mut(), &reply);
+            // **The close is made gentle when the reply is a refusal.** `docs/transfer.md` T14
+            // is the same failure one layer up: a socket dropped with the peer's bytes still
+            // unread is reset by Windows, and a reset discards what the peer had not read yet
+            // -- so the refusal is destroyed in transit and the caller is told the connection
+            // ended. That is rare, because it needs the agent to lose the race to the client's
+            // read, which is why the loopback tests mostly pass and a full suite running
+            // dozens of agents at once does not: it reproduced at about one run in three.
+            //
+            // This is the test failing rather than a guess about it -- see
+            // `crates/linklet-client/tests/against_agent.rs`, which is where the symptom was.
+            if wrote && refused(&reply) {
+                settle(connection);
+            }
             // Three outcomes rather than two. A reply that was refused is the agent saying
             // no to something it understood, which is a fact about the request; a reply
             // that would not go is the agent failing to do something it had accepted,
@@ -196,6 +209,27 @@ fn answer_one(
 /// would be a second thing to keep in step with the first.
 fn refused(reply: &Json) -> bool {
     reply.get("ok").and_then(Json::as_bool) == Some(false)
+}
+
+/// Closes the write side, then reads whatever the peer had already sent.
+///
+/// **A half-close and a drain, and both halves are load-bearing.** `shutdown(Write)` sends a
+/// FIN, which tells the peer the answer is complete and that nothing more is coming -- and a
+/// FIN does not discard anything, where dropping the socket does. Then the peer's own bytes
+/// are read out: a client that has already sent more than the agent read would otherwise leave
+/// the socket closed with unread data in its receive queue, and Windows turns **that** into a
+/// reset, which destroys the reply this is trying to deliver. `docs/transfer.md` T14 is the
+/// same failure found one layer up.
+///
+/// The drain is bounded by the connection's own budget, so a peer that keeps sending cannot
+/// hold a thread here -- it gets the same per-read deadline every other read on this connection
+/// gets, and then loses the thread.
+fn settle(connection: &mut Connection) {
+    // The read side is drained through the connection's own reader, so the budget, the
+    // robustness rules and the "refuses to be read again" behaviour are the ones already
+    // written rather than a second set here.
+    connection.shutdown_write();
+    connection.drain();
 }
 
 /// The reason out of a refusal, for the log line.

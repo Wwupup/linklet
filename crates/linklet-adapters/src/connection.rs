@@ -179,6 +179,44 @@ impl Connection {
         self.read
     }
 
+    /// Sends a FIN: the answer is complete and nothing more will be written.
+    ///
+    /// The half of a graceful close that says "I am done talking". **It is not the same as
+    /// dropping the socket**, and the difference is the whole point: a socket dropped while the
+    /// peer's bytes are still unread is reset by Windows, and a reset discards what the peer had
+    /// not read yet -- which can destroy the reply that was just written.
+    /// `docs/transfer.md` T14 is that failure found one layer up, and
+    /// `crates/linklet-agent/src/server.rs` applies this to refusals for the same reason.
+    ///
+    /// A failure is ignored: the caller is closing anyway, and there is nothing useful to say
+    /// about a FIN that did not go when the socket is about to be dropped regardless.
+    pub fn shutdown_write(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Write);
+    }
+
+    /// Reads whatever the peer has already sent, until it stops or the budget passes.
+    ///
+    /// **The other half of a graceful close**, and the half that is easy to leave out: a peer
+    /// that sent more than this side read leaves those bytes in the receive queue, and closing
+    /// with unread data is what produces the reset that destroys a reply in flight.
+    ///
+    /// Bounded by the connection's own read budget, so a peer that keeps talking cannot hold a
+    /// thread here -- it gets the same deadline every other read on this connection gets, and
+    /// then loses the thread. Every error ends the drain rather than being reported: the purpose
+    /// is to empty a queue, and there is no caller left to act on what went wrong.
+    pub fn drain(&mut self) {
+        let mut scratch = [0u8; 4096];
+        loop {
+            match self.stream.read(&mut scratch) {
+                // Zero is EOF: the peer has stopped, which is what this was waiting for.
+                Ok(0) => return,
+                Ok(_) => continue,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(_) => return,
+            }
+        }
+    }
+
     /// Reads one frame, which must be of `expected` kind.
     ///
     /// # Errors

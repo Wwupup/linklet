@@ -232,6 +232,21 @@ message, so the sender has something to wait for and sends nothing it is about t
 refused. That also removes the work a doomed transfer would cost the receiver, which
 draining the refused body would have paid instead.
 
+**It was not fully stopped, and the remainder took a flaky test to find.** The rule above
+covers a receiver that refuses *after* accepting, and it leaves the other case: a receiver
+that refuses **at the manifest** writes its refusal and then drops the socket -- and if the
+sender has bytes in flight that the receiver never read, dropping the socket makes Windows
+reset it, and a reset discards the refusal the sender had not read yet. The symptom is the
+one this entry opens with. It is rare because the sender has to lose the race, and it showed
+up as **about one full test suite in three, and never once in isolation**: the suite runs
+dozens of agents at once, which is the load that loses it.
+
+*Stopped by closing gently*: the agent now **half-closes and drains** whenever the answer it
+just wrote is a refusal -- `shutdown(Write)` sends a FIN, which discards nothing, and then the
+sender's remaining bytes are read out so that nothing is unread when the socket goes. The
+client side was already right: it waits for the manifest's answer before sending a byte of the
+body. See `Connection::shutdown_write`, `Connection::drain`, and `server::settle`.
+
 **This one was found on a real machine, and not one of the loopback tests could lose the
 race reliably**: on loopback the sender usually wins and the refusal gets read in time, so
 every test passed while a real link failed on every refusal. The test that pins it is
