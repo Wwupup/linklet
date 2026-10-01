@@ -574,13 +574,24 @@ impl ToolRunner for LiveRunner {
 /// could not be reached, or one that answered with something unreadable. **A command that ran
 /// is never an error**, however badly it went: that is the distinction the protocol was built
 /// around, and the one a fan-out has to preserve across several machines.
+/// Runs a command on one agent, and says what happened **as a type**.
+///
+/// The error is returned rather than rendered, because a caller has to be able to ask *which
+/// kind* of failure it was -- an agent that refused is a fact about the machine and a connection
+/// the operating system refused is a fact about the network. Rendering first and grepping the
+/// sentence afterwards is how that distinction was lost once; see [`linklet_client::CallError::was_refused`].
+///
+/// # Errors
+///
+/// [`linklet_client::CallError`] for everything that leaves the command's fate unknown. **A command that ran is
+/// never an error**, however badly it went: that is the distinction the protocol is built on.
 fn exec_at(
     agent: &str,
     command: &str,
     timeout_seconds: u64,
     token: Option<&Token>,
-) -> Result<wire::RunOutcome, String> {
-    let mut address = AgentAddress::new(agent).map_err(|error| render_call_error(&error))?;
+) -> Result<wire::RunOutcome, linklet_client::CallError> {
+    let mut address = AgentAddress::new(agent)?;
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
@@ -590,7 +601,7 @@ fn exec_at(
         timeout_seconds,
     };
 
-    linklet_client::run(&address, &request).map_err(|error| render_call_error(&error))
+    linklet_client::run(&address, &request)
 }
 
 /// Runs one command across several agents and reports each of them.
@@ -665,9 +676,14 @@ fn run_exec_across(
                         // not this fan-out's, which is the distinction the protocol is built on.
                         Fate::Ran
                     }
-                    // The agent answered and said no, which is a fact about the machine.
-                    Err(problem) if problem.contains("refused") => Fate::Refused,
-                    // Anything else is a machine no answer could be got out of.
+                    // **The agent answered and said no, which is a fact about the machine.**
+                    // Asked of the type and not of the sentence: `render_call_error` puts the
+                    // word "refused" in a *transport* failure too, because that is what the
+                    // operating system's error says, so a substring search here reported a
+                    // closed port as an agent that had refused. See `CallError::was_refused`.
+                    Err(error) if error.was_refused() => Fate::Refused,
+                    // Anything else is a machine no answer could be got out of -- including an
+                    // address this side could not read, which is nobody's machine at all.
                     Err(_) => Fate::Unreachable,
                 }
             })
@@ -720,7 +736,7 @@ fn run_exec_across(
 fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Token>) -> ToolOutcome {
     match exec_at(agent, command, timeout_seconds, token) {
         Ok(outcome) => ToolOutcome::ok(wire::render_run(&outcome)),
-        Err(problem) => ToolOutcome::failed(problem),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
     }
 }
 

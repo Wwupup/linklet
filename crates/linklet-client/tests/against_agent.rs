@@ -328,6 +328,18 @@ fn no_agent_at_the_address_is_a_transport_error_and_not_a_result() {
     assert!(matches!(error, CallError::Transport(_)), "{error:?}");
     let text = render_call_error(&error);
     assert!(text.starts_with("could not reach the agent"), "{text}");
+
+    // **And it is not an agent that refused**, which is the distinction a fan-out branches on.
+    //
+    // The check for that used to be `text.contains("refused")`, and the line above is why it
+    // was wrong: the operating system reports a closed port with that word, so
+    // `render_call_error` puts it in a *transport* failure too. A closed port was therefore
+    // reported as a machine that had answered and said no -- which passed here and failed on
+    // a runner, where that particular sentence arrived.
+    assert!(
+        !error.was_refused(),
+        "a connection the OS refused is not an agent that refused: {text}"
+    );
 }
 
 #[test]

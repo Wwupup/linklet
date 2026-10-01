@@ -71,6 +71,89 @@ pub enum CallError {
     Refused(String),
 }
 
+impl CallError {
+    /// Whether the **agent** declined, as opposed to never being reached.
+    ///
+    /// # Why this is a method and not a substring search
+    ///
+    /// A fan-out has to tell "the machine said no" from "I could not reach the machine",
+    /// because those send a reader to the build or to the network. The first version of that
+    /// check asked whether the *rendered sentence* contained "refused" -- and
+    /// [`render_call_error`] renders a transport failure as "could not reach the agent:
+    /// ... **refused**", because that is the word the operating system's error carries. So a
+    /// connection the OS refused was reported as an agent that refused, and it only showed up
+    /// on a machine where that string arrived: it passed here and failed on a runner.
+    ///
+    /// **Reading a rendered sentence to recover a fact the type already carries is the bug**,
+    /// and it is the one this project keeps meeting in other clothes: two different situations
+    /// that produce the same text cannot be told apart by that text.
+    pub fn was_refused(&self) -> bool {
+        matches!(self, Self::Refused(_))
+    }
+}
+
+#[cfg(test)]
+mod classification {
+    use super::*;
+
+    /// A transport failure whose own text contains the word a fan-out used to search for.
+    ///
+    /// **The whole bug in one value.** Windows reports a closed port with the word "refused",
+    /// so `render_call_error` produces exactly this shape for a machine that never answered --
+    /// and the first version of the fan-out's check grepped that sentence, classifying it as an
+    /// agent that had refused. It passed on the machine it was written on, where that sentence
+    /// did not arrive, and failed on a runner where it did.
+    ///
+    /// Built here rather than produced by connecting to a closed port, because **whether that
+    /// port's error carries the word is a property of the machine** -- which is exactly why the
+    /// end-to-end test for this passed locally while the defect was live.
+    fn a_closed_port_on_a_machine_that_says_refused() -> CallError {
+        CallError::Transport(
+            "cannot reach 10.0.0.5:8787: No connection could be made because the target \
+             machine actively refused it. (os error 10061)"
+                .to_string(),
+        )
+    }
+
+    #[test]
+    fn a_transport_failure_that_says_refused_is_not_an_agent_that_refused() {
+        let error = a_closed_port_on_a_machine_that_says_refused();
+
+        // The rendering really does contain the word, so this is the case that mattered and not
+        // a hypothetical one.
+        assert!(
+            render_call_error(&error).contains("refused"),
+            "this fixture is only useful while its text carries the word: {}",
+            render_call_error(&error)
+        );
+        assert!(
+            !error.was_refused(),
+            "the machine never answered, so nothing refused anything"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_said_no_is_an_agent_that_refused() {
+        // The other arm, so the fix cannot be "return false always".
+        assert!(CallError::Refused("the token is missing or wrong".to_string()).was_refused());
+    }
+
+    #[test]
+    fn the_other_ways_a_call_fails_are_not_refusals() {
+        // Every variant, because a classification that is right about the two interesting cases
+        // and wrong about a third is how this comes back.
+        for error in [
+            CallError::BadAddress("no port".to_string()),
+            CallError::Transport("connection reset".to_string()),
+            CallError::NoReply { millis: 5000 },
+            CallError::Protocol("not a message".to_string()),
+            CallError::Local("the file is not there".to_string()),
+        ] {
+            assert!(!error.was_refused(), "{error:?} is not a machine saying no");
+        }
+    }
+}
+
 impl std::fmt::Display for CallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
