@@ -126,4 +126,19 @@ conclusion before it was found.
   exec call. What does land in the file is the *shell's* own output, so a lone `^C` in a
   redirected log is cmd's echo of a console close and not the program saying anything. Two
   conclusions were drawn wrongly from that empty file before it was checked -- so if a
-  detached program's output matters, have the program write its own file.
+  detached program's output matters, have the program write its own file. **The M10 round
+  confirmed it from the other side**: the bench's `linklet-agent.exe` is still launched
+  through that redirect, and `C:\linklet\agent.log` is 0 bytes for an agent that printed a
+  banner and has answered every call since. An empty log is evidence about the launcher.
+- **A command sent to a target cannot carry a quote.** The agent runs commands through
+  `cmd /C`, and three layers each rewrite quote characters on the way: PowerShell's
+  native-command quoting (which turns `"` into `\"`), Windows argument quoting, and `cmd`'s
+  own rule about a first character that is a quote. The result reads like the program does
+  not exist: `'\"powershell -NoProfile -C \"\"...\"\"\"' is not recognized as an internal or
+  external command`. Measured forms that failed: `cmd /S /C "..."`, `powershell -Command
+  "..."`, and either of those passed through PowerShell. What works is a command with **no
+  quotes at all** -- an absolute path with no space in it, and builtins like `certutil` and
+  `type`. `C:\linklet\transfers` was chosen for exactly that reason, and on this machine
+  `%TEMP%` is `C:\Users\wuwei\AppData\Local\Temp`, which has no space either. `linklet exec`
+  also runs the command in the *agent's* working directory, not in the caller's: a relative
+  path is relative to wherever the agent was started.
