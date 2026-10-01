@@ -226,6 +226,72 @@ pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
     wire::identity_from_json(&reply).map_err(|error| CallError::Protocol(error.to_string()))
 }
 
+/// What an agent did when it was asked whether it is working.
+///
+/// Two arms and not a `Result<String, CallError>`, because **a refusal is an answer**. A
+/// supervisor watching an agent needs to know that it is alive, and an agent that says no to a
+/// request has demonstrated exactly that. Reporting a refusal as a failure would have a
+/// supervisor restarting healthy processes -- and it would do it most often in the one
+/// situation where restarting helps least, which is an operator holding the wrong secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Liveness {
+    /// The agent answered with its identity.
+    Answered(String),
+    /// The agent answered, and the answer was no.
+    Refused(String),
+}
+
+impl Liveness {
+    /// How a monitoring script says it in one word.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Answered(_) => "answered",
+            Self::Refused(_) => "refused",
+        }
+    }
+
+    /// Why, whichever arm this is.
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Answered(detail) | Self::Refused(detail) => detail,
+        }
+    }
+}
+
+/// Asks an agent whether it is working, by doing the smallest call this protocol has.
+///
+/// **`identity` rather than a bare connection**, because a socket tells you a process is
+/// listening and nothing about whether it is doing anything: a wedged agent keeps its listening
+/// socket open, so the kernel accepts connections into the backlog and anything built on a
+/// connect check reports it healthy. This completes a handshake and reads a reply, so a wedged
+/// agent fails it. `docs/ROADMAP.md` M10 is where that failure is written down -- the caller saw
+/// a connect timeout rather than a refusal, because the process behind the port was gone.
+///
+/// # Errors
+///
+/// [`CallError`] for the cases where the agent did not speak: no connection, a lost one, a
+/// timeout, or a reply that was not a message. **A refusal is not among them** -- see
+/// [`Liveness`].
+pub fn probe(address: &AgentAddress, budget: Duration) -> Result<Liveness, CallError> {
+    let (mut connection, mut session) = begin(address, budget)?;
+    match ask(
+        &mut connection,
+        session.as_mut(),
+        &Request::Identity,
+        budget,
+    )? {
+        // The same reader `identity` uses, so what counts as a well-formed identity is decided
+        // in one place -- and a refusal never reaches it, because it is matched out first.
+        //
+        // Two arms and no catch-all: `Reply` has exactly these two shapes, so a third one added
+        // later is a compile error here rather than a probe that quietly calls it a failure.
+        reply @ Reply::Result(_) => wire::identity_from_json(&reply)
+            .map(Liveness::Answered)
+            .map_err(|error| CallError::Protocol(error.to_string())),
+        Reply::Refused(reason) => Ok(Liveness::Refused(reason)),
+    }
+}
+
 /// Copies one local file to a path under the agent's transfer root.
 ///
 /// The file is hashed first, and the digest goes in the manifest: the receiving side

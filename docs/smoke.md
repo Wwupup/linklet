@@ -128,6 +128,83 @@ To stop it: `schtasks /End /TN linklet-agent` ends the task, and the agent's own
 then has to be killed by name or pid -- `/End` ends the task, not the process the script
 started. `schtasks /Delete /TN linklet-agent /F` removes the task itself.
 
+### Supervising it, so a dead or wedged one comes back
+
+**`schtasks` starts an agent and does nothing else with it.** It will not restart a process
+that died, and it cannot tell a wedged one from a busy one -- which is the gap
+`docs/ROADMAP.md` M10 names as having no counterpart here. `tools/linklet-supervise.ps1` is
+that counterpart. It runs in the foreground, is meant to be started by the scheduler, and
+watches the agent with `linklet probe`.
+
+**The whole of its decision is `probe`'s four exit codes**, and they exist so a script can act
+without reading a word:
+
+| code | meaning | what the supervisor does |
+|------|---------|--------------------------|
+| 0 | the agent answered | nothing |
+| 1 | nothing is listening | start it |
+| 2 | the spec could not be read | stop, because the config is wrong |
+| 4 | something is listening and did not answer | kill whatever holds the port, then start it |
+
+**`probe` is not `check`, and the difference is the point.** `check` opens a connection and
+closes it; a process wedged on a lock still has its listening socket open, so the kernel keeps
+accepting into the backlog and `check` calls it `live`. This was measured against a real
+socket that accepted and never answered: **`check` said `live 127.0.0.1:8821 connected` and
+`probe` said `no answer ... no reply within 2000 ms`, exit 4.** A supervisor built on `check`
+would watch that process forever.
+
+**A wrong token is exit 0, not exit 4.** The question is liveness and not authorization: an
+agent that answers "no" has answered, so it is running, and a supervisor that restarted it
+would restart a healthy process in a loop while hiding the real problem, which is the
+operator's secret.
+
+Set it up on the target, next to the agent:
+
+```powershell
+@'
+{
+  "Exe": "C:\\linklet\\bin\\linklet-agent.exe",
+  "Args": ["--port", "8790", "--root", "C:\\linklet\\transfers", "--log", "C:\\linklet\\agent.log"],
+  "Agent": "127.0.0.1:8790",
+  "Linklet": "C:\\linklet\\bin\\linklet.exe"
+}
+'@ | Set-Content C:\linklet\supervisor.json -Encoding ascii
+
+schtasks /Create /TN linklet-supervisor /SC ONCE /ST 00:00 /TR C:\linklet\start-supervisor.cmd /F
+schtasks /Run /TN linklet-supervisor
+```
+
+```bat
+@echo off
+set LINKLET_TOKEN=<the secret>
+pwsh -NoProfile -File C:\linklet\linklet-supervise.ps1 -Config C:\linklet\supervisor.json -Log C:\linklet\supervisor.log
+```
+
+Five things about that, four of them measured on a real machine:
+
+- **The supervisor must have the token in its environment**, because the probe completes a
+  handshake and the handshake needs it. Without one every probe reports "a sealed call needs a
+  token" and the supervisor restarts a perfectly healthy agent forever. Its own log shows this
+  within one cycle, which is why the log exists.
+- **It kills by port, not by name.** The first version killed `linklet-agent.exe` by name,
+  which does nothing when the thing holding the port is not an agent -- it then looped forever
+  reporting a wedged agent it could not clear. `Get-NetTCPConnection` finds the owner of the
+  port the probe just proved is occupied.
+- **A wedged agent that is not an agent at all still gets cleared.** Verified by putting a
+  plain socket that accepts and never answers on the agent's port: the supervisor killed it and
+  replaced it with a real agent.
+- **`taskkill` answers in the machine's code page**, so its message is logged with the label
+  `(machine code page)` -- on this project's bench it is Chinese and reads as `??` in an ASCII
+  log, which looks like corruption rather than like a translated message.
+- **Backoff is capped at 60 seconds.** An agent that dies instantly on startup -- a port
+  already taken, a root that does not exist -- would otherwise be started thousands of times a
+  minute.
+
+**What this still is not.** It is not a service: it is a process the scheduler starts, and
+nothing watches *it*. If the supervisor dies, the agent it started keeps running and nothing
+restarts the supervisor. That is one level less bad than the gap M10 opened with -- a dead
+agent no longer goes unnoticed -- and it is named here rather than implied.
+
 ### Three things about starting it by hand
 
 All of them learned by doing it on a real machine:

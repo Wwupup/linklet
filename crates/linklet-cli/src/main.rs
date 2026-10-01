@@ -24,6 +24,8 @@
 //! condition, and an agent that has to merge two streams to reconstruct the
 //! report will eventually not bother.
 
+mod probe;
+
 use std::env;
 use std::process::ExitCode as ProcessExit;
 use std::time::Duration;
@@ -58,7 +60,9 @@ usage:
   linklet spawn --agent <host:port> --output <remote> <command...>
   linklet grep --agent <host:port> --from <remote> --pattern <text> [options]
   linklet tail --agent <host:port> --from <remote> [--lines <n>]
-  linklet ls --agent <host:port> --from <remote>`r`n  linklet discover [--port <port>] [--networks] [--targets]
+  linklet ls --agent <host:port> --from <remote>
+  linklet probe --agent <host:port>
+  linklet discover [--port <port>] [--networks] [--targets]
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -244,6 +248,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("discover") {
         return run_discover(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("probe") {
+        return run_probe_command(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -681,8 +689,41 @@ fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Toke
     }
 }
 
-/// Runs the MCP server on stdio until the client closes it.
+/// Probes one agent and prints which of the three states it is in.
 ///
+/// A thin command over [`probe::run_probe`], which carries the reasoning and the exit codes. It
+/// is its own subcommand rather than a flag on `check` because the two ask different questions
+/// and a script has to tell them apart: `check` says whether a socket is there, and this says
+/// whether the agent behind it is working.
+fn run_probe_command(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        match argument.as_str() {
+            "--agent" => match words.next() {
+                Some(value) => agent = Some(value.clone()),
+                None => {
+                    eprintln!("linklet: --agent needs a host:port");
+                    return ExitCode::USAGE;
+                }
+            },
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: probe needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+
+    probe::run_probe(&agent, token_from_environment().as_ref())
+}
+
+/// Runs the MCP server on stdio until the client closes it.
 /// Returns the exit code. `serve` reports an I/O failure as an `Err`, and a
 /// broken pipe is the normal way this ends -- the client exits and stops reading
 /// -- so it is reported on stderr rather than as a crash.

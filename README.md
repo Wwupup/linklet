@@ -240,6 +240,9 @@ accident. This tool:
 - does not run on anything but Windows targets, until someone needs otherwise
 - does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
+- **has no service on the target either.** `tools/linklet-supervise.ps1` restarts an agent
+  that died and one that wedged, and it is a process the scheduler starts, not a service:
+  nothing watches the supervisor. See `docs/smoke.md`
 - **has no identities.** The token authenticates the channel and says nothing about
   *which* caller it is, so there is no per-caller revocation and no audit trail
 - **has no cipher agility.** One curve, one cipher, one key derivation, chosen at

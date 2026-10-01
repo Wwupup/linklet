@@ -342,7 +342,7 @@ lanlink is the reference for all of these: `E:\projects\lanlink` on this machine
 debugging tool for the same machines, written by the same hand, and it is ahead of linklet
 on everything in this list -- which is why reading it beats designing from scratch.
 
-- [-] **Residency, and an agent that keeps a log.** The agent died with its console during
+- [x] **Residency, and an agent that keeps a log.** The agent died with its console during
       this round: `tasklist` found nothing, and the caller saw a connect **timeout** rather
       than a refusal. Nothing brought it back, and nothing recorded what it had been asked --
       the agent prints a banner and answers errors to the client, and keeps no per-request
@@ -355,7 +355,7 @@ on everything in this list -- which is why reading it beats designing from scrat
       line per request with its outcome and duration, written by the agent to a file of its
       own, plus a documented way to start it that survives its console.
 
-      **The log is done; surviving the console is not, so this item is half-checked.** What
+      **The log is done, surviving the console is done, and the supervisor is done.** What
       landed: `linklet-agent --log <file>` (or `LINKLET_LOG`), appending two lines per
       request -- `-> #000001 run` when it is taken and `<- #000001 run ok 2411 ms` when it is
       answered, with the reason quoted on a refusal. The pair is the design and not a
@@ -366,23 +366,35 @@ on everything in this list -- which is why reading it beats designing from scrat
       one has evidence they believe exists and does not. The command line and the paths are
       deliberately absent from a line.
 
-      **What is left is the launcher.** The agent still dies with its console, and nothing
-      restarts it. **The documented way to start it detached is done**: `docs/smoke.md`
-      carries a `schtasks` command and the script file it runs, verified on this machine --
-      the task's process kept serving after the session that started it was gone, and its log
-      recorded the request. Two things about that were measured rather than assumed:
-      `/TR` refuses anything over **261 characters**, which every realistic command line
-      exceeds and which is why the task runs a script file; and a script file keeps the
-      **token out of the scheduler's record**. `--detach` on the agent was **refused**: it
-      needs Windows' `DETACHED_PROCESS` creation flag, `std` does not expose it safely, and
-      buying it with `unsafe` or a Win32 dependency inside the smallest binary here is a poor
-      trade for what the scheduler already does.
-      Still open, and named rather than implied: **nothing supervises the agent.** `schtasks`
-      does not restart a process that died and cannot tell a wedged one from a busy one, so
-      lanlink's `supervise.ps1` -- restart on death *and* on stuck, with backoff, and a probe
-      with three documented exit codes -- has no counterpart here. The parked list still
-      refuses a daemon **on the host**; a supervisor **on the target** is a new question and
-      has no answer yet.
+      **The way to start it detached is done.** `docs/smoke.md` carries the `schtasks` command
+      and the script file it runs, verified on this machine -- the task's process kept serving
+      after the session that started it was gone, and its log recorded the request. Two things
+      about that were measured rather than assumed: `/TR` refuses anything over **261
+      characters**, which every realistic command line exceeds and which is why the task runs a
+      script file; and a script file keeps the **token out of the scheduler's record**.
+      `--detach` on the agent was **refused**: it needs Windows' `DETACHED_PROCESS` creation
+      flag, `std` does not expose it safely, and buying it with `unsafe` or a Win32 dependency
+      inside the smallest binary here is a poor trade for what the scheduler already does.
+
+      **And the supervisor is done.** `tools/linklet-supervise.ps1` restarts an agent that died
+      **and** one that wedged, with backoff, and its whole decision is `linklet probe`'s four
+      exit codes. The probe is the part that had to exist first and the part `check` could not
+      do: a process wedged on a lock keeps its listening socket open, so the kernel accepts into
+      the backlog and `check` calls it live. Measured against a socket that accepted and never
+      answered -- **`check` said `live 127.0.0.1:8821 connected` while `probe` said `no answer
+      ... no reply within 2000 ms`, exit 4.** `probe` completes a handshake and reads a reply,
+      so a wedged agent fails it. A wrong token is exit 0 and not exit 4, because an agent that
+      says no has proved it is running.
+
+      **Running the supervisor over a real wedged socket found a bug the design had not**: it
+      killed `linklet-agent.exe` by name, which does nothing when the process holding the port
+      is not an agent, so it looped forever reporting a wedged agent it could not clear. It now
+      kills **by port** -- the one thing certainly the agent's, because the probe just proved
+      something is on it -- and a plain socket that accepts and never answers is replaced by a
+      working agent. Still open, and named rather than implied: **the supervisor is a process
+      and not a service.** Nothing watches *it*, so a dead supervisor stops restarting a dead
+      agent. That is one level less bad than the gap this item opened with, and `docs/smoke.md`
+      says so.
 
       **A shell redirect is not a logging strategy**, and that was measured after the fact
       rather than assumed: `hostname > file` launched through the spawn call leaves the file
