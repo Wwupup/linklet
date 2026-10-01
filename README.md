@@ -4,13 +4,14 @@ A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
 > **Status: M0-M7 done, both defects M10 found are fixed, the deploy loop can be closed
-> from an agent, a target's files can be looked at without moving them, and the machines on
-> a network can be found without being told where they are.** Five crates, 521 tests, one
-> command that runs every gate. A host can check reachability, run a command on a target
-> through a sealed channel, read what it did, see what is running there, start something
-> that outlives the call, stop it again, list and search a directory on the target, and move
-> one file in either direction. See `docs/ROADMAP.md` for what is next and what was parked,
-> and `docs/decisions.md` for the choices that are not obvious from the code.
+> from an agent, a target's files can be looked at without moving them, the machines on a
+> network can be found without being told where they are, and one command can be run across
+> several of them.** Five crates, 533 tests, one command that runs every gate. A host can
+> check reachability, run a command on a target through a sealed channel, read what it did,
+> see what is running there, start something that outlives the call, stop it again, list and
+> search a directory on the target, and move one file in either direction. See
+> `docs/ROADMAP.md` for what is next and what was parked, and `docs/decisions.md` for the
+> choices that are not obvious from the code.
 
 ## What it does
 
@@ -160,6 +161,28 @@ therefore incomplete.
 
 It scans about 1600 addresses at most, never this machine's own address and never the
 default gateway, and it names both in the output rather than silently skipping them.
+
+```console
+$ linklet exec --agents 10.0.0.5:8787,10.0.0.6:8787,10.0.0.7:8787 "build.cmd --release"
+1 of 3 ran
+ran 10.0.0.5:8787
+  exit 0
+  took 2411 ms
+  stdout:
+  built 3 targets
+unreachable 10.0.0.6:8787
+refused 10.0.0.7:8787
+```
+
+`exec --agents` runs one command across several machines. It is a **separate flag from
+`--agent`** because the exit codes differ: one target's status is passed through, and a run
+over several has no single status to pass through. Each machine gets a block labelled with its
+target, in the order you listed them however they finish, and one machine failing does not stop
+the others. **`refused` and `unreachable` are different words** -- one sends you to the build,
+the other to the network.
+
+Exit 0 means every agent ran the command. A command that ran and exited 7 is still exit 0:
+that is the command's business, and whether the agents answered is this tool's.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`

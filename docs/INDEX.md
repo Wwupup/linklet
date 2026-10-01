@@ -101,6 +101,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, and why a failed search is not an empty one |
 | `crates/linklet-core/src/listing.rs` | what is in a directory, and why an empty one is not one that is not there |
 | `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, and what it leaves out |
+| `crates/linklet-core/src/fanout.rs` | one operation across several machines: the order, the fates, and the panics that do not take the report with them |
 | `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, and the pair that names a request that never finished |
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
@@ -130,6 +131,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-client/tests/ps.rs` | the listing and the deploy loop over a socket: look, stop, and confirm |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 | `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
+| `crates/linklet-cli/tests/fanout.rs` | one command across several agents: the labels and the exit codes, and a refusal told apart from an unreachable machine |
 
 ## Keeping this true
 

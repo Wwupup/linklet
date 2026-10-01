@@ -52,6 +52,7 @@ usage:
   linklet check [options] <target>[,<target>...]
   linklet testbed check <spec-file> <target>
   linklet exec --agent <host:port> [options] <command...>
+  linklet exec --agents <a,b,c> [options] <command...>
   linklet ps --agent <host:port> [options]
   linklet kill --agent <host:port> (--pid <n> | --name <exact> | --contains <text>) [options]
   linklet spawn --agent <host:port> --output <remote> <command...>
@@ -522,18 +523,21 @@ impl ToolRunner for LiveRunner {
     }
 }
 
-/// Runs a command on an agent and renders what it did.
+/// Runs a command on one agent and says what happened, before it is rendered.
 ///
-/// Shared by the `exec` command and the `exec` tool, so that the two cannot
-/// disagree about what a failure looks like. The distinction it keeps intact is
-/// the one the protocol was built around: a call that could not be made is
-/// `is_error`, and a call that was made and went badly is a result carrying bad
-/// news.
-fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Token>) -> ToolOutcome {
-    let mut address = match AgentAddress::new(agent) {
-        Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
-    };
+/// # Errors
+///
+/// The rendered sentence for anything that leaves the command's fate unknown -- an agent that
+/// could not be reached, or one that answered with something unreadable. **A command that ran
+/// is never an error**, however badly it went: that is the distinction the protocol was built
+/// around, and the one a fan-out has to preserve across several machines.
+fn exec_at(
+    agent: &str,
+    command: &str,
+    timeout_seconds: u64,
+    token: Option<&Token>,
+) -> Result<wire::RunOutcome, String> {
+    let mut address = AgentAddress::new(agent).map_err(|error| render_call_error(&error))?;
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
@@ -543,9 +547,137 @@ fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Toke
         timeout_seconds,
     };
 
-    match linklet_client::run(&address, &request) {
+    linklet_client::run(&address, &request).map_err(|error| render_call_error(&error))
+}
+
+/// Runs one command across several agents and reports each of them.
+///
+/// **This is the half of `docs/ROADMAP.md` M10's discovery item that is a decision rather than
+/// a loop**, and the decisions are in `linklet_core::fanout`: every target gets a line in the
+/// order the caller gave them however they finish, one machine failing does not stop the
+/// others, and a machine that refused is told apart from one that could not be reached. What is
+/// here is only the part that needs a socket.
+///
+/// # The work happens once
+///
+/// A fan-out that ran the command and then ran it again to render the output would be a tool
+/// that executes a build twice on four machines, which is worse than any answer it could give.
+/// So the closure keeps what it rendered in a slot of its own, and the report and the output
+/// are read out of the same run.
+///
+/// # The exit code
+///
+/// `check`'s rather than `exec`'s: `0` when every agent the command was sent to ran it, `1`
+/// when one of them did not, `3` when the invocation was wrong. **A command that ran and
+/// exited non-zero is still `0`** -- the same rule the single-target path follows, because the
+/// command's own status is the caller's business and the agent's reachability is this tool's.
+fn run_exec_across(
+    agents: &[String],
+    command: &str,
+    timeout_seconds: u64,
+    token: Option<&Token>,
+) -> u8 {
+    use linklet_core::fanout::{Fate, Task};
+
+    if agents.is_empty() {
+        eprintln!("linklet: --agents needs at least one host:port");
+        return ExitCode::USAGE;
+    }
+    if agents.len() > linklet_core::fanout::MAX_TARGETS {
+        // Refused rather than cut, which is the opposite of the scan's ceiling: a scan's list
+        // is generated and a caller cannot know how long it is, and this list was typed.
+        eprintln!(
+            "linklet: {} agents is more than the {} one run will take",
+            agents.len(),
+            linklet_core::fanout::MAX_TARGETS
+        );
+        return ExitCode::USAGE;
+    }
+
+    // One slot per agent, holding what that agent's run rendered. Filled by the worker that
+    // ran it, read afterwards in the caller's order.
+    //
+    // An `Arc` because there is one closure per agent and each has to own a handle to the
+    // slots rather than borrowing the one the others also need.
+    let rendered: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(vec![None; agents.len()]));
+
+    let tasks: Vec<Task> = agents
+        .iter()
+        .enumerate()
+        .map(|(index, agent)| {
+            let agent = agent.clone();
+            let command = command.to_string();
+            let token = token.cloned();
+            let rendered = std::sync::Arc::clone(&rendered);
+            Task::new(agent.clone(), move || {
+                match exec_at(&agent, &command, timeout_seconds, token.as_ref()) {
+                    Ok(outcome) => {
+                        if let Ok(mut rendered) = rendered.lock()
+                            && let Some(slot) = rendered.get_mut(index)
+                        {
+                            *slot = Some(wire::render_run(&outcome));
+                        }
+                        // The command ran. Whether it went well is the command's business and
+                        // not this fan-out's, which is the distinction the protocol is built on.
+                        Fate::Ran
+                    }
+                    // The agent answered and said no, which is a fact about the machine.
+                    Err(problem) if problem.contains("refused") => Fate::Refused,
+                    // Anything else is a machine no answer could be got out of.
+                    Err(_) => Fate::Unreachable,
+                }
+            })
+        })
+        .collect();
+
+    let report = linklet_core::fanout::run(tasks);
+
+    // The fan-out's summary, then one labelled block per agent. The blocks are the expensive
+    // part and they are what a caller actually reads, so they are printed rather than left
+    // behind in a struct -- and the summary is first because "did they all work" is the first
+    // question.
+    println!("{} of {} ran", report.ran(), report.total);
+    let rendered = rendered
+        .lock()
+        .map(|slots| slots.clone())
+        .unwrap_or_default();
+    for outcome in &report.outcomes {
+        match outcome.fate {
+            Fate::Ran => {
+                println!("ran {}", outcome.target);
+                if let Some(text) = agents
+                    .iter()
+                    .position(|agent| agent == &outcome.target)
+                    .and_then(|index| rendered.get(index).cloned().flatten())
+                {
+                    for line in text.lines() {
+                        println!("  {line}");
+                    }
+                }
+            }
+            fate => println!("{} {}", fate.as_str(), outcome.target),
+        }
+    }
+
+    if report.failures().is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::NOT_ALL_ALIVE
+    }
+}
+
+/// Runs a command on an agent and renders what it did.
+///
+/// Shared by the `exec` command and the `exec` tool, so that the two cannot
+/// disagree about what a failure looks like. The distinction it keeps intact is
+/// the one the protocol was built around: a call that could not be made is
+/// `is_error`, and a call that was made and went badly is a result carrying bad
+/// news.
+fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Token>) -> ToolOutcome {
+    match exec_at(agent, command, timeout_seconds, token) {
         Ok(outcome) => ToolOutcome::ok(wire::render_run(&outcome)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Err(problem) => ToolOutcome::failed(problem),
     }
 }
 
@@ -641,6 +773,7 @@ fn run_testbed(arguments: &[String]) -> u8 {
 /// of output.
 fn run_exec(arguments: &[String]) -> u8 {
     let mut agent: Option<String> = None;
+    let mut agents: Option<Vec<String>> = None;
     let mut timeout = DEFAULT_EXEC_TIMEOUT_SECONDS;
     let mut words: Vec<String> = Vec::new();
     let mut iterator = arguments.iter();
@@ -651,6 +784,30 @@ fn run_exec(arguments: &[String]) -> u8 {
                 Some(value) => agent = Some(value.clone()),
                 None => {
                     eprintln!("linklet: --agent needs a host:port");
+                    return ExitCode::USAGE;
+                }
+            },
+            // **A separate flag from `--agent` rather than a list it also accepts.** The two
+            // answer different questions and they end differently: one target's exit status is
+            // passed through, because `linklet exec ... && next` has to behave the way the
+            // command would, and a run over several has no single status to pass through. A
+            // flag that meant both would be a flag whose exit code depends on how many values
+            // were typed.
+            "--agents" => match iterator.next() {
+                Some(value) => {
+                    let list: Vec<String> = value
+                        .split([',', ' '])
+                        .filter(|part| !part.trim().is_empty())
+                        .map(str::to_string)
+                        .collect();
+                    if list.is_empty() {
+                        eprintln!("linklet: --agents needs at least one host:port");
+                        return ExitCode::USAGE;
+                    }
+                    agents = Some(list);
+                }
+                None => {
+                    eprintln!("linklet: --agents needs a list of host:port");
                     return ExitCode::USAGE;
                 }
             },
@@ -665,8 +822,27 @@ fn run_exec(arguments: &[String]) -> u8 {
         }
     }
 
+    // One target or several, and never both: a caller that gave both has two intentions and
+    // guessing between them would run a command somewhere it did not name.
+    if agent.is_some() && agents.is_some() {
+        eprintln!("linklet: give --agent for one machine or --agents for several, not both");
+        return ExitCode::USAGE;
+    }
+    if let Some(agents) = &agents {
+        if words.is_empty() {
+            eprintln!("linklet: exec needs a command");
+            return ExitCode::USAGE;
+        }
+        return run_exec_across(
+            agents,
+            &words.join(" "),
+            timeout,
+            token_from_environment().as_ref(),
+        );
+    }
+
     let Some(agent) = agent else {
-        eprintln!("linklet: exec needs --agent <host:port>");
+        eprintln!("linklet: exec needs --agent <host:port>, or --agents for several");
         return ExitCode::USAGE;
     };
     if words.is_empty() {

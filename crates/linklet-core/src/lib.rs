@@ -27,6 +27,7 @@ pub mod auth;
 pub mod channel;
 pub mod discover;
 mod error;
+pub mod fanout;
 pub mod frame;
 pub mod json;
 pub mod listing;

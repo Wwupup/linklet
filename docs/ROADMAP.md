@@ -547,11 +547,40 @@ on everything in this list -- which is why reading it beats designing from scrat
       label and this project has already paid once for reading a localised message; an address
       is four dotted octets in every language.
 
-      **Still to do here: fan-out.** `--targets` prints the spec the other commands take, so
-      discovery feeds them, but nothing yet runs one operation across several machines with a
-      designed answer -- "which of these four failed, and what does the result of a many-target
-      `exec` look like" is still the open question the item opens with. The concurrency is in
-      the adapter already, where `check`'s is.
+      **Fan-out is done too, so this item is checked.** `linklet exec --agents a,b,c <command>`
+      runs one command across several machines and reports each of them. It is a **separate flag
+      from `--agent`** rather than a list that flag also accepts, and the reason is the exit
+      code: one target's status is passed through, because `linklet exec ... && next` has to
+      behave the way the command would, and a run over several has no single status to pass
+      through. A flag meaning both would be a flag whose exit code depends on how many values
+      were typed.
+
+      **The decisions are in `linklet_core::fanout`, and there are four of them.** Every target
+      gets a line **in the order the caller gave them**, however they finish -- a fan-out that
+      answers in a different order each run is one nobody can diff. One machine failing does not
+      stop the others, or "which of these are ten up" becomes ten calls. **A machine that
+      refused is told apart from a machine that could not be reached**, because those send a
+      reader to the build or to the network and a report that folded them would send every
+      reader to the same wrong one. And the report says how many were examined, for the fourth
+      time in this milestone.
+
+      **A task that panics comes back as a result.** A fan-out is the only place in this project
+      where several pieces of work happen at once, and losing a whole report because one
+      operation has a bug would be the worst trade available; the panic is caught, that target
+      is reported as `panicked`, and the others still answer. Proved by deleting the catch and
+      watching the whole run die with it.
+
+      **The work happens once.** The first version of the command ran each agent's operation in
+      the fan-out and then ran it again to render the output -- which would have executed a
+      build twice on four machines. The closure keeps what it rendered in a slot and the report
+      and the blocks are read out of the same run.
+
+      **Two things it deliberately does not do**: it does not retry (one request would become
+      two that ran, which is the argument `linklet-client` makes about itself), and it does not
+      give up on the first failure (`--agents` over a list is the caller's decision about how
+      many). A list longer than 256 targets is **refused rather than cut**, unlike the scan's
+      ceiling: a scan's list is generated and a caller cannot know its length, and this one was
+      typed.
 - [ ] **Jobs -- still parked, and now with a price on it.** A long run cannot be started and
       watched: `exec` is one request with a deadline of at most ten minutes. lanlink has the
       feature and its shape is the evidence that this is a design rather than a patch: six
