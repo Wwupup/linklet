@@ -148,16 +148,16 @@ skipped: 192.168.100.1 (this machine's own address)
 skipped: 192.168.3.1 (the default gateway, which was not asked to be part of this)
 note: the scan was cut short at its ceiling, so addresses beyond it were not tried
 $ linklet discover --port 8790 --targets
-192.168.100.2
+192.168.100.2:8790
 ```
 
 `discover` finds the machines on the networks this host is on, without being told where they
 are. It prints the summary first and the addresses after it, because a scan has a ceiling
 and **"nothing answered" and "I tried a thousand of this network's four thousand addresses"
 are different facts**. `--networks` prints the networks without scanning; `--targets` prints
-the addresses as the comma-separated spec every other command already takes, so discovery
-feeds the commands it exists for. Exit 1 means the scan was cut short and the answer is
-therefore incomplete.
+the addresses as a `host:port` list, which is what every other command already takes -- so
+discovery feeds the commands it exists for. Exit 1 means the scan was cut short and the
+answer is therefore incomplete.
 
 It scans about 1600 addresses at most, never this machine's own address and never the
 default gateway, and it names both in the output rather than silently skipping them.
