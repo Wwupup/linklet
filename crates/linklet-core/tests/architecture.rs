@@ -172,3 +172,48 @@ fn the_reader_can_actually_see_dependencies() {
          until this is fixed. Found: {adapters:?}"
     );
 }
+
+/// Every crate takes its version from the workspace, so a release bump is one edit.
+///
+/// **Written because the bump was done and did nothing.** Cutting 0.2.0 meant editing
+/// `[workspace.package] version` at the root, which changed the number in `Cargo.toml` and
+/// nothing else: each of the five crates carried its own `version = "0.1.0"`, so the MCP server
+/// still introduced itself as 0.1.0 and the agent still reported 0.1.0 to a host. The root's
+/// version was decoration.
+///
+/// That is the failure this checks for, and it is a class rather than an incident: **a version
+/// written in six places is five places to forget**, and the one that gets forgotten is the one
+/// that ends up in a binary somebody ships.
+#[test]
+fn every_crate_takes_its_version_from_the_workspace() {
+    const CRATES: [&str; 5] = [
+        "linklet-core",
+        "linklet-adapters",
+        "linklet-client",
+        "linklet-agent",
+        "linklet-cli",
+    ];
+
+    for name in CRATES {
+        let text = sibling_manifest(name);
+        let declared = text
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("version"))
+            .unwrap_or_else(|| panic!("{name} declares no version at all"));
+
+        assert!(
+            declared.contains("workspace = true"),
+            "{name} pins its own version ({declared:?}), so bumping the workspace version \
+             would silently not reach the binary built from it. See docs/VERSIONING.md."
+        );
+    }
+
+    // And the guard on the guard, in this file's habit: the check above passes trivially if the
+    // reader cannot see a package block at all, so one crate's block is asserted to be visible.
+    let core = sibling_manifest("linklet-core");
+    assert!(
+        core.contains("[package]"),
+        "the manifest reader saw no [package] block, so the check above proves nothing"
+    );
+}

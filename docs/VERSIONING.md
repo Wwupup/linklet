@@ -71,7 +71,13 @@ written down rather than assumed). **Every step is a person running one command.
    `[0.2.0]` is the worked example: what a user can do now that they could not before, plus the
    fixes, plus **what is still open**.
 4. **Bump the version in `Cargo.toml`** — one edit, in `[workspace.package]`. Every crate
-   inherits it, and `SERVER_VERSION` derives from it, so there is no second place to forget.
+   inherits it with `version = { workspace = true }`, and `SERVER_VERSION` derives from it, so
+   there is no second place to forget. **`crates/linklet-core/tests/architecture.rs` fails if
+   any crate pins its own version**, because the first attempt at this release bumped the
+   workspace and changed nothing: all five crates carried `version = "0.1.0"` of their own, so
+   the MCP server went on introducing itself as 0.1.0 and the agent went on reporting 0.1.0 to
+   every host. One number in six places is five places to forget, and the forgotten one is the
+   one that reaches a shipped binary.
 5. `pwsh tools/verify.ps1` again, because a version bump is a change.
 6. **Commit, then tag: `git tag -a v0.2.0 -m "..."`.** The tag is what makes a release
    findable. Nothing in this repository writes version numbers into strings for the tag to

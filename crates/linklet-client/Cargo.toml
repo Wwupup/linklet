@@ -1,13 +1,13 @@
 [package]
 name = "linklet-client"
-version = "0.1.0"
+version = { workspace = true }
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "The host side of the agent protocol: ask a target to run something."
 
 [dependencies]
-linklet-adapters = { version = "0.1.0", path = "../linklet-adapters" }
+linklet-adapters = { path = "../linklet-adapters" }
 # The protocol, and nothing else -- the same single dependency the agent has, so
 # the two ends of a message are decoded by the same code.
 linklet-core = { path = "../linklet-core" }
