@@ -20,6 +20,7 @@ you are about to change a rule, not before.
 | `docs/framing.md` | before touching the wire format or a connection |
 | `docs/transfer.md` | before moving a file: fourteen failure modes with a defence for each |
 | `docs/smoke.md` | before claiming anything works on a real machine |
+| `docs/VERSIONING.md` | before changing the wire, or cutting a release |
 | `docs/INDEX.md` | the map of this project, for keeping it current |
 
 ## 1. Dependency direction

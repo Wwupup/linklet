@@ -658,6 +658,35 @@ fn transfer_failure(failure: TransferFailure) -> CallError {
     }
 }
 
+/// The sentence a caller reads when the two ends speak different protocols.
+///
+/// **Both numbers and a direction, and the direction is the point.** "Protocol mismatch" leaves
+/// a reader to work out which end to upgrade; naming which is older answers that. The message
+/// is a `CallError::Protocol` rather than a variant of its own because there is nothing for a
+/// caller to *branch* on -- the only sensible responses are to upgrade one end or to use an
+/// older host, and both start with reading this.
+///
+/// `docs/VERSIONING.md` is the policy this implements, including why a mismatch is refused
+/// rather than tolerated.
+fn protocol_mismatch(agent: i64) -> String {
+    let tool = wire::PROTOCOL_VERSION;
+    let older = if agent < tool {
+        "the agent"
+    } else {
+        "this tool"
+    };
+    let newer = if agent < tool {
+        "this tool"
+    } else {
+        "the agent"
+    };
+    format!(
+        "protocol {agent} on the agent and protocol {tool} here; \
+         {older} is the older one, so upgrade {newer} or use a matching build \
+         (see docs/VERSIONING.md)"
+    )
+}
+
 /// Opens a connection and completes a handshake on it.
 ///
 /// The initiator's half of the handshake is dropped inside this function, and that
@@ -695,7 +724,23 @@ fn begin(
     let reply = decode_reply(&frame)?;
     let theirs = match reply {
         Reply::Result(value) => {
-            wire::handshake_public_from_json(&value).map_err(|error| protocol(error.to_string()))?
+            let theirs = wire::handshake_public_from_json(&value)
+                .map_err(|error| protocol(error.to_string()))?;
+
+            // **The one place the two ends compare what they speak**, and it is deliberately a
+            // check and not a gate. Refusing a mismatch outright would make this build unable to
+            // talk to anything older than itself, which is the failure the number was added to
+            // prevent -- an old agent that can serve every request a caller makes is a working
+            // deployment, not an error. What it refuses is *silence*: without this, the caller
+            // learns about the skew from whichever operation happens to need a feature the
+            // agent does not have, if it ever asks for one, in the words "not one of ...".
+            let peer = wire::handshake_protocol_from_json(&value)
+                .map_err(|error| protocol(error.to_string()))?;
+            if peer != wire::PROTOCOL_VERSION {
+                return Err(CallError::Protocol(protocol_mismatch(peer)));
+            }
+
+            theirs
         }
         // The agent answers a hello it could not use with a refusal in the clear,
         // because there is no session yet to seal it with. That is the only reason

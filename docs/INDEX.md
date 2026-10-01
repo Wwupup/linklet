@@ -13,6 +13,7 @@ the change that made it wrong.
 | Why does a rule exist? | `docs/rationale.md` |
 | Why is it built this way? | `docs/decisions.md` |
 | How does the wire format work? | `docs/framing.md` |
+| What does a version number mean, and what is a release? | `docs/VERSIONING.md` |
 | How does a file transfer work? | `docs/transfer.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |

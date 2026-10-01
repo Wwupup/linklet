@@ -208,7 +208,14 @@ implied:
 - **What it cost**: a protocol version that does not negotiate, so an old host and a
   new agent fail with "the first byte is 0x47" or an unknown `op` rather than with a
   406. That is a real cost and it is accepted for a tool with one deployment at a
-  time -- `docs/ROADMAP.md` M9 is where version negotiation would go.
+  time -- **and it was paid off at 0.2.0**, which put a protocol number in the
+  handshake and refuses a mismatch by naming both numbers and which end is older.
+  `docs/VERSIONING.md` is the policy.
+  **The pointer here used to read "`docs/ROADMAP.md` M9 is where version negotiation would
+  go", and that was wrong**: M9 is identities and cipher agility, and nothing in the plan
+  covered this. It went to the wrong milestone and stayed there, which is the failure
+  `docs/ROADMAP.md`'s own rule about editing the plan is meant to prevent -- a reference to
+  a plan nobody is following reads exactly like a plan.
 
 ---
 

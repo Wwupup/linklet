@@ -129,7 +129,61 @@ pub fn from_hex(text: &str) -> Result<Vec<u8>, WireError> {
 /// different field names would be a chance for the two sides to disagree about
 /// which is which.
 pub fn handshake_to_json(public: &[u8]) -> Json {
-    object! { "ephemeral_public" => to_hex(public) }
+    object! { "ephemeral_public" => to_hex(public), "protocol" => PROTOCOL_VERSION }
+}
+
+/// The protocol this build speaks, as a whole number.
+///
+/// **Raised only when a change makes an old peer answer wrongly rather than not at all.**
+/// Adding an operation does not raise it: an old agent refuses an `op` it does not know, by
+/// name, which is an answer. Reusing a field, changing what a field means, or changing the
+/// framing does raise it -- those are the changes where an old peer would do something wrong
+/// while believing it understood.
+///
+/// **Every build before this field existed is protocol 1**, because the frame protocol and the
+/// sealed request/reply shape it is built on were already 1 when they shipped. That is why the
+/// first number here is 1 and not 0: a handshake with no `protocol` field is an agent that
+/// predates the field, and calling it 0 would put it outside the range of things this scheme
+/// can talk about.
+///
+/// `i64` rather than `u64` because the JSON layer's integers are `i64` -- see
+/// [`crate::json::Json::as_int`]. A protocol number is a small positive count and will never
+/// approach the difference.
+///
+/// `docs/VERSIONING.md` is the whole policy. `docs/decisions.md` D2 records the cost of the
+/// version this replaces, which did not negotiate at all.
+pub const PROTOCOL_VERSION: i64 = 1;
+
+/// What a peer speaks when its handshake has no `protocol` field.
+///
+/// **A separate name from [`PROTOCOL_VERSION`], and the separation is the whole point.** The
+/// first version of the reader below returned the *current* version for an absent field, which
+/// made the comparison in `linklet_client` a tautology: absence read as "agrees with me", so
+/// the one case the field was added for -- an old agent against a new tool -- was the one case
+/// that could not be detected. The test that pins that case is what found it.
+pub const OLDEST_PROTOCOL: i64 = 1;
+
+/// The protocol number out of a handshake, or [`OLDEST_PROTOCOL`] when the peer does not say.
+///
+/// **Absence is not a malformed message.** A peer that predates this field sends a perfectly
+/// good handshake that happens to be short one key, and refusing the *message* would leave a
+/// caller with "bad request" and no idea which end to upgrade. So absence is read as the oldest
+/// protocol there is and the two numbers are compared by the caller, which is where the
+/// sentence a person reads is built.
+///
+/// A `protocol` key that is present and is *not* a whole number is a real error, because that
+/// is a peer disagreeing about what the field is rather than one that predates it.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the key is present and is not a whole number.
+pub fn handshake_protocol_from_json(value: &Json) -> Result<i64, WireError> {
+    match value.get("protocol") {
+        None => Ok(OLDEST_PROTOCOL),
+        Some(field) => field.as_int().ok_or_else(|| {
+            WireError::BadRequest("a handshake protocol must be a number".to_string())
+        }),
+    }
 }
 
 /// Reads a handshake message.
