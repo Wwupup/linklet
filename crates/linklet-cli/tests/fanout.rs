@@ -276,3 +276,33 @@ fn one_agent_and_several_are_refused_when_both_are_given() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("not both"), "{stderr}");
 }
+
+#[test]
+fn a_target_from_discovery_is_a_target_the_other_commands_accept() {
+    // **The workflow the README documents, tested as a workflow.** `discover --targets` exists
+    // to feed the commands that take targets, and it printed a bare address until a real run
+    // fed one to `exec --agents` and got "unreachable" for a machine that was sitting right
+    // there. What it prints has to be something the next command accepts, and a command that
+    // takes `host:port` refuses a bare host as a usage error -- so that refusal is the check.
+    let host = "127.0.0.1";
+
+    let with_port = Command::new(env!("CARGO_BIN_EXE_linklet"))
+        .args(["check", &format!("{host}:1")])
+        .output()
+        .expect("the tool should run");
+    assert_ne!(
+        with_port.status.code(),
+        Some(i32::from(ExitCode::USAGE)),
+        "a host:port is a target"
+    );
+
+    let without_port = Command::new(env!("CARGO_BIN_EXE_linklet"))
+        .args(["check", host])
+        .output()
+        .expect("the tool should run");
+    assert_eq!(
+        without_port.status.code(),
+        Some(i32::from(ExitCode::USAGE)),
+        "and a bare host is not, which is why discovery has to add the port it scanned"
+    );
+}

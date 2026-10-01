@@ -1134,12 +1134,17 @@ fn run_discover(arguments: &[String]) -> u8 {
     let result = linklet_adapters::scan(&plan, port);
 
     if targets {
+        // **`host:port` and not a bare address.** Every other command takes a `host:port`, and
+        // the port is the one this scan was looking for -- so a list of bare addresses is a
+        // list nobody can paste anywhere, which is the opposite of what this flag is for. It
+        // printed `192.168.100.2` until a real run fed it to `exec --agents` and got
+        // "unreachable" for a machine that was sitting right there.
         println!(
             "{}",
             result
                 .found
                 .iter()
-                .map(|found| found.address.clone())
+                .map(|found| format!("{}:{}", found.address, found.port))
                 .collect::<Vec<_>>()
                 .join(",")
         );
