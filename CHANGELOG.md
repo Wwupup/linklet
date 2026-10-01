@@ -14,7 +14,7 @@ to answer one question: **what can I do now that I could not do before?**
 Nothing yet. What follows is what a release looks like -- see `docs/VERSIONING.md`
 for what a version number means here and what has to happen before one is cut.
 
-## [0.2.0]
+## [0.2.0] -- 2026-10-01
 
 **The version where the tool can do something to a machine.** Up to 0.1.0 it observed:
 `check`, `testbed check`, and a sealed `exec`. This one closes the loop it was built for --
@@ -23,6 +23,11 @@ the target in the first place. It is the version the first real machine was driv
 everything under **Fixed** here is something that machine found.
 
 The wire protocol changed shape, which is why the minor number moved rather than the patch.
+
+**Released after being driven at `192.168.100.2` with these exact binaries**: the seven claims
+of `tools/smoke.ps1`, every command this version added, and the deploy loop end to end. That
+step earned its place -- it found a defect in `spawn` that no test had, and the entry under
+**Fixed** that describes it was written afterwards.
 
 ### Added
 
@@ -96,6 +101,11 @@ The wire protocol changed shape, which is why the minor number moved rather than
   and a drain.
 - **A killed transfer left its `.part` file behind**, so the next attempt at the same path
   found a file nobody wrote and could not say where it came from.
+- **`spawn`'s output path never went through the transfer root.** Every other write in this
+  protocol is rooted; this one went straight to the filesystem, so a relative path resolved
+  against the agent's working directory and a `..` in it was never refused -- it wrote the file
+  wherever the agent could. Found by driving this release candidate on a real machine, and by
+  tests that had only ever passed an absolute path built from the root.
 
 ### Earlier in this version
 
