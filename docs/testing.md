@@ -110,6 +110,23 @@ seven claims about a machine that exists. It is a script and not part of
 `tools/verify.ps1` because it needs a machine: a gate that needs one stops being run,
 and then the behaviour it covered rots. `docs/smoke.md` is the whole argument.
 
+## What runs it
+
+**`tools/verify.ps1` is the only definition of done, and CI calls that script rather than
+restating its four commands.** `.github/workflows/verify.yml` is the caller: one step, on
+Windows, because the tests spawn `tasklist`, `taskkill`, `ipconfig` and `route` and bind
+loopback sockets -- a job on another operating system would fail for a reason that has
+nothing to do with the change.
+
+The script's own header names the failure this arrangement prevents: the four commands were
+documented in three files, a commit went in red anyway, and the rules were fine -- nothing
+ran them. A workflow that listed the four commands again would be that same mistake one level
+up, with two lists to keep in step and the CI copy being the one nobody tries locally.
+
+**CI does not change what a green run means.** It covers exactly the four gates, on one
+machine, the same way a person does. The layer that needs a second machine is still missing,
+still open, and still named above.
+
 ## Knowing a test is worth its place
 
 Two questions, in order:

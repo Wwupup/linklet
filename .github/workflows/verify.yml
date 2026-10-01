@@ -1,0 +1,97 @@
+# The four gates, on every push and every pull request.
+#
+# **This calls `tools/verify.ps1` and does not restate the four commands.** That script exists
+# because the rules were written in three files and a commit still went in red -- and its own
+# header names CI as one of the callers that must go through it. Four commands copied into a
+# workflow is the same mistake one level up: two lists that drift, with the CI copy being the one
+# nobody runs locally.
+#
+# # Why Windows and only Windows
+#
+# `linklet` targets Windows and says so (`README.md`, "does not run on anything but Windows
+# targets, until someone needs otherwise"). Its tests spawn `tasklist`, `taskkill`, `ipconfig`
+# and `route`, and they bind loopback sockets. On a Linux runner the workspace would not compile
+# past the adapter layer, and a job there would be a red X that means "wrong operating system"
+# rather than anything about the change.
+#
+# # What passing this does not mean
+#
+# It does not mean the tool works on a LAN. No test here touches a second machine -- the
+# real-machine layer is `tools/smoke.ps1`, which needs a target and therefore cannot be a gate.
+# `docs/testing.md` is the argument, and `docs/smoke.md` is what the missing layer would claim.
+
+name: verify
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant. Cancelling it saves a
+# runner and removes a queue of stale red X's from the branch.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A warning nobody reads is a warning that is allowed to stay; `verify.ps1` passes `-D warnings`
+  # to clippy for the same reason. This makes cargo itself as strict about deprecations.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  verify:
+    name: four gates
+    runs-on: windows-latest
+
+    # The suite builds the workspace and runs ~570 tests that each spawn a real agent process. It
+    # takes about ten minutes locally; twenty is the point at which something is wrong rather than
+    # slow, and a hung run should fail instead of holding a runner for six hours.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # **The toolchain is not named here.** `rust-toolchain.toml` pins it and carries the reason
+      # -- "it compiles on my machine" is almost always a toolchain difference. Restating the
+      # version in this file would give the pin a second place to be wrong.
+      #
+      # `components` is requested explicitly because the pinned file's `components` are honoured
+      # by rustup when it *installs* a toolchain, and the runner already has one: asking for them
+      # here is what guarantees `cargo fmt` and `cargo clippy` exist rather than being one
+      # runner-image change away from missing.
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+
+      # Keyed on `Cargo.lock`, which is committed on purpose: it is the only record of the exact
+      # versions a build was verified against. `target/` is several GB and is a pure function of
+      # the source, which is why it is ignored rather than stored.
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The release job builds the same source with a different profile, and sharing the key
+          # would have each evict the other's artifacts.
+          key: debug
+
+      # One step, because the script is the definition of done. If a gate is added it is added
+      # there, and this workflow picks it up without being edited -- which is the whole reason the
+      # script exists.
+      - name: The four gates
+        shell: pwsh
+        run: ./tools/verify.ps1
+
+      # Printed only when something failed, and printed *from the binaries this run built*: an
+      # issue that is about which version a binary reports is exactly the class of bug that got
+      # through once already (see `docs/VERSIONING.md`, step 4). Cheap evidence to have attached
+      # to a failed run.
+      - name: What the binaries say they are
+        if: failure()
+        shell: pwsh
+        run: |
+          cargo metadata --format-version 1 --no-deps |
+            ConvertFrom-Json |
+            Select-Object -ExpandProperty packages |
+            ForEach-Object { "  {0,-20} {1}" -f $_.name, $_.version }

@@ -1,0 +1,156 @@
+# Attach the two binaries to a GitHub release, from a tag.
+#
+# `docs/VERSIONING.md` is the policy this implements. Its step 7 is the part that belongs here:
+# *"build and keep the binaries... `git` does not hold build output and must not. The tag is the
+# source, and the binaries are a function of it."* A workflow that builds on a tag is that
+# sentence done by a machine instead of by hand.
+#
+# # What this deliberately does not do
+#
+# **It does not decide that a release is ready.** Steps 1 to 5 of that checklist are a person
+# running the gates and driving a real machine, and no workflow can stand in for the second one:
+# `tools/smoke.ps1` needs a target on a network, and a runner has none. So this job starts from
+# the premise that the tag was pushed on purpose, after somebody did that.
+#
+# **It does not renumber anything.** The version in `Cargo.toml` and the tag have to agree, and
+# the job refuses if they do not -- rather than releasing a binary whose `--version` disagrees
+# with the tag it is attached to. That failure has already happened once by hand: a workspace
+# version was bumped while five crates kept their own, so the binary reported 0.1.0 after the
+# release was called 0.2.0. `crates/linklet-core/tests/architecture.rs` now fails on the cause;
+# this is the check on the symptom, at the one moment it would reach a user.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+# One release per tag, and no cancelling: a half-finished release is worse than a queued one, and
+# the tag is already pushed either way.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  # Writing a release needs this and nothing else. The default token can read the repository; the
+  # job is explicit about the one extra thing it wants.
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: build and attach
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.95.0"
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      # **The tag and the manifest have to agree**, checked before a single byte is built. The tag
+      # is what a user downloads under; the manifest is what the binary reports when asked. A
+      # release where those disagree is a release that lies about itself quietly.
+      - name: The tag and Cargo.toml agree
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $line = Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"'
+          if (-not $line) { Write-Error "no version in [workspace.package]"; exit 1 }
+          $manifest = $line.Matches[0].Groups[1].Value
+
+          Write-Host "tag says      : $tag"
+          Write-Host "Cargo.toml says: $manifest"
+
+          if ($tag -ne $manifest) {
+            Write-Error "tag v$tag does not match the workspace version $manifest. Bump Cargo.toml in a commit the tag points at, or tag the right commit. See docs/VERSIONING.md."
+            exit 1
+          }
+
+      # The gates, again, on the exact commit being released. Not redundant with the branch run:
+      # a tag can be pushed on a commit whose branch run was cancelled, and a release is the worst
+      # place to find that out.
+      - name: The four gates
+        shell: pwsh
+        run: ./tools/verify.ps1
+
+      # `--locked` because the whole point of a release is that it is the thing that was verified.
+      # A build that quietly resolved a newer dependency is a different artifact from the one the
+      # gates passed on.
+      - name: Build the release binaries
+        shell: pwsh
+        run: cargo build --workspace --release --locked
+
+      - name: Stage and digest them
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          foreach ($name in 'linklet.exe', 'linklet-agent.exe') {
+            $from = "target/release/$name"
+            if (-not (Test-Path $from)) { Write-Error "$from was not built"; exit 1 }
+            Copy-Item $from "dist/$name"
+          }
+
+          # A digest beside the file, because the transfer this tool performs is digest-verified
+          # and it would be incoherent to hand out its own binaries without one. `docs/transfer.md`
+          # T2 is the argument for the tool; this is the same courtesy to whoever downloads it.
+          $lines = foreach ($name in 'linklet.exe', 'linklet-agent.exe') {
+            $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $name"
+          }
+          $lines | Set-Content dist/SHA256SUMS -Encoding ascii
+          Get-Content dist/SHA256SUMS
+
+      # The body is a pointer and not a copy. `CHANGELOG.md` is the one place the answer to "what
+      # can I do now that I could not do before" is written, and a release body that repeated it
+      # would be a second copy to keep in step.
+      #
+      # Built by concatenation rather than as a here-string: a `@"` block in a YAML `run:` is
+      # parsed as code by the shell before the here-string is recognised, and the first version
+      # of this failed to parse with "use `{ instead of { in variable names". The PowerShell
+      # inside these files is checked with the parser before it is committed -- see the note in
+      # the commit that added it.
+      - name: Write the release notes
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $blob = "${{ github.server_url }}/${{ github.repository }}/blob/$tag"
+
+          $notes = @(
+            "Binaries for linklet ``$version``, built from the tag on Windows.",
+            "",
+            "**What changed** is in [``CHANGELOG.md``]($blob/CHANGELOG.md), under ``[$version]``.",
+            "**What a version number means here**, which changes raise it, and the upgrade order",
+            "are in [``docs/VERSIONING.md``]($blob/docs/VERSIONING.md).",
+            "",
+            "The agent and the tool should come from the same release. **The agent may be ahead",
+            "of the tool and not behind it** -- see that document for why.",
+            "",
+            "Verify what you downloaded against ``SHA256SUMS``."
+          ) -join "`n"
+
+          $notes | Set-Content dist/notes.md -Encoding utf8
+          Get-Content dist/notes.md
+
+      # `gh` rather than a third-party action: it is already on the runner, it is GitHub's own, and
+      # a release job is not the place to add a dependency nobody reviews.
+      - name: Attach to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          # `--verify-tag` so this cannot invent a tag that was not pushed.
+          gh release create $tag --verify-tag --title $tag --notes-file dist/notes.md `
+            dist/linklet.exe dist/linklet-agent.exe dist/SHA256SUMS

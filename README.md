@@ -247,8 +247,11 @@ accident. This tool:
   *which* caller it is, so there is no per-caller revocation and no audit trail
 - **has no cipher agility.** One curve, one cipher, one key derivation, chosen at
   build time
-- **has never run in CI.** `tools/verify.ps1` is the entry point and it has only
-  ever been run by hand, because there is no remote
+- **has no CI on a second machine.** `.github/workflows/verify.yml` runs the same four
+  gates on Windows for every push, which is what `tools/verify.ps1` was written as the
+  single entry point for. **Nothing automated has ever run against another machine** —
+  that needs one, so it cannot be a gate. `docs/testing.md` is the argument and
+  `docs/smoke.md` is what that layer claims
 
 ## The one architectural rule
 

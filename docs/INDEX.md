@@ -138,6 +138,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-client/tests/probe.rs` | whether an agent is working or only listening, against a socket that accepts and says nothing |
 | `crates/linklet-cli/tests/probe.rs` | the probe's exit codes as a supervisor reads them |
 | `crates/linklet-cli/tests/arguments.rs` | every command's flags, asserted as one contract rather than ten behaviours |
+| `crates/linklet-core/tests/ci_workflow.rs` | the CI workflow calls the one gate script instead of restating it |
 | `tools/linklet-supervise.ps1` | keeping an agent running: restart on death and on wedged, by port, with backoff |
 
 ## Keeping this true

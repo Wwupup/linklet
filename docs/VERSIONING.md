@@ -56,11 +56,20 @@ state that gets refused, with a sentence saying so.
 
 ## Cutting a release
 
-There is no CI in this repository (`README.md` says so, and it is the reason this list is
-written down rather than assumed). **Every step is a person running one command.**
+**CI runs the four gates on every push, and that is all it can run.**
+`.github/workflows/verify.yml` calls `tools/verify.ps1` on Windows. What no workflow can do
+is step 2 below, because it needs a machine on a network — so this list is still a list a
+person works through, with one step already done for them.
+
+Tagging runs `.github/workflows/release.yml`, which builds the binaries, writes a
+`SHA256SUMS` beside them, and attaches both to the release. **It refuses a tag that disagrees
+with the version in `Cargo.toml`**, which is the failure this project has already had once:
+a release was called 0.2.0 while every binary still reported 0.1.0.
+
+**Every step is a person running one command.**
 
 1. `pwsh tools/verify.ps1` — the four gates. Nothing is committed red and nothing is released
-   red; this is the same command that guards a commit.
+   red; this is the same command that guards a commit, and the same one CI runs.
 2. **Drive a real machine.** `pwsh tools/smoke.ps1 -Target <host:port>`, plus the commands the
    release added, by hand. `docs/smoke.md` is what that claim covers and what it does not. **A
    release that was never run against a second machine is a release whose every claim is

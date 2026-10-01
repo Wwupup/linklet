@@ -201,9 +201,6 @@ in this rebuild the reasoning was the part that failed.
 
 Listed because a claim nobody tested is worse than an absent one.
 
-- **No CI.** `tools/verify.ps1` is the single entry point and has only ever been run
-  by hand. There is no remote to run it from. A green check in a README that does
-  not exist would be worse than the honest line in `README.md`.
 - **No second machine has been driven.** `tools/smoke.ps1` exists and holds its
   seven claims against this machine over its LAN address, which exercises the real
   network stack and the sealed channel off loopback. **It has never run against a
