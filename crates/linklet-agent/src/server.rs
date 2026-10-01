@@ -348,12 +348,28 @@ fn answer(
         // nothing about health: what was started is a fact, and whether it is still there is
         // `ps`'s question -- asked by the caller, a moment later, which is the order the
         // deploy loop actually runs in.
-        Ok(Request::Spawn(spawn)) => {
-            Response::Sealed(match crate::spawn::start(&spawn.command, &spawn.output) {
+        // The request that returns before the program does. It answers with a pid and
+        // nothing about health: what was started is a fact, and whether it is still there is
+        // `ps`'s question -- asked by the caller, a moment later, which is the order the
+        // deploy loop actually runs in.
+        //
+        // **The output path goes through the root like every other path in this protocol.**
+        // It did not, and that was a defect with two halves: a relative path -- which is what
+        // the schema says this is, and what every caller sends -- resolved against the agent's
+        // working directory instead of the transfer root, and a `..` in it was never checked,
+        // so `spawn` could create a file anywhere the agent could write. Neither half was
+        // visible to the tests, because both of them passed an absolute path built from the
+        // root, which is the one form that worked.
+        Ok(Request::Spawn(spawn)) => Response::Sealed(match root.resolve(&spawn.output) {
+            Ok(output) => match crate::spawn::start(&spawn.command, &output) {
                 Ok(report) => wire::encode_spawn_reply(&report),
                 Err(reason) => wire::reply_refused(&reason),
-            })
-        }
+            },
+            // The refusal names the path the caller sent and not the resolved one: the caller
+            // cannot see this machine's tree, and "which of my arguments was wrong" is the
+            // question they are asking.
+            Err(error) => wire::reply_refused(&format!("cannot write {}: {error}", spawn.output)),
+        }),
         // The two requests that read a file **without moving it**, which is what
         // `docs/ROADMAP.md` M10 asks for: a pull is right for a log you want and wrong for a
         // two-gigabyte one whose last ERROR is the question. Both answer with a search --

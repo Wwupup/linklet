@@ -474,6 +474,23 @@ on everything in this list -- which is why reading it beats designing from scrat
       it otherwise needs `DETACHED_PROCESS`, which `std` does not expose safely -- the same
       refusal, for the same reason, as the agent's own `--detach`. A program that must outlive
       the console is started the way `docs/smoke.md` starts the agent: from the scheduler.
+
+      **And it shipped with a defect that only a real machine found**, which belongs here
+      because this item is where `spawn` was designed. Its `output` path never went through
+      the transfer root: the handler passed the request string straight to `OpenOptions`, so a
+      relative path -- what the schema says it is, and what every caller sends -- resolved
+      against the agent's *working directory*, and a `..` in it was never refused. `spawn`
+      could therefore create a file anywhere the agent could write, in a protocol where every
+      other write is rooted. It was found by driving a release candidate at 192.168.100.2:
+      `--output release-check\marker.txt` came back "Access is denied" while `ls` listed that
+      very directory, and `--output ..\escaped.txt` was *accepted* and wrote the file outside
+      the root.
+
+      **Both tests passed an absolute path built from the root**, which is the one form that
+      worked -- so the coverage was real and pointed the wrong way. The fix resolves the path
+      in the handler and gives `spawn::start` a `&Path`, so the mistake is unrepresentable
+      rather than merely corrected. Three tests now cover the three forms: relative, `..`, and
+      absolute-inside-the-root.
 - [x] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
       log" is currently "pull it and grep locally", which is defensible -- the pull is
       digest-verified and root-bounded -- but it is wrong for a two-gigabyte log and it

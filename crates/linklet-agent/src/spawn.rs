@@ -30,11 +30,27 @@
 //!   of the `ps` call the caller is going to make anyway.
 
 use std::fs::OpenOptions;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use linklet_core::wire::SpawnReport;
 
 /// Starts a command and returns what was started, or why it could not be.
+///
+/// # Why `output` is a `&Path` and not a `&str`
+///
+/// **It used to take the request's string and open it directly**, so the path resolved against
+/// whatever directory the agent happened to be started in -- and, worse, a `..` in it was never
+/// checked, because that check lives in `Destination::resolve` and this path never went through
+/// it. `spawn` could therefore create a file anywhere the agent could write, in a protocol where
+/// every other write is rooted. Found by driving a release candidate on a real machine: a
+/// relative path was refused with "Access is denied" by a system directory, and the escape was
+/// prevented only by that same accident of permissions. A test on the agent's own machine then
+/// showed `..\escaped.log` being written and a process started.
+///
+/// Taking a `Path` makes the mistake unrepresentable rather than merely fixed: a caller cannot
+/// pass an unresolved request string here, because the only `Path` it can produce has already
+/// been through [`linklet_core::transfer::Destination::resolve`].
 ///
 /// # Errors
 ///
@@ -43,7 +59,7 @@ use linklet_core::wire::SpawnReport;
 /// process exists is not an error** -- a program that exits immediately is a program that
 /// was started, and answering otherwise would be claiming to know something this function
 /// has not waited to see.
-pub fn start(command: &str, output: &str) -> Result<SpawnReport, String> {
+pub fn start(command: &str, output: &Path) -> Result<SpawnReport, String> {
     // Created or truncated, and both on purpose: the file is this program's output, and a
     // caller that starts the same command twice wants the second run's output rather than
     // the two interleaved. `create_new` would fail on the ordinary second start, and append
@@ -53,14 +69,14 @@ pub fn start(command: &str, output: &str) -> Result<SpawnReport, String> {
         .write(true)
         .truncate(true)
         .open(output)
-        .map_err(|error| format!("cannot write {output}: {error}"))?;
+        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
 
     // `try_clone` rather than handing the same handle to both: the two streams are separate
     // handles on one file, which is what lets them be redirected independently if this ever
     // needs to.
     let errors = file
         .try_clone()
-        .map_err(|error| format!("cannot write {output}: {error}"))?;
+        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
 
     let child = Command::new("cmd")
         .args(["/C", command])

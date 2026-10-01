@@ -85,6 +85,19 @@ The other half of a transfer belongs to the agent, which resolves it against its
 root. It is **not** checked here: checking it twice would be two answers to the question
 `docs/transfer.md` T1 asks, and two checks that disagree are worse than one that does not run.
 
+**Every path the agent resolves goes through that root, and `spawn`'s `output` is one of
+them.** It was not, and a real machine exposed the two halves of that during release
+verification. A relative path -- what this schema says it is and what every caller sends --
+resolved against the agent's *working directory*, so the write was refused by a system
+directory or landed where nobody would look; and a `..` in it was never refused, so `spawn`
+started a program whose output file was created anywhere the agent could write. **Both of the
+tests covering `spawn` passed an absolute path built from the root**, which is the one form
+that worked, so neither half was visible.
+
+The rule to take from it is general: **a path that came off the wire goes through
+`Destination::resolve` before it reaches the filesystem** -- and a function below that point
+should take a `&Path`, so it cannot be handed one that did not.
+
 ## Protocol decisions worth knowing
 
 - **Newline-delimited JSON**, one message per line. Not `Content-Length` framing: reading the

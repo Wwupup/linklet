@@ -548,6 +548,90 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
 }
 
 #[test]
+fn a_spawn_output_path_is_relative_to_the_transfer_root() {
+    // **Every other request resolves its path against the agent's transfer root, and `spawn`
+    // did not.** It handed the string straight to `OpenOptions::open`, so a relative path
+    // resolved against whatever directory the agent happened to be started in: the write was
+    // refused with "Access is denied" from a system directory, or it quietly landed somewhere
+    // nobody would look. Found by driving a real release candidate on a real machine, where
+    // every form of relative path failed.
+    //
+    // The failure was invisible to tests because **both spawn tests passed an absolute path**,
+    // and `agent.root.join(..)` produces exactly that. A test that only ever exercises the
+    // form the caller does not use is not testing the interface.
+    let agent = Agent::start();
+
+    // The directory is made first, so that this test is about **where** the path resolves and
+    // not about creating directories: `spawn` refuses a path it cannot write, which is a
+    // different behaviour with its own test below.
+    let nested = agent.root.join("nested");
+    std::fs::create_dir(&nested).expect("a directory under the root");
+
+    let report = spawn(
+        &agent.address,
+        &SpawnRequest {
+            // `echo` rather than a long-running program: this test is about where the file
+            // goes, and a program that exits at once still exercises the path.
+            command: "echo relative".to_string(),
+            // A relative path, which is what the protocol says this is and what every caller
+            // sends: the tool's own schema calls it "a path on the target".
+            output: "nested/spawned-relative.log".to_string(),
+        },
+    )
+    .expect("a relative path under the root is where this belongs");
+
+    assert!(report.pid > 0, "{report:#?}");
+
+    // It is under the root, which is the whole claim.
+    let written = nested.join("spawned-relative.log");
+    assert!(
+        written.exists(),
+        "the output should be at {}, which is under the agent's root",
+        written.display()
+    );
+}
+
+#[test]
+fn a_spawn_output_that_leaves_the_transfer_root_is_refused_by_name() {
+    // The half that matters more than convenience. `spawn` created a file at a path of the
+    // caller's choosing with **no `..` guard at all**, because the guard lives in
+    // `Destination::resolve` and this path never went through it. Every other write in this
+    // protocol is rooted; this one was not, so it could create a file anywhere the agent
+    // could -- and it was only luck (the agent's working directory permissions) that made
+    // the escape fail rather than succeed.
+    let agent = Agent::start();
+
+    let error = spawn(
+        &agent.address,
+        &SpawnRequest {
+            command: "echo escaped".to_string(),
+            output: r"..\escaped.log".to_string(),
+        },
+    )
+    .expect_err("a path that leaves the root must not be written");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+    let text = error.to_string();
+    assert!(
+        text.contains(".."),
+        "the refusal should name what it refused, and said: {text}"
+    );
+
+    // And nothing was written outside the root. The root's parent is this test's scratch
+    // directory, so a file there is a file that escaped.
+    let escaped = agent
+        .root
+        .parent()
+        .expect("the root has a parent")
+        .join("escaped.log");
+    assert!(
+        !escaped.exists(),
+        "{} must not exist: the agent wrote outside its root",
+        escaped.display()
+    );
+}
+
+#[test]
 fn a_spawn_onto_an_output_file_it_cannot_write_is_refused_and_starts_nothing() {
     // The refusal has to come before the process exists, because a program started with
     // nowhere to write is the one thing this feature exists to prevent.
