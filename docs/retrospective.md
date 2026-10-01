@@ -213,4 +213,12 @@ Listed because a claim nobody tested is worse than an absent one.
 - **No cipher agility.** One curve, one cipher, one derivation, at build time.
 - **The M5 experiment had one reader family and five requests.** A good result is
   weak evidence and a bad result is strong evidence; the run produced both, and the
-  asymmetry is the useful part.
+  asymmetry is the useful part. **The record is in `experiments/m5-tool-readability.md`**,
+  and the finding worth carrying forward is this: four of five readers refused to
+  fabricate an answer, naming the missing address, command or path instead -- which is
+  the failure mode an agent actually damages things with, and which the descriptions were
+  never written to produce. What they could *not* do is say **when** to prefer `testbed`
+  over typing the equivalent `cmd`, and no short description can: "prefer this when the
+  conditions will be checked more than once" is a sentence about when to use a tool, which
+  is the kind of sentence the surface rules exist to keep out. A boundary, found and
+  written down, rather than a defect to fix.

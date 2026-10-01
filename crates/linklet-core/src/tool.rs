@@ -569,10 +569,13 @@ pub fn tools() -> Vec<Tool> {
         Tool {
             name: "kill",
             // The one description that has to carry a warning, because this is the one tool
-            // whose mistake cannot be undone. "Stop processes" says what it does; "on a
-            // remote linklet agent's machine" says where, which is the fact a reader must
-            // not have to guess before using it.
-            description: "Stop processes on a remote linklet agent's machine.",
+            // whose mistake cannot be undone. It says what it does, where the processes are,
+            // and **how it is told which ones** -- the last of those because a caller that has
+            // to guess the argument names has already spent a turn, and `pid` and `name` are
+            // not both optional even though neither is marked required: one of them has to be
+            // given. A schema cannot say "one of" without `oneOf`, which costs more to read
+            // than the six words this adds.
+            description: "Stop processes on a remote linklet agent's machine, by pid or by name.",
             input_schema: json::parse(
                 r#"{
                     "type": "object",
@@ -654,7 +657,7 @@ pub fn tools() -> Vec<Tool> {
                         },
                         "pattern": {
                             "type": "string",
-                            "description": "the text to find; empty matches every line"
+                            "description": "the text to find, matched as a substring and not as a pattern; an empty string matches every line, which is rarely what is wanted"
                         },
                         "mode": {
                             "type": "string",
