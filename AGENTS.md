@@ -80,7 +80,9 @@ caller could guess wrong. No `unwrap()` in library code.
 ## 7. Language
 
 English everywhere. ASCII in every committed file; non-ASCII test data is
-written as escapes.
+written as escapes. Checked by `tests/ascii_only.rs`, which exists because
+seven em dashes reached one document from the same hand without any of them
+being noticed.
 
 ## 8. This machine
 

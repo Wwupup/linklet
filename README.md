@@ -249,7 +249,7 @@ accident. This tool:
   build time
 - **has no CI on a second machine.** `.github/workflows/verify.yml` runs the same four
   gates on Windows for every push, which is what `tools/verify.ps1` was written as the
-  single entry point for. **Nothing automated has ever run against another machine** —
+  single entry point for. **Nothing automated has ever run against another machine** --
   that needs one, so it cannot be a gate. `docs/testing.md` is the argument and
   `docs/smoke.md` is what that layer claims
 

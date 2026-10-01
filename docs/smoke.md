@@ -61,7 +61,7 @@ open a port on a machine it has not been installed on yet.
 reason on a refusal is quoted at the end of the completion line. **The absence of the
 second line is the evidence**: a request that wedged the agent, or that was in flight
 when it died, leaves a `->` and nothing else, which is what names it. A log that wrote
-one line per request could not do that — a request that never finished would write
+one line per request could not do that -- a request that never finished would write
 nothing, and would look exactly like a request that never arrived. That is what the
 first real target left: an agent that had answered calls all afternoon and not one
 record of what it had been asked.
@@ -72,7 +72,7 @@ left by accident.
 
 **A shell redirect is not a logging strategy, and this is measured rather than
 assumed.** Starting the agent as `cmd /c linklet-agent.exe ... > agent.log` leaves that
-file **empty** — the redirect captures nothing from the child — so an empty
+file **empty** -- the redirect captures nothing from the child -- so an empty
 `agent.log` is evidence about the launcher and not about the agent. `AGENTS.md` section
 8 has the measurement and the second time it was confirmed.
 

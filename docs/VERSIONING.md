@@ -32,7 +32,7 @@ changes where a peer would *do something wrong while believing it understood*.
 it travels in the handshake. The rule is:
 
 > **Only ever add. Never reuse a field, never change what a field means, and never change the
-> framing — unless the protocol number goes up in the same commit.**
+> framing -- unless the protocol number goes up in the same commit.**
 
 Where it comes from, for present-day numbers:
 
@@ -58,7 +58,7 @@ state that gets refused, with a sentence saying so.
 
 **CI runs the four gates on every push, and that is all it can run.**
 `.github/workflows/verify.yml` calls `tools/verify.ps1` on Windows. What no workflow can do
-is step 2 below, because it needs a machine on a network — so this list is still a list a
+is step 2 below, because it needs a machine on a network -- so this list is still a list a
 person works through, with one step already done for them.
 
 Tagging runs `.github/workflows/release.yml`, which builds the binaries, writes a
@@ -68,18 +68,18 @@ a release was called 0.2.0 while every binary still reported 0.1.0.
 
 **Every step is a person running one command.**
 
-1. `pwsh tools/verify.ps1` — the four gates. Nothing is committed red and nothing is released
+1. `pwsh tools/verify.ps1` -- the four gates. Nothing is committed red and nothing is released
    red; this is the same command that guards a commit, and the same one CI runs.
 2. **Drive a real machine.** `pwsh tools/smoke.ps1 -Target <host:port>`, plus the commands the
    release added, by hand. `docs/smoke.md` is what that claim covers and what it does not. **A
    release that was never run against a second machine is a release whose every claim is
-   untested outside this host** — that is a decision a person makes, not one this document makes
+   untested outside this host** -- that is a decision a person makes, not one this document makes
    for them.
 3. **Write the version into `CHANGELOG.md`.** Move what is under `[Unreleased]` into a new
    section named for the version, state the date, and leave `[Unreleased]` empty above it.
    `[0.2.0]` is the worked example: what a user can do now that they could not before, plus the
    fixes, plus **what is still open**.
-4. **Bump the version in `Cargo.toml`** — one edit, in `[workspace.package]`. Every crate
+4. **Bump the version in `Cargo.toml`** -- one edit, in `[workspace.package]`. Every crate
    inherits it with `version = { workspace = true }`, and `SERVER_VERSION` derives from it, so
    there is no second place to forget. **`crates/linklet-core/tests/architecture.rs` fails if
    any crate pins its own version**, because the first attempt at this release bumped the
@@ -92,7 +92,7 @@ a release was called 0.2.0 while every binary still reported 0.1.0.
    findable. Nothing in this repository writes version numbers into strings for the tag to
    disagree with; the tag is the record of which commit was released.
 7. **Build and keep the binaries.** `cargo build --release`, and the two `.exe` files go
-   wherever they are distributed from. `git` does not hold build output and must not —
+   wherever they are distributed from. `git` does not hold build output and must not --
    `docs/rationale.md` says why. The tag is the source, and the binaries are a function of it.
 
 ## Rolling back
@@ -118,5 +118,5 @@ so a rollback of the *tool* alone leaves the deployment working.
 - **No conventional-commits automation.** `docs/COMMITS.md` fixes the commit format and
   `crates/linklet-core/tests/commit_message.rs` enforces it, so a generated changelog is
   possible. It is refused on purpose: a generated changelog tells a user which internal function
-  moved, and `CHANGELOG.md` exists to answer one question — what can I do now that I could not
+  moved, and `CHANGELOG.md` exists to answer one question -- what can I do now that I could not
   do before.

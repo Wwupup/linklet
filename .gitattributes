@@ -29,6 +29,13 @@
 *.sh    text eol=lf
 *.txt   text eol=lf
 
+# Workflow files, for the same reason as the scripts: the thing that reads them is not on this
+# machine. GitHub parses these bytes; a CR that a clone introduced would be a character in a
+# `run:` body, and a shell does not forgive those. They are the one kind of file here that is
+# executed somewhere nobody can look at it.
+*.yml   text eol=lf
+*.yaml  text eol=lf
+
 # Binary files: never touch them, never diff them, never try to merge them.
 *.exe   binary
 *.dll   binary
