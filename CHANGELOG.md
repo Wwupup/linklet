@@ -7,7 +7,101 @@ Not automatically generated from commits. `git log` already has that, and a
 generated changelog tells a user which internal function moved. This file exists
 to answer one question: **what can I do now that I could not do before?**
 
+  added before anyone asks is how a command line grows arguments nobody uses.
+
 ## [Unreleased]
+
+Nothing yet. What follows is what a release looks like -- see `docs/VERSIONING.md`
+for what a version number means here and what has to happen before one is cut.
+
+## [0.2.0]
+
+**The version where the tool can do something to a machine.** Up to 0.1.0 it observed:
+`check`, `testbed check`, and a sealed `exec`. This one closes the loop it was built for --
+put a build on a target, run it, see what it is doing, stop it, read what it wrote, and find
+the target in the first place. It is the version the first real machine was driven with, and
+everything under **Fixed** here is something that machine found.
+
+The wire protocol changed shape, which is why the minor number moved rather than the patch.
+
+### Added
+
+- **`linklet push` and `linklet pull`**, and both on the MCP surface. A transfer is
+  digest-verified in the direction it travels, refuses a path that leaves the agent's root,
+  and leaves no `.part` file behind when it fails. `pull` reads through the same ceiling
+  `push` writes through, so neither direction can make an agent allocate without bound.
+- **`linklet ps`, `linklet kill` and `linklet spawn`**, and all three as tools. Together they
+  are the deploy loop: **is the old build still running, stop it, start the new one.** An
+  empty process listing carries the counts that make it readable, `kill` has two refusals it
+  can only make because it is an interface rather than a command line, and `spawn` returns a
+  pid instead of holding the request open the way `exec` does.
+- **`linklet grep`, `linklet tail` and `linklet ls`**, and all three as tools. The reading
+  happens on the target and only the answer crosses, because a pull is the wrong tool for a
+  two-gigabyte log. A file past the sixteen-mebibyte ceiling is read **from its end** for a
+  `last` search, and every search says how many lines it read, whether it stopped early, and
+  **which encoding won**. `ls` distinguishes an empty directory from one that is not there,
+  which are the same list and opposite facts.
+- **`linklet discover`**, so the machines on a network can be found rather than written down.
+  It reads this host's interfaces, builds a plan of the addresses it will try, and reports
+  both of its ceilings. The local address and the default gateway are listed with the reason
+  they were skipped rather than silently dropped.
+- **`linklet exec --agents <a,b,c>`**: one command across several machines, one labelled
+  result per target in the order they were given, and **a machine that refused told apart from
+  one that could not be reached**. A target that panics does not take the report with it.
+- **`linklet probe`**, which answers whether an agent is *working* rather than only
+  *listening* -- see under **Fixed** for why that is not the same question. Four documented
+  exit codes.
+- **`tools/linklet-supervise.ps1`**: restarts an agent that died and one that wedged, with
+  capped backoff, killing whatever holds the port rather than whatever has the expected name.
+- **`linklet-agent --log <file>`** (or `LINKLET_LOG`), which appends two lines per request --
+  when it was taken and when it was answered, with the duration. A request that never finishes
+  writes only the first line, and that is what names it.
+- **A documented way to start an agent so it outlives its console**, in `docs/smoke.md`,
+  including why the scheduler has to run a script file rather than a command line.
+
+### Changed
+
+- **The wire protocol is frames rather than hand-written HTTP.** A request line, headers and a
+  `Content-Length` became a six-byte header whose failure modes are enumerated in
+  `crates/linklet-core/src/frame.rs`. The reading surface facing the network got smaller,
+  which was the point.
+- **The protocol's distinction is stronger for the loss of the status code.** "A command ran
+  and failed" and "a request could not be made" were 200-versus-400; they are now a result and
+  a refusal, and a result holding an exit code of 1 cannot be misread as a transport failure
+  because it is not one.
+- **Every command's flags are read by one parser** (`linklet_core::arguments`). They had been
+  parsed per command, nine copies of which had drifted into two different messages for the
+  same mistake, with nothing to compare them. The one line that parser has to draw is between
+  a flags-only command, where an unrecognised `--flag` is a typo, and a command with a tail,
+  where it belongs to the command being run.
+
+### Fixed
+
+- **A reply too large to frame was reported as a network failure.** A command that produced
+  20 MB ran to completion on the target and the caller was told the agent "closed the
+  connection without answering". The frame's ceiling is 16 MiB and there was no way to say so;
+  the agent now refuses by name and quotes both sizes.
+- **A command's output that was not UTF-8 was dropped silently.** `tasklist` on a Chinese
+  installation returns bytes that are not UTF-8, and the caller was told there was no output.
+  Non-UTF-8 output is now returned with a note saying how it was read.
+- **A listening socket is not a working agent.** An agent wedged on a lock keeps its listening
+  socket open, so a connect check calls it healthy while every real call times out. Measured
+  against a socket that accepted and never answered: `check` said `live` and the probe said
+  `no reply within 2000 ms`. `linklet probe` completes a handshake and reads a reply instead,
+  which is what makes the supervisor worth having.
+- **A receiver's refusal never reached the sender.** The sender streamed the body before
+  reading the answer, so a receiver that refused wrote its reply and then dropped a socket
+  with unread bytes in its queue -- which Windows resets, destroying the reply in transit. The
+  manifest is answered before the body is sent, and a refusal is delivered with a half-close
+  and a drain.
+- **A killed transfer left its `.part` file behind**, so the next attempt at the same path
+  found a file nobody wrote and could not say where it came from.
+
+### Earlier in this version
+
+Landing between 0.1.0 and 0.2.0, in the order they were built. Kept because each one is a
+decision a reader may meet again; see the commit that carries it for the argument.
+
 
 ### Added
 
@@ -204,20 +298,23 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Known gaps
 
-- **The handshake is authenticated by a shared secret, not by a certificate.**
-  Whoever holds the token can talk to the agent; there is no notion of which caller
-  it is, so there is no per-caller revocation and no audit trail. A deployment that
-  needs those needs identities, which this does not have.
-- **No cipher agility and no version negotiation.** One cipher, one curve, one
-  key derivation, chosen at build time.
-- No automated run against a second machine. `docs/testing.md` says what that
-  costs and what it does not cover.
-- The MCP surface has never been read by a model with no other context. The tests
-  check that the descriptions are short; they cannot check that they are
-  understandable, and that is the claim the milestone rests on.
-- `--at-once` is a constant rather than a flag. Ten unreachable machines and
-  sixty behave the same way, so nobody has wanted a different value yet; a flag
-  added before anyone asks is how a command line grows arguments nobody uses.
+- **The handshake is authenticated by a shared secret, not by a certificate.** Whoever holds
+  the token can talk to the agent; there is no notion of which caller it is, so there is no
+  per-caller revocation and no audit trail. A deployment that needs those needs identities.
+- **No cipher agility.** One cipher, one curve, one key derivation, chosen at build time.
+- **This version does not negotiate its protocol**, so an old host and a new agent fail with
+  an unknown `op` rather than with a version. `docs/VERSIONING.md` records what that costs
+  and what the next version has to do about it.
+- **The supervisor is a process, not a service.** Nothing watches it, so a dead supervisor
+  stops restarting a dead agent. `docs/smoke.md` says so where it documents it.
+- No automated run against a second machine, and **no CI at all**: `tools/verify.ps1` is
+  run by hand. `docs/testing.md` says what that costs.
+- The MCP surface has never been read by a model with no other context. The tests check that
+  the descriptions are short; they cannot check that they are understandable, and that is
+  the claim the milestone rests on.
+- `--at-once` is a constant rather than a flag. Ten unreachable machines and sixty behave the
+  same way, so nobody has wanted a different value yet; a flag added before anyone asks is
+  how a command line grows arguments nobody uses.
 
 ## [0.1.0]
 
