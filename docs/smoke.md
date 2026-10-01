@@ -76,7 +76,61 @@ file **empty** — the redirect captures nothing from the child — so an empty
 `agent.log` is evidence about the launcher and not about the agent. `AGENTS.md` section
 8 has the measurement and the second time it was confirmed.
 
+### Starting it so it does not die with the console
+
+**A process started from a console dies when that console closes**, and that is the
+failure M10 opens with: on the first real target the agent was gone with no process left
+to ask, while the port stayed silently dropped rather than refused -- which reads exactly
+like a firewall. Starting it from a console is therefore only for a quick check. For a
+machine you intend to keep, have the scheduler start it:
+
+```powershell
+# On the target, once, in a directory with no space in its name -- see below.
+@'
+@echo off
+set LINKLET_TOKEN=<the secret>
+"C:\linklet\bin\linklet-agent.exe" --port 8787 --root C:\linklet\transfers --log C:\linklet\agent.log > C:\linklet\banner.txt 2>&1
+'@ | Set-Content C:\linklet\start-agent.cmd -Encoding ascii
+
+schtasks /Create /TN linklet-agent /SC ONCE /ST 00:00 /TR C:\linklet\start-agent.cmd /F
+schtasks /Run /TN linklet-agent
+```
+
+**Why a script file and not the command line.** `/TR` refuses anything over **261
+characters**, and a command that sets the token, names the binary, the root and the log
+and redirects two streams is past that on any real path. The script also keeps the
+**token out of the scheduler's record**, which is the same argument that keeps it out of
+`argv` everywhere else in this project.
+
+**Why this survives, and what it is not.** A task launched this way belongs to the
+scheduler, not to your console, so closing the window does not touch it. It is a
+**documented way to start the agent**, not a supervisor: `schtasks` will not restart it
+if it dies, and it will not notice one that has wedged. `--detach` on the agent was
+considered and **refused**: making it real needs Windows' `DETACHED_PROCESS` creation
+flag, which `std` does not expose safely, and buying it with `unsafe` or a Win32
+dependency in the smallest binary in this repository is a poor trade for something the
+scheduler already does. See `docs/ROADMAP.md` M10.
+
 Three things about that block, all of them learned by doing it on a real machine:
+
+- **The script's directory must have no space in it.** The command inside is quoted and
+  `cmd` handles that; what breaks is anything that goes on to build another command line
+  out of it -- the same trap `AGENTS.md` section 8 describes for a command sent to a
+  target. `C:\linklet` is the choice for that reason.
+- **`schtasks /ST` wants a time and warns if it is in the past.** The warning is noise
+  for a task that is only ever started by hand with `/Run`.
+- **The banner goes to its own file because a shell redirect started *through another
+  process* captures nothing.** That is measured, and it is why `--log` exists at all: with
+  `--log` the agent writes its own evidence, and the redirect only has to survive long
+  enough to say whether it started.
+
+To stop it: `schtasks /End /TN linklet-agent` ends the task, and the agent's own process
+then has to be killed by name or pid -- `/End` ends the task, not the process the script
+started. `schtasks /Delete /TN linklet-agent /F` removes the task itself.
+
+### Three things about starting it by hand
+
+All of them learned by doing it on a real machine:
 
 - **The root has to exist.** The agent refuses to start if `--root` is not a directory,
   rather than starting and failing every transfer later with a filesystem error naming a
@@ -84,7 +138,7 @@ Three things about that block, all of them learned by doing it on a real machine
   which is why it is worth passing explicitly on a target.
 - **`--log` is checked the same way, and for the same reason.** An operator who asked for
   a log and silently did not get one has a machine whose evidence they believe exists and
-  does not — which is the mistake this whole feature is a reaction to. A log path that is
+  does not -- which is the mistake this whole feature is a reaction to. A log path that is
   a directory, or cannot be opened, is a refusal to start with exit 2.
 - **A program rule is the one that keeps working.** `-Program <the agent's path>` (any
   port) survives a change of `--port`; a rule for one port does not. The port form above

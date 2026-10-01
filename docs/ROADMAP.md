@@ -367,10 +367,22 @@ on everything in this list -- which is why reading it beats designing from scrat
       deliberately absent from a line.
 
       **What is left is the launcher.** The agent still dies with its console, and nothing
-      restarts it. Open: whether that is a `--detach` in the agent or a documented way to
-      start it detached, and whether a supervisor is wanted at all -- lanlink has one with
-      backoff and a three-exit-code probe, and the parked list still refuses a daemon on the
-      host. `docs/smoke.md` carries the log format and how to read a death out of it.
+      restarts it. **The documented way to start it detached is done**: `docs/smoke.md`
+      carries a `schtasks` command and the script file it runs, verified on this machine --
+      the task's process kept serving after the session that started it was gone, and its log
+      recorded the request. Two things about that were measured rather than assumed:
+      `/TR` refuses anything over **261 characters**, which every realistic command line
+      exceeds and which is why the task runs a script file; and a script file keeps the
+      **token out of the scheduler's record**. `--detach` on the agent was **refused**: it
+      needs Windows' `DETACHED_PROCESS` creation flag, `std` does not expose it safely, and
+      buying it with `unsafe` or a Win32 dependency inside the smallest binary here is a poor
+      trade for what the scheduler already does.
+      Still open, and named rather than implied: **nothing supervises the agent.** `schtasks`
+      does not restart a process that died and cannot tell a wedged one from a busy one, so
+      lanlink's `supervise.ps1` -- restart on death *and* on stuck, with backoff, and a probe
+      with three documented exit codes -- has no counterpart here. The parked list still
+      refuses a daemon **on the host**; a supervisor **on the target** is a new question and
+      has no answer yet.
 
       **A shell redirect is not a logging strategy**, and that was measured after the fact
       rather than assumed: `hostname > file` launched through the spawn call leaves the file
