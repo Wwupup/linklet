@@ -18,11 +18,9 @@ use linklet_core::json::{self, Json};
 use linklet_core::object;
 use linklet_core::transfer::Manifest;
 use linklet_core::wire::{
-    self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, Reply, Request, RunOutcome, RunRequest,
+    self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, Reply, Request, RunOutcome, RunRequest, Text,
     WireError,
 };
-use linklet_core::{frame, frame::Kind};
-
 /// A digest of the right shape, for the messages that carry one.
 ///
 /// Deliberately not all zeros: digits have no case, so a digest made of them cannot be
@@ -48,8 +46,8 @@ fn a_command_that_ran_and_failed_is_an_outcome_and_not_an_error() {
     // The whole point, as one test. Exit code 1 reaches the caller as a fact.
     let outcome = RunOutcome {
         exit_code: Some(1),
-        stdout: String::new(),
-        stderr: "usage: app [options]".to_string(),
+        stdout: Text::default(),
+        stderr: Text::from_bytes(b"usage: app [options]"),
         duration_ms: 12,
         reason: None,
     };
@@ -72,8 +70,8 @@ fn a_command_that_never_started_has_no_exit_code_and_says_why() {
     // killed by its deadline.
     let outcome = RunOutcome {
         exit_code: None,
-        stdout: String::new(),
-        stderr: String::new(),
+        stdout: Text::default(),
+        stderr: Text::default(),
         duration_ms: 0,
         reason: Some("cannot spawn: the file does not exist".to_string()),
     };
@@ -97,8 +95,8 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
     // depend on, so the value is a constant.
     let outcome = RunOutcome {
         exit_code: None,
-        stdout: "half a build".to_string(),
-        stderr: String::new(),
+        stdout: Text::from_bytes(b"half a build"),
+        stderr: Text::default(),
         duration_ms: 900_000,
         reason: Some(KILLED_BY_DEADLINE.to_string()),
     };
@@ -108,7 +106,8 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
 
     assert_eq!(decoded.reason.as_deref(), Some(KILLED_BY_DEADLINE));
     assert_eq!(
-        decoded.stdout, "half a build",
+        decoded.stdout.as_str(),
+        "half a build",
         "a killed command's output is still worth having"
     );
 }
@@ -235,8 +234,8 @@ fn a_result_that_holds_bad_news_is_still_a_result() {
     // agent would retry a machine that had already answered.
     let outcome = RunOutcome {
         exit_code: Some(1),
-        stdout: String::new(),
-        stderr: "usage: app [options]".to_string(),
+        stdout: Text::default(),
+        stderr: Text::from_bytes(b"usage: app [options]"),
         duration_ms: 4,
         reason: None,
     };
@@ -479,66 +478,56 @@ fn a_body_that_is_not_json_is_a_bad_request_and_not_a_panic() {
 // --- a reply that will not fit in a frame ------------------------------------
 
 #[test]
-fn the_reply_ceiling_leaves_room_for_the_tag_and_nothing_else() {
-    // The arithmetic the agent's refusal is based on, pinned to the frame module's
-    // own constants. It is 16 bytes short of the frame limit because that is the tag
-    // the channel appends, and the test in `linklet-adapters` is what holds the 16 to
-    // the cipher -- this file cannot see the cipher.
-    let ceiling = wire::reply_ceiling();
-
-    assert!(
-        ceiling < frame::MAX_PAYLOAD,
-        "a sealed reply is longer than the plaintext it carries"
-    );
-    assert_eq!(
-        frame::MAX_PAYLOAD - ceiling,
-        16,
-        "the room the seal needs is the channel's tag, which is 16 bytes"
-    );
-}
-
-#[test]
 fn a_reply_that_fills_the_ceiling_can_still_be_framed() {
-    // **The boundary, and the reason the ceiling is not just a number a comment
-    // mentions.** The predicate and the sender have to agree exactly: a predicate one
-    // byte optimistic would let the agent build a reply it could not send, which is
-    // the defect this change is about, and one byte pessimistic would refuse output
-    // that would have gone.
+    // **The boundary of the predicate, and why it is searched for rather than
+    // computed.** The predicate and the sender have to agree exactly: one byte
+    // optimistic would let the agent build a reply it could not send, which is the
+    // defect this change is about, and one byte pessimistic would refuse output that
+    // would have gone.
     //
-    // The claim is the pair: what the predicate accepts, [`frame::header`] must accept
-    // once the reply is sealed. Both halves run against the real constants rather than
-    // against numbers chosen here, and the reply is built to a measured length -- the
-    // size of the JSON about an empty output, plus padding -- so `reply_ceiling()`
-    // itself is what is being checked.
-    let empty = wire::encode_run_reply(&outcome_of_stdout(0));
-    let padding = wire::reply_ceiling() - json::write(&empty).len();
+    // Two attempts to *compute* the boundary failed here first. "Add
+    // `ceiling - size_of_empty` bytes of text" is wrong because one more byte of text
+    // also carries the byte count in the JSON, and a number that gains a digit makes
+    // the reply grow by two. Measuring one step and dividing is wrong for the same
+    // reason: the step is not constant. A binary search asks the encoder instead of
+    // reasoning about it.
+    //
+    // **A small ceiling on purpose.** The question is which side of a line a reply
+    // falls on, and a line at 4 KiB answers it in microseconds. The same search
+    // against the real sixteen mebibytes was written first and took seven seconds,
+    // because every step of the search builds and drops a reply the size of the
+    // window -- the sort of cost a test in this layer exists to avoid. That the real
+    // number is the ceiling the protocol uses is asserted next to the constant, in
+    // `wire`'s own tests, and end to end by `against_agent.rs` with 21 MB of output.
+    let size_of_reply_with =
+        |padding: usize| json::write(&wire::encode_run_reply(&outcome_of_stdout(padding))).len();
 
-    let at_the_ceiling = json::write(&wire::encode_run_reply(&outcome_of_stdout(padding)));
+    let ceiling = 4096;
+    let (mut fits, mut too_large) = (0usize, ceiling);
+    while too_large - fits > 1 {
+        let middle = fits + (too_large - fits) / 2;
+        if size_of_reply_with(middle) <= ceiling {
+            fits = middle;
+        } else {
+            too_large = middle;
+        }
+    }
+
     assert_eq!(
-        at_the_ceiling.len(),
-        wire::reply_ceiling(),
-        "the reply built here should be exactly the ceiling"
+        size_of_reply_with(fits),
+        ceiling,
+        "the search should stop on a reply of exactly the ceiling"
     );
-
-    let sealed = at_the_ceiling.len() + 16;
     assert!(
-        frame::header(Kind::Sealed, sealed).is_ok(),
-        "a reply the predicate accepts has to be a frame the receiver accepts"
-    );
-
-    assert!(
-        wire::reply_fits(
-            &wire::encode_run_reply(&outcome_of_stdout(padding)),
-            wire::reply_ceiling()
-        ),
-        "the ceiling itself is within the ceiling"
+        wire::reply_fits(&wire::encode_run_reply(&outcome_of_stdout(fits)), ceiling),
+        "the largest reply the search accepted fits"
     );
     assert!(
         !wire::reply_fits(
-            &wire::encode_run_reply(&outcome_of_stdout(padding + 1)),
-            wire::reply_ceiling()
+            &wire::encode_run_reply(&outcome_of_stdout(too_large)),
+            ceiling
         ),
-        "one byte past it is not"
+        "and one byte more does not"
     );
 }
 
@@ -546,8 +535,8 @@ fn a_reply_that_fills_the_ceiling_can_still_be_framed() {
 fn outcome_of_stdout(bytes: usize) -> RunOutcome {
     RunOutcome {
         exit_code: Some(0),
-        stdout: "x".repeat(bytes),
-        stderr: String::new(),
+        stdout: Text::from_bytes("x".repeat(bytes).as_bytes()),
+        stderr: Text::default(),
         duration_ms: 1,
         reason: None,
     }
@@ -604,14 +593,110 @@ fn a_reply_too_large_to_frame_is_refused_by_name() {
     );
 }
 
+// --- output that is not text -------------------------------------------------
+
+/// The bytes of `D6 D0 CE C4`, the four the first real target was measured with.
+///
+/// Written as bytes rather than as a string literal because that is what the
+/// command emitted: this is not text in any encoding the reply claims to carry, and
+/// a test that wrote it as a Rust string could not express that.
+const NOT_UTF8: [u8; 4] = [0xd6, 0xd0, 0xce, 0xc4];
+
+#[test]
+fn output_that_is_utf8_is_not_marked_as_lost() {
+    // The other half of the test below. A flag that was always set would pass a test
+    // that only checked the lossy case, and every ordinary command would come back
+    // with a warning about an encoding nothing was wrong with.
+    let text = wire::Text::from_bytes(b"built 3 targets");
+
+    assert_eq!(text.as_str(), "built 3 targets");
+    assert!(!text.is_lossy(), "{text:?}");
+    assert_eq!(text.byte_count(), 15, "the bytes the command wrote");
+}
+
+#[test]
+fn output_that_is_not_utf8_carries_the_loss_rather_than_hiding_it() {
+    // **The defect M10 carries.** These four bytes -- GBK for two CJK characters --
+    // reached the caller as four `U+FFFD` and nothing in the reply said the output
+    // was not text. The bytes were checked in the bytes, not in a terminal, so this
+    // is the same claim written where it can fail.
+    let text = wire::Text::from_bytes(&NOT_UTF8);
+
+    assert!(
+        text.is_lossy(),
+        "a reply that decoded four invalid bytes must not read as clean text: {text:?}"
+    );
+    assert_eq!(
+        text.as_str().chars().count(),
+        4,
+        "one replacement character per invalid byte, which is what lossy means"
+    );
+    assert!(
+        text.as_str().contains('\u{fffd}'),
+        "the replacement is what makes the difference visible: {text:?}"
+    );
+    assert_eq!(
+        text.byte_count(),
+        4,
+        "the size is the bytes the command wrote"
+    );
+}
+
+#[test]
+fn a_run_whose_output_was_not_utf8_says_so_after_the_trip() {
+    // The point is the wire, not the formatting: a `String` cannot carry "these
+    // bytes are not text", so the reply has to. A caller reading only the JSON must
+    // be able to tell this reply from one whose output was clean.
+    let outcome = RunOutcome {
+        exit_code: Some(0),
+        stdout: wire::Text::from_bytes(&NOT_UTF8),
+        stderr: wire::Text::from_bytes(b""),
+        duration_ms: 3,
+        reason: None,
+    };
+
+    let decoded = run_outcome_from_body(&json::write(&wire::encode_run_reply(&outcome)))
+        .expect("its own output should decode");
+
+    assert!(
+        decoded.stdout.is_lossy(),
+        "the trip through JSON lost the fact that it was not UTF-8: {decoded:#?}"
+    );
+    assert!(
+        !decoded.stderr.is_lossy(),
+        "and an empty stream was never lossy: {decoded:#?}"
+    );
+    assert_eq!(decoded.stdout.byte_count(), 4, "the byte count crossed too");
+}
+
+#[test]
+fn a_reply_from_before_this_field_existed_still_decodes() {
+    // The four fields a run reply has always had, with no byte count and no loss
+    // flag. An agent older than this change sends exactly this, and refusing it
+    // would be a version skew that breaks a working pair for a field it does not
+    // need.
+    let older = object! {
+        "exit_code" => 0i64,
+        "stdout" => Json::str("ok"),
+        "stderr" => Json::str(""),
+        "duration_ms" => 1i64,
+        "reason" => Json::Null,
+    };
+
+    let outcome = wire::run_outcome_from_json(&older).expect("a reply this version understands");
+    assert_eq!(outcome.stdout.as_str(), "ok");
+    assert_eq!(outcome.stdout.byte_count(), 2);
+    assert!(!outcome.stdout.is_lossy());
+}
+
 // --- what the agent reads ----------------------------------------------------
 
 #[test]
 fn a_successful_run_renders_the_exit_code_the_time_and_the_streams() {
     let outcome = RunOutcome {
         exit_code: Some(0),
-        stdout: "built 3 targets".to_string(),
-        stderr: String::new(),
+        stdout: Text::from_bytes(b"built 3 targets"),
+        stderr: Text::default(),
         duration_ms: 1234,
         reason: None,
     };
@@ -628,8 +713,8 @@ fn both_streams_render_when_both_have_something() {
     // a renderer that shows only one of them loses half the diagnosis.
     let outcome = RunOutcome {
         exit_code: Some(1),
-        stdout: "compiling".to_string(),
-        stderr: "error: expected ';'".to_string(),
+        stdout: Text::from_bytes(b"compiling"),
+        stderr: Text::from_bytes(b"error: expected ';'"),
         duration_ms: 40,
         reason: None,
     };
@@ -645,8 +730,8 @@ fn an_empty_stream_is_not_rendered_as_an_empty_heading() {
     // costs a reader attention.
     let outcome = RunOutcome {
         exit_code: Some(0),
-        stdout: "ok".to_string(),
-        stderr: String::new(),
+        stdout: Text::from_bytes(b"ok"),
+        stderr: Text::default(),
         duration_ms: 1,
         reason: None,
     };
@@ -659,8 +744,8 @@ fn an_empty_stream_is_not_rendered_as_an_empty_heading() {
 fn a_killed_run_renders_its_reason_instead_of_an_exit_code() {
     let outcome = RunOutcome {
         exit_code: None,
-        stdout: String::new(),
-        stderr: String::new(),
+        stdout: Text::default(),
+        stderr: Text::default(),
         duration_ms: 600_000,
         reason: Some(KILLED_BY_DEADLINE.to_string()),
     };
@@ -678,8 +763,8 @@ fn the_rendered_text_carries_no_trailing_blank_line() {
     // looks fine until something parses it.
     let outcome = RunOutcome {
         exit_code: Some(0),
-        stdout: "output without a newline".to_string(),
-        stderr: String::new(),
+        stdout: Text::from_bytes(b"output without a newline"),
+        stderr: Text::default(),
         duration_ms: 5,
         reason: None,
     };

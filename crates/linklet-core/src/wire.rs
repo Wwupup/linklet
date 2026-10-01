@@ -132,6 +132,139 @@ pub fn handshake_public_from_json(value: &Json) -> Result<Vec<u8>, WireError> {
     from_hex(text)
 }
 
+/// What a command wrote to one stream, and whether it was text.
+///
+/// **A `String` cannot carry "these bytes are not text", and that was the defect.**
+/// A command that emitted the four bytes `D6 D0 CE C4` -- GBK for two CJK characters --
+/// reached the caller as four `U+FFFD`, and no field in the reply said the output was
+/// not text. `docs/ROADMAP.md` M10 is the whole of it: the defect is **not which guess
+/// is made but that the guess was silent**, and on the Windows targets this tool is for
+/// that is the difference between reading a program's error and reading mojibake.
+///
+/// So the bytes are decoded here, once, and the fact that something was replaced travels
+/// with the text instead of being dropped at the point of decoding. What it deliberately
+/// does **not** do is guess a code page: decoding with the machine's OEM code page is
+/// what the sibling project does, and it is a real improvement, but it is a decision
+/// about which encoding to assume -- and the second defect is that a decision was made
+/// silently, not that the wrong one was.
+///
+/// The byte count is the count the command wrote, which is **not** the length of the
+/// text: a replaced byte becomes three bytes of UTF-8, and a multi-byte character that
+/// survives keeps its own length in bytes and loses it in characters.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Text {
+    /// The bytes as text, with anything undecodable replaced.
+    value: String,
+    /// How many bytes the command wrote.
+    byte_count: usize,
+    /// Whether any of them had to be replaced.
+    lossy: bool,
+}
+
+impl Text {
+    /// Decodes what a command wrote, recording whether anything was lost.
+    ///
+    /// Lossy rather than strict, and the same way round as `String::from_utf8_lossy`:
+    /// a command that writes one invalid byte must not cost the caller the other ten
+    /// thousand that were fine. What was missing before is the second half -- that the
+    /// replacement is now *recorded* rather than merely visible to someone who knows
+    /// what `U+FFFD` means.
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        match std::str::from_utf8(bytes) {
+            Ok(text) => Self {
+                value: text.to_string(),
+                byte_count: bytes.len(),
+                lossy: false,
+            },
+            Err(_) => Self {
+                value: String::from_utf8_lossy(bytes).into_owned(),
+                byte_count: bytes.len(),
+                lossy: true,
+            },
+        }
+    }
+
+    /// The text, with replacements where the bytes were not text.
+    pub fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    /// Whether any byte had to be replaced to make this text.
+    ///
+    /// The field the defect was about: a caller that reads this can tell an answer from
+    /// a guess, and one that does not still gets the text it would have got before.
+    pub fn is_lossy(&self) -> bool {
+        self.lossy
+    }
+
+    /// How many bytes the command wrote.
+    ///
+    /// The size of the output rather than of the text, which is what a person asking
+    /// "how much did it print" means, and what a refusal about a reply too large to
+    /// frame has to compare against a ceiling.
+    pub fn byte_count(&self) -> usize {
+        self.byte_count
+    }
+
+    /// Why this text is not the whole answer, or `None` when it is.
+    ///
+    /// A sentence rather than a flag because it is read by a person looking at a
+    /// rendered command, and it names what happened instead of leaving them to work out
+    /// what a replacement character means.
+    fn loss_note(&self) -> Option<&'static str> {
+        self.lossy.then_some(
+            "some bytes were not text, and are shown as replacement characters rather than dropped",
+        )
+    }
+}
+
+impl std::fmt::Display for Text {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.value)
+    }
+}
+
+/// Reads a text field and its byte count out of a run outcome.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field when the text is missing or is not a
+/// string. **The count and the loss flag are optional on purpose**: an agent older than
+/// this change sends neither, and a host that demanded them would refuse a reply it can
+/// read perfectly well -- the count falls back to the text's own length, which is exact
+/// when the text is not lossy and is the only thing left to say when it is.
+fn text_from_json(value: &Json, field: &str) -> Result<Text, WireError> {
+    let text = value
+        .get_str(field)
+        .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not a string")))?;
+
+    let byte_count = match value.get(&format!("{field}_bytes")) {
+        Some(Json::Int(bytes)) if *bytes >= 0 => *bytes as usize,
+        Some(_) => {
+            return Err(WireError::BadRequest(format!(
+                "{field}_bytes: not a count of bytes"
+            )));
+        }
+        None => text.len(),
+    };
+
+    let lossy = match value.get(&format!("{field}_not_utf8")) {
+        Some(Json::Bool(lossy)) => *lossy,
+        Some(_) => {
+            return Err(WireError::BadRequest(format!(
+                "{field}_not_utf8: not true or false"
+            )));
+        }
+        None => false,
+    };
+
+    Ok(Text {
+        value: text.to_string(),
+        byte_count,
+        lossy,
+    })
+}
+
 /// Why a message was not the shape this protocol defines.
 ///
 /// One variant, because there is one thing wrong: the bytes arrived and were not a
@@ -220,9 +353,9 @@ pub struct RunOutcome {
     /// The process's exit code, or `None` when it was killed or never ran.
     pub exit_code: Option<i32>,
     /// What it wrote to standard output.
-    pub stdout: String,
+    pub stdout: Text,
     /// What it wrote to standard error.
-    pub stderr: String,
+    pub stderr: Text,
     /// Milliseconds from spawn to exit.
     pub duration_ms: u64,
     /// Why there is no exit code, when there is not one.
@@ -571,6 +704,15 @@ pub fn run_request_from_json(value: &Json) -> Result<RunRequest, WireError> {
 }
 
 /// The outcome as JSON.
+///
+/// Each stream is written as its text, the number of bytes the command wrote, and
+/// whether any of them had to be replaced -- `docs/ROADMAP.md` M10, where the defect is
+/// that a guess about encoding was silent. The two extra fields are always written, so a
+/// host reading a reply does not have to infer them from the text.
+///
+/// **They are optional on the reading side**, because an agent older than this change
+/// sends only the text. A reply that can be read is not refused for a field that was not
+/// invented when it was written.
 pub fn run_outcome_to_json(outcome: &RunOutcome) -> Json {
     let mut entries = BTreeMap::new();
     entries.insert(
@@ -580,8 +722,14 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Json {
             None => Json::Null,
         },
     );
-    entries.insert("stdout".to_string(), Json::str(&outcome.stdout));
-    entries.insert("stderr".to_string(), Json::str(&outcome.stderr));
+    for (field, text) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
+        entries.insert(field.to_string(), Json::str(text.as_str()));
+        entries.insert(
+            format!("{field}_bytes"),
+            Json::Int(text.byte_count() as i64),
+        );
+        entries.insert(format!("{field}_not_utf8"), Json::Bool(text.is_lossy()));
+    }
     entries.insert(
         "duration_ms".to_string(),
         Json::Int(outcome.duration_ms as i64),
@@ -603,6 +751,9 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Json {
 /// [`WireError::BadRequest`] for anything that is not the shape above. A missing
 /// `exit_code` *field* is an error; a present `null` is a `None`, because those
 /// are different messages and only one of them means "killed or never started".
+/// `stdout` and `stderr` carry a byte count and a loss flag that an older agent does
+/// not send. A reply that can be read is not refused for a field that did not exist
+/// when it was written, so those two default to the text's own length and to "clean".
 pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
     let exit_code = match value.get("exit_code") {
         None => {
@@ -615,15 +766,8 @@ pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
         }
     };
 
-    let text = |field: &str| -> Result<String, WireError> {
-        value
-            .get_str(field)
-            .map(str::to_string)
-            .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not a string")))
-    };
-
-    let stdout = text("stdout")?;
-    let stderr = text("stderr")?;
+    let stdout = text_from_json(value, "stdout")?;
+    let stderr = text_from_json(value, "stderr")?;
 
     let duration_ms = match value.get("duration_ms") {
         Some(Json::Int(ms)) if *ms >= 0 => *ms as u64,
@@ -738,8 +882,8 @@ pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Json {
         "the command's output is too large to return: stdout was {} bytes and stderr {} \
          bytes, and a reply of at most {ceiling} bytes is what this agent can send. Write \
          the output to a file on the target and pull that instead",
-        outcome.stdout.len(),
-        outcome.stderr.len(),
+        outcome.stdout.byte_count(),
+        outcome.stderr.byte_count(),
     ))
 }
 
@@ -819,6 +963,13 @@ pub fn render_transfer(outcome: &TransferOutcome, destination: &str) -> String {
 /// decided here -- a reply that says "the command failed" is the caller's
 /// business, and this function has no way to know whether a non-zero exit
 /// matters for the command that was run.
+///
+/// **A stream that was not text says so, under its own heading.** The heading is
+/// indented rather than the marker being appended to the body, because the body is a
+/// program's output and a sentence glued to the end of it would be indistinguishable
+/// from something the program printed. That is the whole point of this line existing:
+/// `U+FFFD` in the middle of a build log is not self-explanatory, and a caller who does
+/// not know what it means reads mojibake as an encoding problem in the program.
 pub fn render_run(outcome: &RunOutcome) -> String {
     let mut out = String::new();
 
@@ -832,21 +983,55 @@ pub fn render_run(outcome: &RunOutcome) -> String {
 
     out.push_str(&format!("took {} ms\n", outcome.duration_ms));
 
-    if !outcome.stdout.is_empty() {
-        out.push_str("stdout:\n");
-        out.push_str(&outcome.stdout);
-        if !outcome.stdout.ends_with('\n') {
-            out.push('\n');
+    for (name, stream) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
+        if stream.as_str().is_empty() {
+            continue;
         }
-    }
-
-    if !outcome.stderr.is_empty() {
-        out.push_str("stderr:\n");
-        out.push_str(&outcome.stderr);
-        if !outcome.stderr.ends_with('\n') {
+        out.push_str(&format!("{name}:\n"));
+        if let Some(note) = stream.loss_note() {
+            out.push_str(&format!("  {note}\n"));
+        }
+        out.push_str(stream.as_str());
+        if !stream.as_str().ends_with('\n') {
             out.push('\n');
         }
     }
 
     out.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::{self, Kind};
+
+    /// The whole point of [`reply_ceiling`] is that a reply of exactly that size is
+    /// still a frame the sender will produce. The unit tests in `tests/wire_protocol.rs`
+    /// check the predicate's boundary and the arithmetic; this is the one claim neither
+    /// of them can make, because it is about the frame format rather than about a
+    /// reply.
+    ///
+    /// It lives here, in a module that allocates nothing, rather than in that file:
+    /// building a reply of sixteen mebibytes to ask the question took seven seconds
+    /// there, and the answer is a fact about two constants.
+    #[test]
+    fn a_reply_of_exactly_the_ceiling_is_sealed_into_a_frame_that_fits() {
+        let sealed = reply_ceiling() + 16;
+        assert!(
+            frame::header(Kind::Sealed, sealed).is_ok(),
+            "a reply the predicate accepts has to be a frame the sender can build"
+        );
+        assert!(
+            frame::header(Kind::Sealed, sealed + 1).is_err(),
+            "and one byte past it has to be refused, or the ceiling is not one"
+        );
+    }
+
+    /// The paragraph above the constant says it is the frame limit less the tag. This
+    /// is the other half: the number is not a byte low, which would refuse a reply that
+    /// would have gone. A nuisance rather than a defect, and still wrong.
+    #[test]
+    fn the_ceiling_is_the_frame_limit_and_nothing_more_was_subtracted() {
+        assert_eq!(frame::MAX_PAYLOAD - reply_ceiling(), 16);
+    }
 }

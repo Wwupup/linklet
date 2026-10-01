@@ -9,7 +9,7 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use linklet_core::wire::{KILLED_BY_DEADLINE, RunOutcome, RunRequest};
+use linklet_core::wire::{KILLED_BY_DEADLINE, RunOutcome, RunRequest, Text};
 
 /// Runs a shell command and reports what happened.
 ///
@@ -51,8 +51,8 @@ pub fn run(request: &RunRequest) -> RunOutcome {
         Err(error) => {
             return RunOutcome {
                 exit_code: None,
-                stdout: String::new(),
-                stderr: String::new(),
+                stdout: Text::default(),
+                stderr: Text::default(),
                 duration_ms: elapsed_ms(started),
                 reason: Some(format!("cannot spawn: {error}")),
             };
@@ -110,8 +110,8 @@ pub fn run(request: &RunRequest) -> RunOutcome {
             Err(error) => {
                 return RunOutcome {
                     exit_code: None,
-                    stdout: String::new(),
-                    stderr: String::new(),
+                    stdout: Text::default(),
+                    stderr: Text::default(),
                     duration_ms: elapsed_ms(started),
                     reason: Some(format!("cannot wait: {error}")),
                 };
@@ -174,15 +174,17 @@ fn kill_tree(pid: u32) {
         .status();
 }
 
-/// Reads a pipe to the end as bytes, then as much text as decodes.
+/// Reads a pipe to the end and decodes it, **recording whether anything was lost**.
 ///
 /// Lossy rather than strict: a command that writes one invalid byte should not
-/// cost the caller the other ten thousand that were fine, and "some bytes were
-/// replaced" is visible in the output rather than silent.
-fn read_all(mut pipe: impl Read) -> String {
+/// cost the caller the other ten thousand that were fine. What changed is that the
+/// replacement is now reported rather than silent -- `Text` carries the byte count the
+/// command wrote and whether any byte had to be replaced, so a caller reading mojibake
+/// is told it is mojibake. `docs/ROADMAP.md` M10 is the defect this closes.
+fn read_all(mut pipe: impl Read) -> Text {
     let mut bytes = Vec::new();
     let _ = pipe.read_to_end(&mut bytes);
-    String::from_utf8_lossy(&bytes).into_owned()
+    Text::from_bytes(&bytes)
 }
 
 fn elapsed_ms(started: Instant) -> u64 {

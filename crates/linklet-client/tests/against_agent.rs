@@ -185,7 +185,7 @@ fn a_command_runs_and_its_output_comes_back() {
 
     assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
     assert!(
-        outcome.stdout.contains("end-to-end"),
+        outcome.stdout.as_str().contains("end-to-end"),
         "the output should have crossed two processes: {outcome:#?}"
     );
     assert!(

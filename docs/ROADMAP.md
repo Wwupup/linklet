@@ -302,15 +302,38 @@ section; what is left is below.
       The claim itself is corrected in this commit: `execute.rs` said "No output limit. A
       command that writes a gigabyte writes a gigabyte", and that was not true. The limit
       is still there; only the sentence about it changed.
-- [ ] **A command's output is decoded as UTF-8, and anything else is silently discarded.**
-      A command that emitted the four bytes `D6 D0 CE C4` -- GBK for two CJK characters --
-      reached the caller as four `U+FFFD` (`ef bf bd` four times, checked in the bytes), and
-      no field in the reply says the output was not text. lanlink decodes with the machine's
-      OEM code page, and its `grep` reports which encoding won; on the Windows targets this
-      tool is for, that is the difference between reading a program's error and reading
-      mojibake. **The defect is not which guess is made but that the guess is silent**: a
-      `String` in the wire type cannot carry "these bytes are not text", so this is a wire
-      decision and not a formatting one, and the fix has to make the caller able to tell.
+- [x] **A command's output that is not UTF-8 says so, instead of being silently
+      discarded.** A command that emitted the four bytes `D6 D0 CE C4` -- GBK for two CJK
+      characters -- reached the caller as four `U+FFFD` (`ef bf bd` four times, checked in
+      the bytes), and no field in the reply said the output was not text. lanlink decodes
+      with the machine's OEM code page, and its `grep` reports which encoding won; on the
+      Windows targets this tool is for, that is the difference between reading a program's
+      error and reading mojibake. **The defect is not which guess is made but that the guess
+      is silent**: a `String` in the wire type cannot carry "these bytes are not text", so
+      this was a wire decision and not a formatting one, and the fix had to make the caller
+      able to tell.
+
+      **Done, and it is the wire half that changed.** `wire::Text` holds the text, the number
+      of bytes the command wrote, and whether any byte had to be replaced; the run outcome's
+      `stdout` and `stderr` are `Text` rather than `String`, and the reply carries
+      `stdout_bytes`, `stderr_bytes`, `stdout_not_utf8` and `stderr_not_utf8`. A rendered run
+      says the loss under the stream's heading rather than after the body, because the body is
+      a program's output and a sentence glued to the end of it would look like something the
+      program printed.
+
+      **What it does not do is guess a code page**, and that is deliberate. Decoding with the
+      OEM code page is what the sibling project does and it is a real improvement -- it turns
+      mojibake back into the characters the program meant -- but it is also a second guess,
+      and this defect is that a guess was silent rather than that the wrong one was made. The
+      two are separable, and the one that does not risk making the output *differently* wrong
+      went first. Guessing the code page is open, and it is now a change to how `Text` is
+      built rather than to what crosses the wire.
+
+      **An agent older than this change still answers**, which is the other half of a wire
+      change: the four fields are written always and read optionally, defaulting to the text's
+      own length and to "clean". A host that demanded them would refuse a reply it can read
+      perfectly well, and `tests/wire_protocol.rs` pins that case with a reply written the old
+      way by hand.
 
 ### The capabilities, which is what "operate a machine" means
 

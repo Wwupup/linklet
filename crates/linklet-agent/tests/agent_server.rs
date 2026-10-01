@@ -429,7 +429,7 @@ fn a_command_that_succeeds_returns_its_output_and_an_exit_code_of_zero() {
 
     assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
     assert!(
-        outcome.stdout.contains("hello"),
+        outcome.stdout.as_str().contains("hello"),
         "stdout should carry the echo: {outcome:#?}"
     );
     assert!(
@@ -460,7 +460,7 @@ fn standard_error_survives_the_trip() {
     let outcome = run(&agent, "echo problem 1>&2");
 
     assert!(
-        outcome.stderr.contains("problem"),
+        outcome.stderr.as_str().contains("problem"),
         "stderr should carry it: {outcome:#?}"
     );
 }
@@ -477,7 +477,8 @@ fn a_command_that_never_started_has_no_exit_code_and_says_so() {
     assert!(outcome.exit_code.is_some(), "the shell ran: {outcome:#?}");
     assert_ne!(outcome.exit_code, Some(0));
     assert!(
-        outcome.stderr.contains("not recognized") || outcome.stdout.contains("not recognized"),
+        outcome.stderr.as_str().contains("not recognized")
+            || outcome.stdout.as_str().contains("not recognized"),
         "the shell's complaint should reach the caller: {outcome:#?}"
     );
 }
@@ -512,7 +513,7 @@ fn several_commands_in_a_row_all_answer() {
         let outcome = run(&agent, &format!("echo round-{i}"));
         assert_eq!(outcome.exit_code, Some(0));
         assert!(
-            outcome.stdout.contains(&format!("round-{i}")),
+            outcome.stdout.as_str().contains(&format!("round-{i}")),
             "round {i} came back wrong: {outcome:#?}"
         );
     }
