@@ -23,10 +23,15 @@ use linklet_core::wire::{KILLED_BY_DEADLINE, RunOutcome, RunRequest};
 ///   argument. Whoever wrote it is responsible for it, in the same way they would
 ///   be at a prompt -- a tool that "helpfully" re-quoted would be a second
 ///   interpretation of a string the caller already decided on.
-/// - **No output limit.** A command that writes a gigabyte writes a gigabyte.
-///   Bounded output is a real need and belongs in the wire protocol as a field,
-///   not as a silent truncation here: a caller that cannot tell that its output
-///   was cut has been lied to about what the command said.
+/// - **No output limit of its own, and a limit it does meet.** A command that writes a
+///   gigabyte writes a gigabyte, and this function will hold all of it: bounded output is a
+///   real need and belongs in the wire protocol as a field, not as a silent truncation
+///   here. But the *reply* is one frame, so `MAX_PAYLOAD` (16 MiB) is the real ceiling --
+///   and today a command past it is **reported as a dropped connection**, because the
+///   sealed reply cannot be framed, the agent sends nothing, and closes. That is a defect
+///   and not a design: `docs/ROADMAP.md` M10 carries it, with the measurement (20,000,000
+///   bytes of output, the command exiting 0 on the target, the caller told "could not reach
+///   the agent").
 pub fn run(request: &RunRequest) -> RunOutcome {
     let started = Instant::now();
     let deadline = Duration::from_secs(request.timeout_seconds);

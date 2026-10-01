@@ -59,7 +59,7 @@ Three things about that block, all of them learned by doing it on a real machine
   is what the first version of this documented, and both are fine.
 - **8787 is a common choice and can already be taken.** On the first target this ran
   against, a `lanlink` agent held 8787 and its own program rule, so `linklet-agent` could
-  not bind it and exited — while `linklet check` still reported the port live, because
+  not bind it and exited -- while `linklet check` still reported the port live, because
   something was listening. If the first claim passes and the second fails, look at which
   process owns the port before looking at the network.
 
@@ -136,3 +136,15 @@ faked: traffic from a machine to its own address never reaches the network adapt
 so Windows Firewall is not consulted. Claim 1 passes either way. The comment at the
 top of the script says so, so that a green run against one machine is not read as
 more than it is.
+
+**"No answer" has a second cause, and it is not the network.** A program-scoped allow
+rule stops matching when the process is gone, so an agent that has **died** leaves a port
+that is silently dropped rather than refused -- the same symptom as a firewall that was
+never opened. That is how it presented on the first real target: the agent had died with
+its console, `netstat` showed nothing listening, and `linklet check` said "no answer within
+5 s" for a machine that was up and reachable. Look at the process before the firewall:
+`tasklist | findstr linklet-agent` first, `netsh advfirewall` second. The agent keeps no
+per-request record (M10 in `docs/ROADMAP.md`), so a death leaves nothing to read -- and
+note that **an empty log file is not evidence that it logged nothing**: a
+`cmd /c ... > file` launched through the spawn call captures nothing from the child at all,
+which was measured, so start the agent in a way whose output you can actually read.

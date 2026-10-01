@@ -248,6 +248,123 @@ transfer moves one file -- a directory is the caller's loop. And nothing in the
 smoke layer covers a transfer: `docs/smoke.md` says which claims it does and does
 not make.
 
+## M10 -- the first real target, and everything it found
+
+**The number is out of order on purpose, and this is the next work.** M8 and M9 are already
+named in other documents, so they are not renumbered; this section arrived from a machine
+rather than from the plan, on the day M7 was called done. Read it before starting either of
+those, because the first two items are defects in what M7 already ships -- everything built
+on top of them is built on an answer that is wrong in a specific way.
+
+The round that produced it: `linklet-agent` on a Windows 11 eval guest (192.168.100.2), the
+seven claims of `tools/smoke.ps1`, then transfers in both directions, a killed transfer, and
+every refusal case. Six bugs came out of that and five are fixed in the commits around this
+section; what is left is below.
+
+### Two defects, before any new capability
+
+- [ ] **A reply too large to frame is reported as a network failure.** A command whose
+      output was 20,000,000 bytes ran to completion on the target -- `exit 0`, 20,000,000
+      bytes measured there -- and the caller was told *"could not reach the agent: the agent
+      closed the connection without answering"*. The real ceiling is the frame's
+      `MAX_PAYLOAD` of 16 MiB: the sealed reply cannot be framed, so the agent sends nothing
+      and closes, and a transport error is the only thing the caller can conclude. Three
+      shapes, in increasing order of honesty:
+
+      1. **refuse it by name** -- the agent answers "the output was too large to return",
+         which the caller can tell apart from a dropped connection. Smallest change;
+      2. **raise the ceiling** -- buys a larger number and the same silence above it;
+      3. **stream the reply** -- the only shape that makes "no output limit" true, and it is
+         the problem the transfer already solved by chunking. It is also the one that stops
+         a single command deciding how much memory the agent spends, which `read_to_end`
+         currently lets it.
+
+      The claim itself is corrected in this commit: `execute.rs` said "No output limit. A
+      command that writes a gigabyte writes a gigabyte", and that was not true. The limit
+      is still there; only the sentence about it changed.
+- [ ] **A command's output is decoded as UTF-8, and anything else is silently discarded.**
+      A command that emitted the four bytes `D6 D0 CE C4` -- GBK for two CJK characters --
+      reached the caller as four `U+FFFD` (`ef bf bd` four times, checked in the bytes), and
+      no field in the reply says the output was not text. lanlink decodes with the machine's
+      OEM code page, and its `grep` reports which encoding won; on the Windows targets this
+      tool is for, that is the difference between reading a program's error and reading
+      mojibake. **The defect is not which guess is made but that the guess is silent**: a
+      `String` in the wire type cannot carry "these bytes are not text", so this is a wire
+      decision and not a formatting one, and the fix has to make the caller able to tell.
+
+### The capabilities, which is what "operate a machine" means
+
+lanlink is the reference for all of these: `E:\projects\lanlink` on this machine, its
+`README.md` is the surface and `docs\pitfalls.md` is what it cost to get there. It is a
+debugging tool for the same machines, written by the same hand, and it is ahead of linklet
+on everything in this list -- which is why reading it beats designing from scratch.
+
+- [ ] **Residency, and an agent that keeps a log.** The agent died with its console during
+      this round: `tasklist` found nothing, and the caller saw a connect **timeout** rather
+      than a refusal. Nothing brought it back, and nothing recorded what it had been asked --
+      the agent prints a banner and answers errors to the client, and keeps no per-request
+      record anywhere. lanlink answers this with `supervise.ps1` (restarts on death *and* on
+      stuck, with backoff, and a probe whose three exit codes are documented) and with
+      `agent.log` recording each request as `->` and `<-` with a duration -- so a `->` with no
+      `<-` names the request that wedged it. The parked list refuses "a daemon or service
+      **on the host**", which is still right; the *target* side has no such decision written
+      down, and this is the first target saying it needs one. Smallest honest shape: one log
+      line per request with its outcome and duration, written by the agent to a file of its
+      own, plus a documented way to start it that survives its console.
+
+      **A shell redirect is not a logging strategy**, and that was measured after the fact
+      rather than assumed: `hostname > file` launched through the spawn call leaves the file
+      **empty**, while the same command through an ordinary exec captures the hostname. The
+      near-empty `agent.log` this round was that, not the agent -- so a reader must not read
+      an empty log as "it logged nothing". (The one `^C` in it was the shell's own echo.) This
+      is the second time on one target that an unexplained observation looked like a fact
+      about the agent; both are now written down where the next reader will meet them.
+- [ ] **`spawn`, `ps`, `kill`.** Today `exec` blocks until the command exits or the deadline
+      kills the whole tree, and a child inherits the agent's pipes -- so starting a
+      long-running program with it is the exact trap lanlink documents ("never use
+      `lan_exec` with `start app.exe`"). There is also no way to ask what is running or to
+      stop it, which means the deploy loop (kill the old build, push, start, confirm it
+      stayed up) cannot be closed without a person. `ps` needs the fields that make an empty
+      result readable: count, total, truncated, and the filters that were actually applied.
+- [ ] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
+      log" is currently "pull it and grep locally", which is defensible -- the pull is
+      digest-verified and root-bounded -- but it is wrong for a two-gigabyte log and it
+      cannot answer "where is the last ERROR" without moving the whole file. lanlink's
+      `grep` is the reference: the pattern goes in as an argument rather than through a
+      shell, `first` and `last` modes, context, and four reporting fields (files searched,
+      an exact match count or an explicit "stopped early", truncated, partial). Two of its
+      lessons are worth copying verbatim: **a failed search must not read as "no matches"**,
+      and the encoding is sniffed with an OEM code page fallback that *says which one won*.
+- [ ] **Discovery and fan-out.** Every call names one `host:port`; `check` is the only thing
+      that takes many targets. lanlink scans the networks it is on, remembers what answered
+      for the session, and takes a stable list from the environment -- and then runs the same
+      operation across several machines at once. The concurrency belongs where `check`'s
+      already is, in the adapter; **what and how many results come back from a many-target
+      `exec` or `push` is a decision, not a loop**, and it is the part worth designing.
+- [ ] **Jobs -- still parked, and now with a price on it.** A long run cannot be started and
+      watched: `exec` is one request with a deadline of at most ten minutes. lanlink has the
+      feature and its shape is the evidence that this is a design rather than a patch: six
+      states including orphaned, output files, TTLs, cancellation, and adoption after a
+      restart. The honest smaller step is `spawn` plus a log file, which covers most of "run
+      it and watch it" without a lifecycle. Its parked entry below had a cross-reference to
+      M4 that was wrong -- M4 is concurrency across targets -- and that is corrected here.
+
+**What not to copy.** lanlink's surface is seventeen tools; five of them are the job family,
+which is one intent, and `docs/tool-readability.md` is the measurement of what that costs.
+Its passphrase-derived token is also not needed here: linklet's token is never transmitted,
+so it has no carrier to protect, and a derivation would be a security decision with a
+minimum length and no rate limiting behind it.
+
+**What M8 gains from this round.** M8's own list -- "how many things were examined, and
+whether it stopped early", "which filters actually applied, echoed back", "a failure to
+enumerate, never reported as an empty result" -- is exactly what lanlink does everywhere,
+and the round produced the example that shows why it matters: a process query returned
+`count: 0` and the reply also carried the filters it had applied and a note that a
+non-elevated agent cannot read other users' command lines. Without those two fields an
+empty result is indistinguishable from "nothing there", and the wrong conclusion was one
+step away. linklet has one instance of this pattern today (exit 1 against exit 3) and M8 is
+where the rest of them go.
+
 ## M8 -- did the tool actually do what you asked
 
 **No longer waiting on anything.** M7 landed, so this is the next one and it is not
@@ -273,9 +390,15 @@ a network you control, and both are needed before it is used on one you do not.
 Written down so they can be refused on purpose rather than discovered by
 accident. None of these is planned:
 
-- a job/session model with a lifecycle (the honest version of this is M4)
+- a job/session model with a lifecycle. **The cross-reference here used to say "the honest
+  version of this is M4", which was wrong** -- M4 is concurrency across targets, and nothing
+  in this plan covers a job's lifetime. It is now in M10 with the price written down: the
+  sibling project needed six states, output files, TTLs, cancellation and orphan adoption
+  for it, and `spawn` plus a log file is the honest smaller step.
 - a configuration file (flags until there is a proven need for persistence)
-- a daemon or service on the host
+- a daemon or service **on the host** -- still refused; the host is a client. The *target*
+  side is a different question and is now M10: the agent died with its console on the first
+  real target and was not brought back.
 ~~- encryption, authentication, or any security boundary beyond "the caller can
   already reach the machine"~~ -- **struck at M6.** It was the wrong call, and it
   is left visible because the plan was believed for several milestones while it was

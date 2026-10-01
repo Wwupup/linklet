@@ -103,3 +103,27 @@ conclusion before it was found.
 - **The real-machine smoke test needs no administrator rights.**
   `pwsh tools/smoke.ps1 -Target <host:port>` against a machine running
   `linklet-agent` with the port allowed. `docs/smoke.md` is the whole of it.
+- **The harness sandbox can fail before any command runs, and it looks like a broken
+  toolchain.** Under `workspace-write`, every shell call failed with
+  `SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\projects\linklet)` -- that mode
+  needs `WRITE_OWNER` on the workspace root, which this account does not have. Nothing was
+  wrong with the repository, with cargo, or with the network. What fixes it is the
+  session's file policy (`danger-full-access`), so if it comes back, do not go looking for a
+  fault in the tree.
+- **The LAN target used for the M7 round is 192.168.100.2** (`WinDev2407Eval`, Windows 11
+  22621 eval, 3.6 GB), reached through the `lanlink` MCP server. Three things about it cost
+  time and will again: **lanlink's own agent already holds 8787**, so `linklet-agent` needs
+  another port (8790 was used, with `--root C:\linklet\transfers`); the account is an
+  administrator running **unelevated**, so the firewall rule has to be **program-scoped**
+  (`-Program <the agent's path>`, which also survives a change of port) because a port rule
+  cannot be added and a UAC prompt needs a desktop this link does not have; and a target
+  with nothing listening presents as **"no answer"** rather than "refused", which reads
+  exactly like a firewall that was never opened. The token is the operator's and is
+  deliberately not written down here. `docs/smoke.md` has the rest.
+- **`lan_spawn` with a `cmd /c ... > file` redirect captures nothing from the child.** The
+  file is created and stays empty; the same command run through `lan_exec` writes its output
+  normally. Measured with `hostname`: empty through the spawn call, the hostname through the
+  exec call. What does land in the file is the *shell's* own output, so a lone `^C` in a
+  redirected log is cmd's echo of a console close and not the program saying anything. Two
+  conclusions were drawn wrongly from that empty file before it was checked -- so if a
+  detached program's output matters, have the program write its own file.
