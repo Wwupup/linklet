@@ -320,6 +320,19 @@ fn answer(
                 Err(reason) => wire::reply_refused(&reason),
             })
         }
+        // The two requests that read a file **without moving it**, which is what
+        // `docs/ROADMAP.md` M10 asks for: a pull is right for a log you want and wrong for a
+        // two-gigabyte one whose last ERROR is the question. Both answer with a search --
+        // the counts, the truncation and the encoding as well as the lines -- and neither
+        // ever fails: a file that could not be read is a search whose `searched` is false,
+        // because an empty result and a failure to look are the two things this must never
+        // let a caller confuse.
+        Ok(Request::Grep(grep)) => Response::Sealed(wire::encode_search_reply(
+            &linklet_adapters::grep(root, &grep.path, &grep.pattern, grep.limit, grep.direction),
+        )),
+        Ok(Request::Tail(tail)) => Response::Sealed(wire::encode_search_reply(
+            &linklet_adapters::tail(root, &tail.path, tail.count),
+        )),
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.

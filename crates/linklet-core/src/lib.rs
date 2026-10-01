@@ -32,6 +32,7 @@ pub mod log;
 mod outcome;
 mod probe;
 pub mod process;
+pub mod search;
 mod target;
 pub mod testbed;
 mod tool;

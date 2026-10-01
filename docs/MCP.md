@@ -13,7 +13,7 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Eight tools.**
+**Ten tools.**
 
 | tool | question it answers |
 |---|---|
@@ -23,6 +23,8 @@ client starts the process and talks to it.
 | `ps` | what is running on a remote agent's machine |
 | `kill` | stop something running on a remote agent's machine |
 | `spawn` | start a program on a remote agent's machine, without waiting for it |
+| `grep` | find lines matching text in a file on a remote agent's machine |
+| `tail` | read the last lines of a file on a remote agent's machine |
 | `push` | copy one local file to a remote agent |
 | `pull` | copy one file back from a remote agent |
 
@@ -57,6 +59,26 @@ program that does not exit holds them forever. `spawn` starts the program with i
 own output file and answers with a pid. What it deliberately does **not** answer is
 whether the program is healthy -- that is `ps`'s question, asked a moment later,
 which is the order the deploy loop actually runs in.
+
+The ninth and tenth are `grep` and `tail`, and they are two tools because they are
+two questions: *where is the last ERROR* and *what does the end of this log say*.
+Folding them would mean a `pattern` argument that is sometimes ignored. What they
+share is the reason they exist -- **a pull is digest-verified and root-bounded, and
+it is the wrong tool for a two-gigabyte log**, because the answer is inside the file
+and the cost is moving it. Neither is `exec` with a `findstr`: that returns text with
+no count, no truncation and no encoding, and an empty result from it cannot be told
+from a file that could not be read.
+
+**Their answers are searches rather than lists of lines**, and that is the design.
+Every reply carries whether the search happened, whether it stopped early, whether
+the file was cut short at the byte ceiling, and which encoding the bytes were read
+as. A tool that returned only the matching lines would make "this log has no errors"
+and "that file could not be opened" the same answer.
+
+**Their pattern is a substring, and the reference implementation's is a ripgrep
+pattern.** `ERROR|FATAL` finds nothing here and finds both there, which is a
+difference in capability rather than a smaller step, and `docs/ROADMAP.md` M10
+records it as the open question it is.
 
 That is also the argument for why these are separate rather than one tool with
 several argument sets. `check` needs nothing but an address; `testbed` needs a

@@ -59,12 +59,18 @@ const OP_KILL: &str = "kill";
 /// The request that starts something that outlives the request.
 const OP_SPAWN: &str = "spawn";
 
+/// The request that searches a file on the agent's machine.
+const OP_GREP: &str = "grep";
+
+/// The request that reads the end of a file on the agent's machine.
+const OP_TAIL: &str = "tail";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill, spawn";
+const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill, spawn, grep, tail";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -356,7 +362,44 @@ pub enum Request {
     /// is the shape the deploy loop needs -- start the new build, then ask `ps` whether it
     /// is still there. See `docs/ROADMAP.md` M10.
     Spawn(SpawnRequest),
+    /// Search a file on the agent's machine.
+    ///
+    /// **The answer to "look at the log" without moving it**, which is what
+    /// `docs/ROADMAP.md` M10 asks for: a pull is digest-verified and root-bounded, and it is
+    /// the wrong tool for a two-gigabyte log whose last ERROR is the question.
+    Grep(GrepRequest),
+    /// Read the end of a file on the agent's machine.
+    Tail(TailRequest),
 }
+
+/// A request to search a file under the agent's transfer root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrepRequest {
+    /// The file, resolved against the agent's root exactly as a pull's path is.
+    pub path: String,
+    /// What to look for.
+    pub pattern: crate::search::Pattern,
+    /// Which end of the file to work from.
+    pub direction: crate::search::Direction,
+    /// How many matches, and how much context.
+    pub limit: crate::search::Limit,
+}
+
+/// A request to read the end of a file under the agent's transfer root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TailRequest {
+    /// The file, resolved against the agent's root.
+    pub path: String,
+    /// How many lines from the end.
+    pub count: usize,
+}
+
+/// The most lines a `tail` will return.
+///
+/// A ceiling for the same reason every other one here exists: the reply is one frame, and a
+/// caller asking for a hundred thousand lines of a log would rather be told the limit than
+/// have the agent build a reply it cannot send.
+pub const MAX_TAIL_LINES: usize = 2000;
 
 /// A request to start a program that keeps running.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,6 +565,23 @@ pub fn request_to_json(request: &Request) -> Json {
             "command" => spawn.command,
             "output" => spawn.output,
         },
+        Request::Grep(grep) => object! {
+            "op" => OP_GREP,
+            "path" => grep.path,
+            "pattern" => grep.pattern.text,
+            "case_sensitive" => grep.pattern.case_sensitive,
+            "mode" => match grep.direction {
+                crate::search::Direction::First => "first",
+                crate::search::Direction::Last => "last",
+            },
+            "max_matches" => grep.limit.max_matches as i64,
+            "context" => grep.limit.context as i64,
+        },
+        Request::Tail(tail) => object! {
+            "op" => OP_TAIL,
+            "path" => tail.path,
+            "count" => tail.count as i64,
+        },
     }
 }
 
@@ -555,6 +615,8 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
         OP_PS => Ok(Request::Ps(filter_from_json(value)?)),
         OP_KILL => Ok(Request::Kill(kill_request_from_json(value)?)),
         OP_SPAWN => Ok(Request::Spawn(spawn_request_from_json(value)?)),
+        OP_GREP => Ok(Request::Grep(grep_request_from_json(value)?)),
+        OP_TAIL => Ok(Request::Tail(tail_request_from_json(value)?)),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),
@@ -1349,6 +1411,275 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
 /// A spawn report, wrapped as a reply.
 pub fn encode_spawn_reply(report: &SpawnReport) -> Json {
     reply_result(spawn_report_to_json(report))
+}
+
+/// A grep request from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field. **The pattern may be empty** -- that means
+/// every line, which is how `tail` is spelled and is a legitimate thing to ask for -- and
+/// the path may not, because a search with no file is not a request to do nothing.
+pub fn grep_request_from_json(value: &Json) -> Result<GrepRequest, WireError> {
+    let path = required_text(value, "path")?;
+    let pattern = value.get_str("pattern").unwrap_or_default().to_string();
+
+    // Absent means case-sensitive, which is what a person searching a log for `ERROR`
+    // expects; a caller that wants the other reading says so.
+    let case_sensitive = value
+        .get("case_sensitive")
+        .and_then(Json::as_bool)
+        .unwrap_or(true);
+
+    let direction = match value.get_str("mode") {
+        Some("last") => crate::search::Direction::Last,
+        Some("first") | None => crate::search::Direction::First,
+        Some(other) => {
+            return Err(WireError::BadRequest(format!(
+                "mode: {other:?} is not one of \"first\" or \"last\""
+            )));
+        }
+    };
+
+    let number = |field: &str, default: usize, most: usize| -> Result<usize, WireError> {
+        match value.get(field) {
+            Some(Json::Int(number)) if *number >= 0 && (*number as usize) <= most => {
+                Ok(*number as usize)
+            }
+            Some(Json::Int(number)) => Err(WireError::BadRequest(format!(
+                "{field}: {number} is outside 0..={most}"
+            ))),
+            Some(_) => Err(WireError::BadRequest(format!("{field}: not a number"))),
+            None => Ok(default),
+        }
+    };
+
+    Ok(GrepRequest {
+        path,
+        pattern: crate::search::Pattern {
+            text: pattern,
+            case_sensitive,
+        },
+        direction,
+        limit: crate::search::Limit {
+            max_matches: number("max_matches", 12, MAX_SEARCH_MATCHES)?,
+            context: number("context", 0, MAX_SEARCH_CONTEXT)?,
+        },
+    })
+}
+
+/// The most matches one grep will report.
+pub const MAX_SEARCH_MATCHES: usize = 200;
+
+/// The most context lines one grep will report on each side of a match.
+pub const MAX_SEARCH_CONTEXT: usize = 20;
+
+/// A tail request from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field, and for a count past [`MAX_TAIL_LINES`] --
+/// refused rather than clamped, the same way an out-of-range timeout is: a caller that asked
+/// for ten thousand lines and got two thousand would not know it had.
+pub fn tail_request_from_json(value: &Json) -> Result<TailRequest, WireError> {
+    let path = required_text(value, "path")?;
+
+    let count = match value.get("count") {
+        Some(Json::Int(count)) if *count > 0 && (*count as usize) <= MAX_TAIL_LINES => {
+            *count as usize
+        }
+        Some(Json::Int(count)) => {
+            return Err(WireError::BadRequest(format!(
+                "count: {count} is outside 1..={MAX_TAIL_LINES}"
+            )));
+        }
+        Some(_) => return Err(WireError::BadRequest("count: not a number".to_string())),
+        None => return Err(WireError::BadRequest("count: missing".to_string())),
+    };
+
+    Ok(TailRequest { path, count })
+}
+
+/// A required string field, refused by name when it is missing or empty.
+fn required_text(value: &Json, field: &'static str) -> Result<String, WireError> {
+    let text = value
+        .get_str(field)
+        .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not a string")))?
+        .to_string();
+    if text.trim().is_empty() {
+        return Err(WireError::BadRequest(format!("{field}: empty")));
+    }
+    Ok(text)
+}
+
+/// A search result as JSON.
+///
+/// **`searched` and `problem` are always written**, because they are the fields that keep a
+/// failed search from reading as "no matches" -- `docs/ROADMAP.md` M10's first lesson, and
+/// the reason this is not just a list of lines. `total` is written as `null` when the scan
+/// stopped early, which is the difference between "there are none" and "there may be more".
+pub fn search_to_json(search: &crate::search::Search) -> Json {
+    let lines: Vec<Json> = search
+        .lines
+        .iter()
+        .map(|found| {
+            let context =
+                |lines: &[String]| -> Json { Json::Array(lines.iter().map(Json::str).collect()) };
+            object! {
+                "number" => found.number as i64,
+                "text" => found.text,
+                "before" => context(&found.before),
+                "after" => context(&found.after),
+            }
+        })
+        .collect();
+
+    object! {
+        "path" => search.path,
+        "lines" => Json::Array(lines),
+        "total" => match search.total {
+            Some(total) => Json::Int(total as i64),
+            None => Json::Null,
+        },
+        "searched" => search.searched,
+        "problem" => match &search.problem {
+            Some(problem) => Json::str(problem),
+            None => Json::Null,
+        },
+        "truncated" => search.truncated,
+        "bytes_read" => search.bytes_read as i64,
+        "file_bytes" => match search.file_bytes {
+            Some(bytes) => Json::Int(bytes as i64),
+            None => Json::Null,
+        },
+        "encoding" => search.encoding.tag(),
+        // What the count counts, so that a `tail` does not report itself as a search:
+        // `more than 2 matches` for a request that asked for the last two lines is the kind
+        // of small untruth a reader stops trusting the rest of the line over.
+        "noun" => match search.noun {
+            crate::search::Noun::Matches => "matches",
+            crate::search::Noun::Lines => "lines",
+        },
+    }
+}
+
+/// A search result out of a reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal, or when the result is not a search.
+/// **`searched` is required and not defaulted**: an agent that did not say whether it looked
+/// has not answered the question, and defaulting it to `true` would invent a clean log.
+pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest("the search was refused".to_string()));
+    };
+
+    let searched = value
+        .get("searched")
+        .and_then(Json::as_bool)
+        .ok_or_else(|| {
+            WireError::BadRequest("searched: missing, or not true or false".to_string())
+        })?;
+
+    let problem = match value.get("problem") {
+        Some(Json::Null) | None => None,
+        Some(Json::Str(problem)) => Some(problem.clone()),
+        Some(_) => return Err(WireError::BadRequest("problem: not a string".to_string())),
+    };
+
+    let total = match value.get("total") {
+        Some(Json::Null) | None => None,
+        Some(Json::Int(total)) if *total >= 0 => Some(*total as usize),
+        Some(_) => return Err(WireError::BadRequest("total: not a count".to_string())),
+    };
+
+    let entries = value
+        .get("lines")
+        .and_then(Json::as_array)
+        .ok_or_else(|| WireError::BadRequest("lines: missing or not an array".to_string()))?;
+
+    let context = |entry: &Json, field: &str| -> Vec<String> {
+        entry
+            .get(field)
+            .and_then(Json::as_array)
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    let mut lines = Vec::new();
+    for entry in entries {
+        let number = match entry.get("number") {
+            Some(Json::Int(number)) if *number >= 0 => *number as usize,
+            _ => {
+                return Err(WireError::BadRequest(
+                    "a match needs a line number".to_string(),
+                ));
+            }
+        };
+        let text = entry
+            .get_str("text")
+            .ok_or_else(|| WireError::BadRequest("a match needs its text".to_string()))?
+            .to_string();
+        lines.push(crate::search::Match {
+            number,
+            text,
+            before: context(entry, "before"),
+            after: context(entry, "after"),
+        });
+    }
+
+    let encoding = match value.get_str("encoding") {
+        Some(tag) => crate::search::Encoding::named(tag).ok_or_else(|| {
+            WireError::BadRequest(format!("encoding: {tag:?} is not one this version knows"))
+        })?,
+        None => {
+            return Err(WireError::BadRequest(
+                "encoding: missing, and a reader has to know what the text was taken to be"
+                    .to_string(),
+            ));
+        }
+    };
+
+    let number = |field: &str| -> u64 {
+        match value.get(field) {
+            Some(Json::Int(number)) if *number >= 0 => *number as u64,
+            _ => 0,
+        }
+    };
+
+    Ok(crate::search::Search {
+        path: value.get_str("path").unwrap_or_default().to_string(),
+        lines,
+        total,
+        searched,
+        problem,
+        truncated: value.get("truncated").and_then(Json::as_bool) == Some(true),
+        bytes_read: number("bytes_read"),
+        file_bytes: match value.get("file_bytes") {
+            Some(Json::Int(bytes)) if *bytes >= 0 => Some(*bytes as u64),
+            _ => None,
+        },
+        encoding,
+        // Absent means a search, which is what this reply was before `tail` existed: a
+        // reader that has the field and does not know it says "matches" is reading an older
+        // answer to the same question.
+        noun: match value.get_str("noun") {
+            Some("lines") => crate::search::Noun::Lines,
+            _ => crate::search::Noun::Matches,
+        },
+    })
+}
+
+/// A search result, wrapped as a reply.
+pub fn encode_search_reply(search: &crate::search::Search) -> Json {
+    reply_result(search_to_json(search))
 }
 
 /// Whether a reply fits in the bytes one frame may carry.

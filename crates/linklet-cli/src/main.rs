@@ -32,7 +32,7 @@ use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
-use linklet_core::wire::{self, KillRequest, RunRequest, SpawnRequest};
+use linklet_core::wire::{self, GrepRequest, KillRequest, RunRequest, SpawnRequest, TailRequest};
 use linklet_core::{
     CheckError, DEFAULT_BUDGET_SECONDS, DEFAULT_EXEC_TIMEOUT_SECONDS, ExitCode, MAX_AT_ONCE,
     MAX_TARGETS, Report, Summary, ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for,
@@ -53,6 +53,8 @@ usage:
   linklet ps --agent <host:port> [options]
   linklet kill --agent <host:port> (--pid <n> | --name <exact> | --contains <text>) [options]
   linklet spawn --agent <host:port> --output <remote> <command...>
+  linklet grep --agent <host:port> --from <remote> --pattern <text> [options]
+  linklet tail --agent <host:port> --from <remote> [--lines <n>]
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -97,6 +99,22 @@ about stopping things:
   and the refusal names the process -- filtering it out here would report success
   while the one process the caller named kept running. Exit 1 means something the
   request matched is still running.
+
+about reading a file on a target:
+  grep and tail read one file under the agent's transfer root without moving it, which
+  is what a two-gigabyte log needs and a pull cannot do. The first line is a summary:
+  how many matches, which file, and which encoding the bytes were read as -- because a
+  file that could not be read must never look like a file with no matches. Exit 1 means
+  the answer is incomplete: the search stopped early, or the file was cut short at the
+  byte ceiling.
+
+options for grep:
+  --pattern <text>    the text to find, passed as an argument and never through a shell
+  -i, --ignore-case   match without regard to case (the default is to care)
+  --first, --last     search from the start (default) or the end, which is what the
+                      question where is the last ERROR wants
+  --max <n>           the most matches to report (default 12)
+  --context <n>       lines to show on each side of a match (default 0)
 
 about mcp:
   Speaks the Model Context Protocol on stdin and stdout, for an AI agent to
@@ -206,6 +224,14 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("spawn") {
         return run_spawn(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("grep") {
+        return run_grep(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("tail") {
+        return run_tail(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -470,6 +496,14 @@ impl ToolRunner for LiveRunner {
 
     fn spawn(&self, agent: &str, request: &SpawnRequest) -> ToolOutcome {
         spawn_on(agent, request, token_from_environment().as_ref())
+    }
+
+    fn grep(&self, agent: &str, request: &GrepRequest) -> ToolOutcome {
+        grep_on(agent, request, token_from_environment().as_ref())
+    }
+
+    fn tail(&self, agent: &str, request: &TailRequest) -> ToolOutcome {
+        tail_on(agent, request, token_from_environment().as_ref())
     }
 }
 
@@ -827,6 +861,226 @@ fn complete_from_text(text: &str) -> bool {
     !summary.contains("could not be read")
         && !summary.contains("unreadable")
         && !text.contains("\nnote: ")
+}
+
+/// Searches a file on an agent's machine and prints what it found.
+///
+/// The exit code is `check`'s rather than `exec`'s: `0` when the search ran and the whole
+/// file was looked at, `1` when it ran and stopped early, `2` for a wrong invocation, and
+/// `3` when the call could not be made. **A file that could not be read is exit 1 and not
+/// 3**, because the call *was* made: what went wrong is on the machine, and sending the
+/// reader to the network for a path they typed wrong is the mistake the whole exit-code
+/// scheme exists to prevent.
+fn run_grep(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut text: Option<String> = None;
+    let mut case_sensitive = true;
+    let mut direction = linklet_core::search::Direction::First;
+    let mut limit = linklet_core::search::Limit::default();
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        let mut value = |flag: &str| -> Result<String, u8> {
+            words.next().cloned().ok_or_else(|| {
+                eprintln!("linklet: {flag} needs a value");
+                ExitCode::USAGE
+            })
+        };
+        match argument.as_str() {
+            "--agent" => match value("--agent") {
+                Ok(got) => agent = Some(got),
+                Err(code) => return code,
+            },
+            "--from" => match value("--from") {
+                Ok(got) => path = Some(got),
+                Err(code) => return code,
+            },
+            "--pattern" => match value("--pattern") {
+                Ok(got) => text = Some(got),
+                Err(code) => return code,
+            },
+            // The default is the opposite of the protocol's, and deliberately: at a command
+            // line a person searching a log for `ERROR` means the upper-case one, and
+            // `-i` is the shorter thing to type for the other reading.
+            "-i" | "--ignore-case" => case_sensitive = false,
+            "--last" => direction = linklet_core::search::Direction::Last,
+            "--first" => direction = linklet_core::search::Direction::First,
+            "--max" => match value("--max").and_then(|got| {
+                got.parse::<usize>().map_err(|_| {
+                    eprintln!("linklet: --max needs a number, got {got:?}");
+                    ExitCode::USAGE
+                })
+            }) {
+                Ok(got) => limit.max_matches = got,
+                Err(code) => return code,
+            },
+            "--context" => match value("--context").and_then(|got| {
+                got.parse::<usize>().map_err(|_| {
+                    eprintln!("linklet: --context needs a number, got {got:?}");
+                    ExitCode::USAGE
+                })
+            }) {
+                Ok(got) => limit.context = got,
+                Err(code) => return code,
+            },
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: grep needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+    let Some(path) = path else {
+        eprintln!("linklet: grep needs --from <path on the target>");
+        return ExitCode::USAGE;
+    };
+    let Some(text) = text else {
+        eprintln!("linklet: grep needs --pattern <text>");
+        return ExitCode::USAGE;
+    };
+
+    let request = GrepRequest {
+        path,
+        pattern: linklet_core::search::Pattern {
+            text,
+            case_sensitive,
+        },
+        direction,
+        limit,
+    };
+
+    report_search(grep_on(&agent, &request, token_from_environment().as_ref()))
+}
+
+/// Reads the last lines of a file on an agent's machine and prints them.
+///
+/// The exit code follows [`run_grep`], and for the same reason.
+fn run_tail(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut path: Option<String> = None;
+    let mut count = 20usize;
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        let mut value = |flag: &str| -> Result<String, u8> {
+            words.next().cloned().ok_or_else(|| {
+                eprintln!("linklet: {flag} needs a value");
+                ExitCode::USAGE
+            })
+        };
+        match argument.as_str() {
+            "--agent" => match value("--agent") {
+                Ok(got) => agent = Some(got),
+                Err(code) => return code,
+            },
+            "--from" => match value("--from") {
+                Ok(got) => path = Some(got),
+                Err(code) => return code,
+            },
+            "--lines" => match value("--lines").and_then(|got| {
+                got.parse::<usize>().map_err(|_| {
+                    eprintln!("linklet: --lines needs a number, got {got:?}");
+                    ExitCode::USAGE
+                })
+            }) {
+                Ok(got) => count = got,
+                Err(code) => return code,
+            },
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: tail needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+    let Some(path) = path else {
+        eprintln!("linklet: tail needs --from <path on the target>");
+        return ExitCode::USAGE;
+    };
+
+    report_search(tail_on(
+        &agent,
+        &TailRequest { path, count },
+        token_from_environment().as_ref(),
+    ))
+}
+
+/// Prints a search and returns the exit code that goes with it.
+///
+/// Shared by the two commands and the two tools, so that none of them can disagree about
+/// what a search that did not happen looks like.
+///
+/// **The text goes to stdout even when the search failed**, because it is the answer: a
+/// caller that had to merge two streams to reconstruct one would eventually not bother.
+fn report_search(outcome: ToolOutcome) -> u8 {
+    println!("{}", outcome.text);
+
+    if outcome.is_error {
+        return ExitCode::REFUSED;
+    }
+
+    // An incomplete answer is exit 1: the call was made, the machine answered, and the
+    // answer is not the whole truth. The `searched` line is what the renderer leads with,
+    // so an unreadable file is the first thing a reader sees.
+    match search_complete_from_text(&outcome.text) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::NOT_ALL_ALIVE,
+    }
+}
+
+/// Whether a rendered search is the whole truth about the file.
+///
+/// The first line is the summary and it carries both facts: a failed search starts with
+/// "could not search", and a stopped one says "stopped early". Read out of the text for the
+/// same reason `kill_complete_from_text` is: the alternative is threading one fact through
+/// two parameters.
+fn search_complete_from_text(text: &str) -> bool {
+    let summary = text.lines().next().unwrap_or_default();
+
+    !summary.starts_with("could not search") && !summary.contains("stopped early")
+}
+
+/// Searches a file on an agent's machine and renders what it found.
+///
+/// Shared by the command and the tool.
+fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    match linklet_client::grep(&address, request) {
+        Ok(search) => ToolOutcome::ok(linklet_core::search::render(&search)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
+}
+
+/// Reads the end of a file on an agent's machine and renders it.
+fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    match linklet_client::tail(&address, request) {
+        Ok(search) => ToolOutcome::ok(linklet_core::search::render(&search)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
 }
 
 /// Starts a program on an agent's machine that outlives this command.

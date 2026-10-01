@@ -29,7 +29,8 @@ use linklet_core::frame::Kind;
 use linklet_core::json;
 use linklet_core::transfer::TransferError;
 use linklet_core::wire::{
-    self, KillRequest, Reply, Request, RunOutcome, RunRequest, SpawnRequest, WireError,
+    self, GrepRequest, KillRequest, Reply, Request, RunOutcome, RunRequest, SpawnRequest,
+    TailRequest, WireError,
 };
 
 /// Why a call could not be completed.
@@ -332,6 +333,67 @@ pub fn ps(
 
     wire::ps_listing_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
 }
+
+/// Searches a file on an agent's machine, without moving it.
+///
+/// **The answer is a search and not a list of lines**, and that is the point of it: it
+/// carries how many matches there are, whether the scan stopped early, whether the file was
+/// cut short, and which encoding the bytes were taken to be. A caller that received only the
+/// matching lines could not tell "this log has no errors" from "that file could not be
+/// read" -- `docs/ROADMAP.md` M10's first lesson, and the reason this does not return a
+/// `Vec<String>`.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know what is in the file -- an
+/// unreachable agent, or a reply that could not be read. **A file that could not be read on
+/// the target is not an error**: it comes back as a search whose `searched` is false and
+/// whose `problem` says why, because that is a fact about the machine rather than about the
+/// call, and folding it into a transport failure would send the reader to the network.
+pub fn grep(
+    address: &AgentAddress,
+    request: &GrepRequest,
+) -> Result<linklet_core::search::Search, CallError> {
+    read(address, Request::Grep(request.clone()))
+}
+
+/// Reads the last lines of a file on an agent's machine, without moving it.
+///
+/// The same answer shape as [`grep`] and for the same reason. It is the other half of "look
+/// at the log": a pull moves the whole file to answer a question about its last few lines.
+///
+/// # Errors
+///
+/// As [`grep`].
+pub fn tail(
+    address: &AgentAddress,
+    request: &TailRequest,
+) -> Result<linklet_core::search::Search, CallError> {
+    read(address, Request::Tail(request.clone()))
+}
+
+/// Sends one of the two reading requests and returns the search it answered with.
+fn read(
+    address: &AgentAddress,
+    request: Request,
+) -> Result<linklet_core::search::Search, CallError> {
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    let reply = ask(&mut connection, session.as_mut(), &request, READ_ALLOWANCE)?;
+
+    match reply {
+        Reply::Refused(reason) => Err(CallError::Refused(reason)),
+        Reply::Result(_) => {
+            wire::search_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
+        }
+    }
+}
+
+/// How long a read of a file on a target may take.
+///
+/// Longer than a handshake, because the work behind it is up to sixteen mebibytes read,
+/// sniffed, decoded and scanned -- and a file that is not UTF-8 is read a second time
+/// through the target's own shell.
+const READ_ALLOWANCE: Duration = Duration::from_secs(30);
 
 /// Starts a program on an agent's machine that outlives this call.
 ///

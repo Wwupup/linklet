@@ -868,6 +868,171 @@ fn a_spawn_request_without_a_command_or_an_output_file_is_refused_by_name() {
     }
 }
 
+// --- searching a file without moving it --------------------------------------
+
+/// A search with a match, a context line and an encoding worth being careful about.
+fn a_search() -> linklet_core::search::Search {
+    use linklet_core::search::{Direction, Limit, Pattern, lines_of, scan};
+
+    let text = lines_of("first\nERROR: one\nlast");
+    let mut search = scan(
+        &text,
+        &Pattern::new("ERROR"),
+        Limit {
+            max_matches: 5,
+            context: 1,
+        },
+        Direction::First,
+    );
+    search.path = "build.log".to_string();
+    search.encoding = linklet_core::search::Encoding::Oem;
+    search.file_bytes = Some(4096);
+    search.bytes_read = 4096;
+    search
+}
+
+#[test]
+fn a_search_round_trips_with_everything_a_reader_needs_to_judge_it() {
+    // **The fields that keep a failed search from reading as "no matches"**, and the one
+    // that says what the text was assumed to be. Each is checked separately because each
+    // answers a different question, and a reply that lost one would still look like a
+    // plausible list of lines.
+    let search = a_search();
+    let encoded = json::write(&wire::encode_search_reply(&search));
+    let decoded = wire::search_from_reply(
+        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+    )
+    .expect("its own output should decode");
+
+    assert!(decoded.searched, "{decoded:#?}");
+    assert_eq!(decoded.total, Some(1));
+    assert_eq!(decoded.encoding, linklet_core::search::Encoding::Oem);
+    assert_eq!(decoded.path, "build.log");
+    assert_eq!(decoded.file_bytes, Some(4096));
+    assert_eq!(decoded.lines.len(), 1);
+    assert_eq!(decoded.lines[0].number, 2);
+    assert_eq!(decoded.lines[0].text, "ERROR: one");
+    assert_eq!(decoded.lines[0].before, vec!["first".to_string()]);
+    assert_eq!(decoded.lines[0].after, vec!["last".to_string()]);
+}
+
+#[test]
+fn a_search_that_did_not_happen_round_trips_as_one_that_did_not() {
+    // The distinction the whole feature is arranged around, over the wire: `searched` and
+    // `problem` have to survive it, or a caller cannot tell a clean log from a file nobody
+    // could open.
+    let search = linklet_core::search::could_not_search(
+        "build.log",
+        "no such file",
+        linklet_core::search::Encoding::Utf8,
+    );
+
+    let encoded = json::write(&wire::encode_search_reply(&search));
+    let decoded = wire::search_from_reply(
+        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+    )
+    .expect("decodes");
+
+    assert!(!decoded.searched);
+    assert_eq!(decoded.problem.as_deref(), Some("no such file"));
+    assert_eq!(decoded.total, None, "nothing was counted");
+    assert!(decoded.lines.is_empty());
+}
+
+#[test]
+fn stopped_early_crosses_the_wire_as_a_null_count_and_not_a_zero() {
+    // `total: null` is "there may be more"; `total: 0` is "there are none". An agent that
+    // wrote zero for the first would be answering a question it had not finished asking.
+    use linklet_core::search::{Direction, Limit, Pattern, lines_of, scan};
+
+    let text = lines_of("hit\nhit\nhit\nhit");
+    let search = scan(
+        &text,
+        &Pattern::new("hit"),
+        Limit {
+            max_matches: 2,
+            context: 0,
+        },
+        Direction::Last,
+    );
+
+    let encoded = json::write(&wire::encode_search_reply(&search));
+    assert!(encoded.contains(r#""total":null"#), "{encoded}");
+    assert!(encoded.contains(r#""truncated":true"#), "{encoded}");
+
+    let decoded = wire::search_from_reply(
+        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+    )
+    .expect("decodes");
+    assert_eq!(decoded.total, None);
+}
+
+#[test]
+fn a_grep_request_carries_the_pattern_the_mode_and_the_limit() {
+    use linklet_core::search::{Direction, Limit, Pattern};
+    use linklet_core::wire::GrepRequest;
+
+    let request = Request::Grep(GrepRequest {
+        path: r"logs\build.log".to_string(),
+        pattern: Pattern::ignoring_case("error"),
+        direction: Direction::Last,
+        limit: Limit {
+            max_matches: 7,
+            context: 2,
+        },
+    });
+
+    let encoded = json::write(&wire::request_to_json(&request));
+    assert!(encoded.contains(r#""op":"grep""#), "{encoded}");
+    assert!(encoded.contains(r#""mode":"last""#), "{encoded}");
+    assert!(
+        encoded.contains(r#""case_sensitive":false"#),
+        "the case rule is the request's, not a default each end assumes: {encoded}"
+    );
+
+    let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
+        .expect("its own output should decode");
+    assert_eq!(decoded, request);
+}
+
+#[test]
+fn a_grep_whose_mode_is_not_a_mode_is_refused_by_name() {
+    // A version skew on the one field that decides which end of the file is read is worth a
+    // sentence: guessing `first` for a caller that meant `last` answers about the wrong end
+    // of the file, and reads exactly like an answer.
+    let error = wire::request_from_json(
+        &json::parse(r#"{"op":"grep","path":"a.log","pattern":"x","mode":"middle"}"#)
+            .expect("valid JSON"),
+    )
+    .expect_err("that is not a mode");
+
+    assert!(error.to_string().contains("mode"), "{error}");
+}
+
+#[test]
+fn a_tail_count_past_the_ceiling_is_refused_rather_than_clamped() {
+    // The same argument as an out-of-range timeout: a caller that asked for ten thousand
+    // lines and got two thousand would not know it had.
+    let error = wire::request_from_json(
+        &json::parse(r#"{"op":"tail","path":"a.log","count":100000}"#).expect("valid JSON"),
+    )
+    .expect_err("past the ceiling");
+
+    assert!(error.to_string().contains("count"), "{error}");
+
+    let ok = wire::request_from_json(
+        &json::parse(r#"{"op":"tail","path":"a.log","count":50}"#).expect("valid JSON"),
+    )
+    .expect("a count within the ceiling");
+    assert_eq!(
+        ok,
+        Request::Tail(linklet_core::wire::TailRequest {
+            path: "a.log".to_string(),
+            count: 50,
+        })
+    );
+}
+
 // --- what the agent reads ----------------------------------------------------
 
 #[test]

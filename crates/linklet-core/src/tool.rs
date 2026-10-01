@@ -185,6 +185,21 @@ pub trait ToolRunner {
     /// later is [`ToolRunner::ps`]'s question, and a tool that answered both would be
     /// claiming to have looked when it had not.
     fn spawn(&self, agent: &str, request: &crate::wire::SpawnRequest) -> ToolOutcome;
+
+    /// Searches a file on the agent's machine, without moving it.
+    ///
+    /// Takes the whole [`crate::wire::GrepRequest`] for the same reason [`ToolRunner::kill`]
+    /// does: its fields are not independent -- the mode decides which end of the file is
+    /// read, and the limit decides whether the count that comes back is exact -- and a
+    /// signature of loose arguments is one someone can call with them in the wrong order.
+    ///
+    /// **The answer is a search and not a list of lines**, because a caller has to be able
+    /// to tell "no matches" from "that file could not be read" -- `docs/ROADMAP.md` M10's
+    /// first lesson.
+    fn grep(&self, agent: &str, request: &crate::wire::GrepRequest) -> ToolOutcome;
+
+    /// Reads the end of a file on the agent's machine, without moving it.
+    fn tail(&self, agent: &str, request: &crate::wire::TailRequest) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -611,6 +626,84 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "grep",
+            // Both halves in one short sentence, because either alone is a different tool:
+            // it finds matching lines, and it does so **on the remote machine**, without
+            // bringing the file here.
+            description: "Find lines matching text in a file on a remote agent's machine.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "the file, under the agent's transfer root"
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "the text to find; empty matches every line"
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["first", "last"],
+                            "description": "search from the start, or from the end"
+                        },
+                        "ignore_case": {
+                            "type": "boolean",
+                            "description": "match without regard to case; the default is to care"
+                        },
+                        "max_matches": {
+                            "type": "integer",
+                            "description": "how many matches to return",
+                            "minimum": 1,
+                            "maximum": 200
+                        },
+                        "context": {
+                            "type": "integer",
+                            "description": "lines to show on each side of a match",
+                            "minimum": 0,
+                            "maximum": 20
+                        }
+                    },
+                    "required": ["agent", "path", "pattern"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
+        Tool {
+            name: "tail",
+            description: "Read the last lines of a file on a remote agent's machine.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "the file, under the agent's transfer root"
+                        },
+                        "lines": {
+                            "type": "integer",
+                            "description": "how many lines from the end",
+                            "minimum": 1,
+                            "maximum": 2000
+                        }
+                    },
+                    "required": ["agent", "path"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -814,6 +907,79 @@ pub fn dispatch(
             }
 
             Ok(runner.spawn(&agent, &crate::wire::SpawnRequest { command, output }))
+        }
+        "grep" => {
+            reject_unknown(
+                arguments,
+                &[
+                    "agent",
+                    "path",
+                    "pattern",
+                    "mode",
+                    "ignore_case",
+                    "max_matches",
+                    "context",
+                ],
+            )?;
+            let agent = required_str(arguments, "agent")?;
+            let path = required_str(arguments, "path")?;
+            // `pattern` is required and **may be empty**: an empty pattern matches every
+            // line, which is how a caller reads the whole file deliberately, and the schema
+            // requires the field so that "I forgot the pattern" is a refusal rather than a
+            // silent read of everything.
+            let pattern = required_str(arguments, "pattern")?;
+
+            let direction = match optional_str(arguments, "mode")?.as_deref() {
+                Some("last") => crate::search::Direction::Last,
+                Some("first") | None => crate::search::Direction::First,
+                Some(other) => {
+                    return Err(ToolError::BadArgument {
+                        name: "mode",
+                        problem: format!("{other:?} is not one of \"first\" or \"last\""),
+                    });
+                }
+            };
+
+            let request = crate::wire::GrepRequest {
+                path,
+                pattern: crate::search::Pattern {
+                    text: pattern,
+                    case_sensitive: arguments.get("ignore_case").and_then(Json::as_bool)
+                        != Some(true),
+                },
+                direction,
+                limit: crate::search::Limit {
+                    // The protocol's own ceilings, quoted here so the schema and the wire
+                    // cannot disagree about what is allowed.
+                    max_matches: optional_int(
+                        arguments,
+                        "max_matches",
+                        12,
+                        crate::wire::MAX_SEARCH_MATCHES as u64,
+                    )? as usize,
+                    context: optional_int(
+                        arguments,
+                        "context",
+                        0,
+                        crate::wire::MAX_SEARCH_CONTEXT as u64,
+                    )? as usize,
+                },
+            };
+            Ok(runner.grep(&agent, &request))
+        }
+        "tail" => {
+            reject_unknown(arguments, &["agent", "lines", "path"])?;
+            let agent = required_str(arguments, "agent")?;
+            let path = required_str(arguments, "path")?;
+            let count = optional_int(arguments, "lines", 20, crate::wire::MAX_TAIL_LINES as u64)?;
+
+            Ok(runner.tail(
+                &agent,
+                &crate::wire::TailRequest {
+                    path,
+                    count: count as usize,
+                },
+            ))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }

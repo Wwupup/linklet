@@ -3,13 +3,13 @@
 A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
-> **Status: M0-M7 done, both defects M10 found are fixed, and the deploy loop can be
-> closed from an agent.** Five crates, 469 tests, one command that runs every gate. A
-> host can check reachability, run a command on a target through a sealed channel, read
-> what it did, see what is running there, start something that outlives the call, stop
-> it again, and move one file in either direction. See `docs/ROADMAP.md` for what is
-> next and what was parked, and `docs/decisions.md` for the choices that are not obvious
-> from the code.
+> **Status: M0-M7 done, both defects M10 found are fixed, the deploy loop can be closed
+> from an agent, and a log can be searched where it lies.** Five crates, 494 tests, one
+> command that runs every gate. A host can check reachability, run a command on a target
+> through a sealed channel, read what it did, see what is running there, start something
+> that outlives the call, stop it again, search a file on the target without moving it,
+> and move one file in either direction. See `docs/ROADMAP.md` for what is next and what
+> was parked, and `docs/decisions.md` for the choices that are not obvious from the code.
 
 ## What it does
 
@@ -89,6 +89,39 @@ the connection and the agent's pipes are held until it exits. `spawn` starts the
 **its own output file** and returns a pid at once -- and `started` is the word on the line
 because that is all this side knows. Whether it is still there is the `ps` you run next,
 which is the order the deploy loop actually goes in: start, look, stop if you have to.
+
+```console
+$ linklet grep --agent 10.0.0.5:8787 --from build.log --pattern ERROR --last --context 1
+2 matches in build.log, read as utf-8, 18244 bytes
+  compiling
+41: ERROR: expected ';' at line 12
+  warning: unused import
+$ linklet tail --agent 10.0.0.5:8787 --from build.log --lines 3
+more than 3 lines in build.log, read as utf-8, stopped early, 18244 bytes
+42: done
+```
+
+`grep` and `tail` read a file **on the target and return only the answer**, which is the
+difference between them and a `pull`: a two-gigabyte log whose last ERROR is the question
+does not have to cross the network to answer it. The first line of both is a summary, and
+it is always printed, because **a file that could not be read must never look like a file
+with no matches**:
+
+```console
+$ linklet grep --agent 10.0.0.5:8787 --from gone.log --pattern ERROR
+could not search gone.log: cannot read gone.log: the system cannot find the file specified
+$ echo $?
+1
+```
+
+Exit 1 means the answer is incomplete -- the search stopped early, the file was cut short at
+the byte ceiling, or it could not be read at all. 0 means the whole file was looked at. The
+encoding is in the summary too, so a reader shown mojibake knows it came from the machine's
+OEM code page rather than from UTF-8.
+
+**The pattern is a substring.** `ERROR|FATAL` does not work; `--pattern ERROR` does.
+`docs/ROADMAP.md` records that as a difference from the reference implementation rather
+than as an equivalent.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`

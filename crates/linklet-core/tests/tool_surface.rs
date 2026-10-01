@@ -33,6 +33,7 @@ struct FakeRun {
     ps_calls: RefCell<Vec<(String, linklet_core::process::Filter)>>,
     kill_calls: RefCell<Vec<(String, linklet_core::wire::KillRequest)>>,
     spawn_calls: RefCell<Vec<(String, linklet_core::wire::SpawnRequest)>>,
+    read_calls: RefCell<Vec<String>>,
 }
 
 impl FakeRun {
@@ -129,6 +130,21 @@ impl ToolRunner for FakeRun {
             .push((agent.to_string(), request.clone()));
         ToolOutcome::ok("started 5144")
     }
+
+    fn grep(&self, agent: &str, request: &linklet_core::wire::GrepRequest) -> ToolOutcome {
+        self.read_calls.borrow_mut().push(format!(
+            "{agent}|grep|{}|{}",
+            request.path, request.pattern.text
+        ));
+        ToolOutcome::ok("1 match in a.log, read as utf-8")
+    }
+
+    fn tail(&self, agent: &str, request: &linklet_core::wire::TailRequest) -> ToolOutcome {
+        self.read_calls
+            .borrow_mut()
+            .push(format!("{agent}|tail|{}|{}", request.path, request.count));
+        ToolOutcome::ok("2 lines in a.log, read as utf-8")
+    }
 }
 
 #[test]
@@ -210,7 +226,7 @@ fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out()
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_eight_tools() {
+fn there_are_exactly_ten_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -230,9 +246,18 @@ fn there_are_exactly_eight_tools() {
     // meant to keep running holds the request, the connection and the agent's pipes with it.
     // A caller that has only `exec` cannot start the new build, which is the one step of the
     // loop that was still missing.
+    //
+    // The ninth and tenth are `grep` and `tail`, and they are two tools because they are two
+    // questions -- "where is the last ERROR" and "what does the end of this log say" -- and
+    // folding them would mean a `pattern` argument that is sometimes ignored. What they share
+    // is the reason they exist at all: a pull is digest-verified and root-bounded and it is
+    // **the wrong tool for a two-gigabyte log**, because the answer is in the file and the
+    // cost is moving it. Neither is `exec` with a command: a `findstr` through `exec` returns
+    // text with no count, no truncation and no encoding, and an empty result from it is
+    // indistinguishable from a file that could not be read.
     assert_eq!(
         tools().len(),
-        8,
+        10,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
@@ -242,7 +267,7 @@ fn there_are_exactly_eight_tools() {
     assert_eq!(
         names,
         vec![
-            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn"
+            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep", "tail"
         ]
     );
 }
@@ -553,6 +578,12 @@ fn bad_news_is_not_an_error() {
         }
         fn spawn(&self, _agent: &str, _request: &linklet_core::wire::SpawnRequest) -> ToolOutcome {
             ToolOutcome::failed("cannot write the output file")
+        }
+        fn grep(&self, _agent: &str, _request: &linklet_core::wire::GrepRequest) -> ToolOutcome {
+            ToolOutcome::failed("the agent refused the request")
+        }
+        fn tail(&self, _agent: &str, _request: &linklet_core::wire::TailRequest) -> ToolOutcome {
+            ToolOutcome::failed("the agent refused the request")
         }
     }
 
