@@ -97,6 +97,25 @@ a release was called 0.2.0 while every binary still reported 0.1.0.
 8. **Read the action pins.** For each `uses:` in `.github/workflows/`, fetch that action's
    `action.yml` and check its `runs.using`. `node24` is current and `node20` is a deprecation
    warning waiting to arrive as an email. No local tool reports this -- see below.
+9. **Verify what actually shipped, not what you built.** The release job builds its own
+   binaries on its own runner, and a Rust build is **not reproducible byte for byte**, so the
+   artifacts attached to the release are a different build from the local one even though both
+   come from the same commit. Measured at 0.2.0: the same source produced
+   `d526ce1125bad617...` locally and `0cdf8924905de699...` on the runner.
+
+   That matters because of what step 2 claims. `CHANGELOG.md` for 0.2.0 says the version was
+   driven on a real machine "with these exact binaries" -- which is only true if somebody
+   downloads the published assets and runs them, and it was made true that way:
+
+   ```powershell
+   gh release download v0.2.0 --dir $env:TEMP\check
+   # then the seven claims, and the deploy loop, against the target
+   pwsh tools/smoke.ps1 -Target <host:port> -Linklet "$env:TEMP\check\linklet.exe"
+   ```
+
+   **Either do this, or word the claim as "the same commit" and not "these binaries".** A
+   release note that says a specific artifact was verified, when a different artifact was, is
+   the one kind of wrong this document exists to prevent.
 
 ## The workflows, and what can be checked before pushing
 
