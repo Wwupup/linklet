@@ -170,7 +170,21 @@ pub enum Role {
 /// a channel that accepted messages in any order would need a window and a
 /// replayed-message policy, and both are decisions that belong to a caller who
 /// knows what it is protecting.
-pub trait Sealed {
+///
+/// # Why this requires `Send`
+///
+/// **A conversation has two ends and they run at the same time.** A transfer larger than a
+/// socket buffer cannot be written and then read -- the kernel fills, the sender blocks, and the
+/// reader has not started -- so the real client writes while the real agent reads, on different
+/// threads. A session that could not cross a thread boundary would make that impossible, and a
+/// trait that left it out would be describing something narrower than what the implementations
+/// already are: [`crate::channel::Sealed`] has one implementor, and it is two keys and two
+/// counters.
+///
+/// It was found by a test that did the impossible thing -- sending 3 MiB before reading any of
+/// it -- and passing, because the socket buffers were large enough. The same test failed on a
+/// runner where they were not, with a thirty-second timeout.
+pub trait Sealed: Send {
     /// Seals one message into `out`, in order. `out` is cleared first.
     ///
     /// # Errors

@@ -94,6 +94,28 @@ body, and the result can only be computed after the body has arrived. Its shape 
 reply shapes that overlap on `bytes` alone would let a client read an acceptance as a
 result.
 
+### The two halves have to overlap
+
+**Frames 3..k are not a batch that one side writes and the other then reads.** The sender
+writes a chunk; the receiver reads it, writes it to the `.part` file and updates its digest;
+the sender writes the next. A body larger than a socket buffer cannot be done any other way:
+the kernel accepts a few hundred kilobytes, the sender blocks on a full send buffer, and a
+receiver that has not started reading yet cannot drain it. The two ends therefore **have to be
+running at the same time**, which is why `linklet_core::channel::Sealed` requires `Send` and
+why `send_body` and `receive_body` are written as functions over a connection rather than as
+one call that does both.
+
+**This is not a performance note, it is a liveness one.** It was found by a test that did the
+impossible thing -- wrote 3 MiB and then read it, sequentially -- and passed for a long time,
+because the socket buffers on the machine it ran on happened to be large enough to hold the
+whole body. The identical test failed on a runner where they were not, with
+`Timeout { millis: 30000 }`: the pattern is a deadlock when the body is big enough, and a slow
+seesaw when it is only nearly big enough. The same test run concurrently takes about a second.
+
+The stale invariant was in the test and not in the protocol, which is the useful part to
+remember: **a test that passes because a buffer was large is not testing the design.** See
+`crates/linklet-adapters/tests/transfer.rs`, where the sender runs on its own thread.
+
 **The other direction is the same shape with the manifest on the other side**, because
 the size has to come from whoever holds the file:
 

@@ -79,6 +79,10 @@ fn pair() -> (TcpStream, TcpStream) {
 }
 
 /// One end of a transfer: the socket and the session that seals what crosses it.
+///
+/// **`+ Send` because the two ends run on two threads**, which is the arrangement the protocol
+/// is written for and what `round_trip` has to reproduce. A session is two keys and two
+/// counters, so this costs nothing at run time; it is only the trait object that forgets it.
 type End = (Connection, Box<dyn Sealed>);
 
 /// A pair of sessions, one at each end of a socket pair.
@@ -162,6 +166,19 @@ fn receive(
 }
 
 /// Sends one file and receives it, and returns what the receiver reported.
+///
+/// # Why the sender is on its own thread
+///
+/// **The body is bigger than a socket buffer, so writing all of it before reading any of it
+/// deadlocks.** The kernel takes the first few hundred kilobytes, the sender blocks on a full
+/// send buffer, and the reader -- which has not started -- never drains it. It passes on a
+/// machine whose buffers happen to be large, which is why it survived here and failed in CI
+/// with `Timeout { millis: 30000 }`: a runner with smaller buffers and a slower loopback.
+///
+/// It is not a flaky test being stabilised; it is a test that was asserting something the
+/// protocol does not do. `docs/transfer.md` describes chunks flowing one after another while
+/// the receiver writes and digests, and the real client and agent do exactly that. The test
+/// was the only place they were sequential, and a file under a megabyte hid it.
 fn round_trip(
     scratch: &Scratch,
     source_bytes: usize,
@@ -174,10 +191,23 @@ fn round_trip(
     let ((mut host, mut host_session), (mut agent, mut agent_session)) = sessions();
 
     send_manifest(&mut host, host_session.as_mut(), &manifest).expect("writing the manifest");
-    send_body(&mut host, host_session.as_mut(), &source, &manifest).expect("sending the body");
 
+    // The path is cloned into the thread so this function can still hand it back; `PathBuf` is
+    // two words and the alternative is a second `describe` inside the thread.
+    let sending = source.clone();
+    let sender = std::thread::spawn(move || {
+        send_body(&mut host, host_session.as_mut(), &sending, &manifest)
+    });
+
+    // The receiver runs on this thread while the sender runs on that one, which is the
+    // arrangement the protocol is written for.
     let outcome =
         receive(&mut agent, agent_session.as_mut(), &destination).expect("receiving the transfer");
+
+    sender
+        .join()
+        .expect("the sending thread should not panic")
+        .expect("sending the body");
 
     (outcome, source, destination)
 }
