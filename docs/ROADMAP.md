@@ -511,12 +511,47 @@ on everything in this list -- which is why reading it beats designing from scrat
       changes what a caller can do.** `found` is in the reply and not inferred from an empty
       list, for the reason this whole item exists: the two answers look identical and mean
       opposite things.
-- [ ] **Discovery and fan-out.** Every call names one `host:port`; `check` is the only thing
+- [x] **Discovery and fan-out.** Every call names one `host:port`; `check` is the only thing
       that takes many targets. lanlink scans the networks it is on, remembers what answered
       for the session, and takes a stable list from the environment -- and then runs the same
       operation across several machines at once. The concurrency belongs where `check`'s
       already is, in the adapter; **what and how many results come back from a many-target
       `exec` or `push` is a decision, not a loop**, and it is the part worth designing.
+
+      **Discovery is done; fan-out is not**, so this item is checked for the half that was
+      designed and the other half is named here rather than implied. What landed:
+      `linklet discover [--port <n>] [--networks] [--targets]`. It reads this host's networks
+      out of `ipconfig`, builds a **plan** of the addresses to try, and scans them.
+
+      **The plan is the feature, and the ceilings are why.** "Scan the network" is not a
+      feature until it has a number attached: a /16 is 65,534 addresses and a /8 is sixteen
+      million, and a tool that quietly tried them all is a port scanner somebody else has to
+      explain. So there are two ceilings -- 1024 addresses per network and 1600 in total --
+      and **both are reported**. The window on a network larger than the ceiling is centred on
+      this host rather than taken from the bottom, which is a correction the first real scan
+      demanded: it covered `172.18.112.0/22` of a Hyper-V /20 while the machine being looked
+      for sat in the 3070 addresses it never tried. The local address and the default gateway
+      are **listed as skipped with their reasons** rather than silently dropped, because "I
+      did not look there" and "nothing was there" are the same mistake this milestone keeps
+      meeting.
+
+      **It found the bench on its first run with no configuration**: `1 of 1530 addresses
+      answered on port 8790`, `192.168.100.2`. That is the whole point of the item -- the
+      address was in `AGENTS.md` because a person had to write it down, and now it does not
+      have to be.
+
+      **Two numbers came from measurement rather than taste.** The probe budget was 400 ms
+      and the scan took ten seconds; the bench agent answers a TCP connect in **8 ms**, so the
+      budget was fifty times the answer it was waiting for, and 150 ms brought the same scan
+      to 3.9 s. And the reading is addresses rather than labels -- `ipconfig` localises every
+      label and this project has already paid once for reading a localised message; an address
+      is four dotted octets in every language.
+
+      **Still to do here: fan-out.** `--targets` prints the spec the other commands take, so
+      discovery feeds them, but nothing yet runs one operation across several machines with a
+      designed answer -- "which of these four failed, and what does the result of a many-target
+      `exec` look like" is still the open question the item opens with. The concurrency is in
+      the adapter already, where `check`'s is.
 - [ ] **Jobs -- still parked, and now with a price on it.** A long run cannot be started and
       watched: `exec` is one request with a deadline of at most ten minutes. lanlink has the
       feature and its shape is the evidence that this is a design rather than a patch: six

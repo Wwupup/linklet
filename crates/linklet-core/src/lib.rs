@@ -25,6 +25,7 @@
 
 pub mod auth;
 pub mod channel;
+pub mod discover;
 mod error;
 pub mod frame;
 pub mod json;

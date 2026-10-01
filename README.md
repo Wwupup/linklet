@@ -4,13 +4,13 @@ A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
 > **Status: M0-M7 done, both defects M10 found are fixed, the deploy loop can be closed
-> from an agent, and a target's files can be looked at without moving them.** Five crates,
-> 504 tests, one command that runs every gate. A host can check reachability, run a command
-> on a target through a sealed channel, read what it did, see what is running there, start
-> something that outlives the call, stop it again, list and search a directory on the
-> target, and move one file in either direction. See `docs/ROADMAP.md` for what is next and
-> what was parked, and `docs/decisions.md` for the choices that are not obvious from the
-> code.
+> from an agent, a target's files can be looked at without moving them, and the machines on
+> a network can be found without being told where they are.** Five crates, 521 tests, one
+> command that runs every gate. A host can check reachability, run a command on a target
+> through a sealed channel, read what it did, see what is running there, start something
+> that outlives the call, stop it again, list and search a directory on the target, and move
+> one file in either direction. See `docs/ROADMAP.md` for what is next and what was parked,
+> and `docs/decisions.md` for the choices that are not obvious from the code.
 
 ## What it does
 
@@ -137,6 +137,29 @@ beside it.** It prints `name/` for a directory and `name size` for a file, then 
 kind of summary `ps` prints. An empty directory says `0 of 0 entries`; a path that is not
 there says `could not list` and exits 1 -- the two are the same list and opposite facts, and
 only one of them means the machine has no logs.
+
+```console
+$ linklet discover --port 8790
+1 of 1530 addresses answered on port 8790
+192.168.100.2
+networks: 192.168.100.1/255.255.255.0 192.168.3.157/255.255.255.0 172.18.112.1/255.255.240.0
+skipped: 192.168.100.1 (this machine's own address)
+skipped: 192.168.3.1 (the default gateway, which was not asked to be part of this)
+note: the scan was cut short at its ceiling, so addresses beyond it were not tried
+$ linklet discover --port 8790 --targets
+192.168.100.2
+```
+
+`discover` finds the machines on the networks this host is on, without being told where they
+are. It prints the summary first and the addresses after it, because a scan has a ceiling
+and **"nothing answered" and "I tried a thousand of this network's four thousand addresses"
+are different facts**. `--networks` prints the networks without scanning; `--targets` prints
+the addresses as the comma-separated spec every other command already takes, so discovery
+feeds the commands it exists for. Exit 1 means the scan was cut short and the answer is
+therefore incomplete.
+
+It scans about 1600 addresses at most, never this machine's own address and never the
+default gateway, and it names both in the output rather than silently skipping them.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`

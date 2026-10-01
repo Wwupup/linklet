@@ -57,7 +57,7 @@ usage:
   linklet spawn --agent <host:port> --output <remote> <command...>
   linklet grep --agent <host:port> --from <remote> --pattern <text> [options]
   linklet tail --agent <host:port> --from <remote> [--lines <n>]
-  linklet ls --agent <host:port> --from <remote>
+  linklet ls --agent <host:port> --from <remote>`r`n  linklet discover [--port <port>] [--networks] [--targets]
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -239,6 +239,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("ls") {
         return run_ls(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("discover") {
+        return run_discover(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -872,6 +876,132 @@ fn complete_from_text(text: &str) -> bool {
     !summary.contains("could not be read")
         && !summary.contains("unreadable")
         && !text.contains("\nnote: ")
+}
+
+/// Finds machines on the networks this host is on.
+///
+/// # What it prints, and why in this order
+///
+/// The **summary first**, then one line per address that answered. The summary is the part
+/// that makes the answer readable and it is not optional: a scan has a ceiling, so "nothing
+/// answered" and "I tried a thousand of this network's sixty-five thousand addresses" are
+/// different facts, and only one of them means the network is empty. That is the same
+/// argument as `ps` and `ls`, and `docs/ROADMAP.md` M10 asks for it here too.
+///
+/// `--targets` prints the addresses as the one comma-separated spec `check`, `exec` and the
+/// rest already take, so that discovery feeds the commands it exists for rather than being a
+/// list a person retypes.
+///
+/// The exit code is `check`'s: `0` when the whole plan was scanned, `1` when it was cut short
+/// and the answer is therefore incomplete, `2` for a wrong invocation. **An address that did
+/// not answer is not a failure** -- a scan is not a census, and reporting an empty network as
+/// a broken one would be the mistake this whole project is arranged against.
+fn run_discover(arguments: &[String]) -> u8 {
+    // **The agent's own default port, and the same number in both places for the same
+    // reason the agent's `DEFAULT_PORT` is a constant**: the question this answers is "which
+    // of these machines is running an agent", and a discovery default that disagreed with
+    // the agent default would find nothing on a network that is full of them. It is a literal
+    // here because `linklet-cli` does not depend on `linklet-agent` -- the host tool has no
+    // business linking the target binary -- and `tests/cli.rs` pins the two together.
+    let mut port = 8787u16;
+    let mut networks_only = false;
+    let mut targets = false;
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        match argument.as_str() {
+            "--port" => match words.next().and_then(|value| value.parse::<u16>().ok()) {
+                Some(value) => port = value,
+                None => {
+                    eprintln!("linklet: --port needs a port number");
+                    return ExitCode::USAGE;
+                }
+            },
+            "--networks" => networks_only = true,
+            "--targets" => targets = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return ExitCode::USAGE;
+            }
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    if networks_only {
+        return match linklet_adapters::local_interfaces() {
+            Ok(interfaces) => {
+                for interface in &interfaces {
+                    println!("{interface}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(reason) => {
+                eprintln!("linklet: {reason}");
+                ExitCode::NOT_ALL_ALIVE
+            }
+        };
+    }
+
+    let plan = match linklet_adapters::plan_here() {
+        Ok(plan) => plan,
+        Err(reason) => {
+            // The machine's interfaces could not be read, which is a fact about the call and
+            // not about the network: exit 1 would say the network is empty.
+            eprintln!("linklet: {reason}");
+            return ExitCode::NOT_ALL_ALIVE;
+        }
+    };
+
+    let result = linklet_adapters::scan(&plan, port);
+
+    if targets {
+        println!(
+            "{}",
+            result
+                .found
+                .iter()
+                .map(|found| found.address.clone())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        return if result.truncated {
+            ExitCode::NOT_ALL_ALIVE
+        } else {
+            ExitCode::SUCCESS
+        };
+    }
+
+    // One summary line, then the answers. The networks and the skipped addresses are named
+    // so that a reader can tell which part of the machine the scan came from -- a scan that
+    // silently covered one of two adapters is a scan that missed half the answer.
+    println!(
+        "{} of {} addresses answered on port {port}",
+        result.found.len(),
+        result.tried
+    );
+    for found in &result.found {
+        println!("{}", found.address);
+    }
+    if !result.networks.is_empty() {
+        println!("networks: {}", result.networks.join(" "));
+    }
+    for skipped in &result.skipped {
+        println!("skipped: {skipped}");
+    }
+    if result.truncated {
+        println!(
+            "note: the scan was cut short at its ceiling, so addresses beyond it were not tried"
+        );
+    }
+
+    if result.truncated {
+        ExitCode::NOT_ALL_ALIVE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 /// Lists a path on an agent's machine and prints what is there.

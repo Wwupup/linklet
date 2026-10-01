@@ -100,12 +100,14 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |
 | `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, and why a failed search is not an empty one |
 | `crates/linklet-core/src/listing.rs` | what is in a directory, and why an empty one is not one that is not there |
+| `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, and what it leaves out |
 | `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, and the pair that names a request that never finished |
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
 | `crates/linklet-adapters/src/transfer.rs` | moving a file: the `.part`, the running total, the digest, the rename |
 | `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
+| `crates/linklet-adapters/src/discovery.rs` | ipconfig, the routing table, and the sockets a scan opens |
 | `crates/linklet-adapters/src/listing.rs` | reading a directory on this machine, one unreadable name at a time |
 | `crates/linklet-adapters/src/search.rs` | reading a file on this machine: the ceiling, the window, and the machine's own decoding |
 | `crates/linklet-adapters/src/processes.rs` | `tasklist` and `taskkill`, the parser that survives the localised notice, and the guard that refuses to stop the agent |

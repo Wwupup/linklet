@@ -20,6 +20,7 @@
 
 mod channel;
 mod connection;
+mod discovery;
 mod listing;
 mod mcp;
 mod processes;
@@ -30,6 +31,7 @@ mod transfer;
 
 pub use channel::{HkdfChannel, OVERHEAD_BYTES, new_session_id};
 pub use connection::{Connection, ConnectionError};
+pub use discovery::{Scan, default_gateway, local_interfaces, plan_here, scan};
 pub use listing::list as list_directory;
 pub use mcp::{FALLBACK_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION, serve};
 pub use processes::{kill as kill_processes, list as list_processes};
