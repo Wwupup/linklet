@@ -30,6 +30,7 @@ struct FakeRun {
     testbed_calls: RefCell<Vec<(String, String)>>,
     exec_calls: RefCell<Vec<(String, String, u64)>>,
     transfer_calls: RefCell<Vec<(String, String, String)>>,
+    ps_calls: RefCell<Vec<(String, linklet_core::process::Filter)>>,
 }
 
 impl FakeRun {
@@ -47,6 +48,10 @@ impl FakeRun {
     /// the direction would be asserting on a value dispatch does not pass it.
     fn transfer_calls(&self) -> Vec<(String, String, String)> {
         self.transfer_calls.borrow().clone()
+    }
+
+    fn ps_calls(&self) -> Vec<(String, linklet_core::process::Filter)> {
+        self.ps_calls.borrow().clone()
     }
 }
 
@@ -91,12 +96,25 @@ impl ToolRunner for FakeRun {
         ));
         ToolOutcome::ok("build.log: 16 bytes, sha256 0123456789abcdef")
     }
+
+    fn ps(&self, agent: &str, filter: &linklet_core::process::Filter) -> ToolOutcome {
+        self.ps_calls
+            .borrow_mut()
+            .push((agent.to_string(), filter.clone()));
+        // A listing whose last line is the point: an empty match is readable only next to
+        // what was examined. The real implementation renders this from
+        // `linklet_core::process`, which is tested there.
+        ToolOutcome::ok(
+            "0 of 214 match, filter name=linklet\nnote: an agent that is not \
+                         elevated cannot read another user's command line",
+        )
+    }
 }
 
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_five_tools() {
+fn there_are_exactly_six_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -105,16 +123,25 @@ fn there_are_exactly_five_tools() {
     // The fifth and sixth additions were `push` and `pull`, and the argument is in
     // `tools()`: an agent that cannot send a file cannot install a build, and one that
     // cannot bring a log back has to ask for it in a command's output instead.
+    //
+    // The seventh is `ps`, and its question is the one the deploy loop cannot be closed
+    // without: **is the old build still running.** `exec` cannot answer it -- `tasklist`
+    // through `exec` returns text an agent has to parse, with none of the counts that make
+    // an empty answer readable, which is the mistake `docs/ROADMAP.md` M10 records from a
+    // real machine.
     assert_eq!(
         tools().len(),
-        5,
+        6,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
     // Both names, so a tool cannot be swapped for another without this failing.
     // A count alone would not notice.
     let names: Vec<&str> = tools().iter().map(|tool| tool.name).collect();
-    assert_eq!(names, vec!["check", "testbed", "exec", "push", "pull"]);
+    assert_eq!(
+        names,
+        vec!["check", "testbed", "exec", "push", "pull", "ps"]
+    );
 }
 
 #[test]
@@ -415,6 +442,9 @@ fn bad_news_is_not_an_error() {
         fn pull(&self, _agent: &str, _from: &str, _to: &str) -> ToolOutcome {
             ToolOutcome::failed("the agent refused the request")
         }
+        fn ps(&self, _agent: &str, _filter: &linklet_core::process::Filter) -> ToolOutcome {
+            ToolOutcome::ok("0 of 214 match")
+        }
     }
 
     let outcome = dispatch(
@@ -649,6 +679,74 @@ fn the_pull_tool_passes_its_three_arguments_through() {
             "logs/build.log".to_string()
         )]
     );
+}
+
+#[test]
+fn the_ps_tool_passes_its_filter_through_and_needs_only_an_agent() {
+    // Only `agent` is required: a listing with no filter is a legitimate question -- "what
+    // is running here" -- and requiring one would be inventing a decision for the caller.
+    let fake = FakeRun::default();
+
+    dispatch(
+        "ps",
+        &object! { "agent" => Json::str("10.0.0.5:8787") },
+        &fake,
+    )
+    .expect("a valid call");
+    dispatch(
+        "ps",
+        &object! {
+            "agent" => Json::str("10.0.0.5:8787"),
+            "name" => Json::str("linklet-agent"),
+            "exclude" => Json::str("test"),
+        },
+        &fake,
+    )
+    .expect("a valid call");
+
+    let calls = fake.ps_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].0, "10.0.0.5:8787");
+    assert_eq!(
+        calls[0].1,
+        linklet_core::process::Filter::any(),
+        "no filter is the empty filter"
+    );
+    assert_eq!(calls[1].1.name.as_deref(), Some("linklet-agent"));
+    assert_eq!(calls[1].1.exclude.as_deref(), Some("test"));
+}
+
+#[test]
+fn the_ps_tool_refuses_an_argument_that_is_not_even_a_string() {
+    // A caller that sent a number meant to filter and said it wrong. Dropping the filter
+    // would answer a different question than the one asked, which for a listing is the
+    // failure the whole feature is arranged against.
+    let fake = FakeRun::default();
+    let error = dispatch(
+        "ps",
+        &object! { "agent" => Json::str("a:1"), "name" => 5i64 },
+        &fake,
+    )
+    .expect_err("a number is not a filter");
+
+    assert!(error.to_string().contains("name"), "{error}");
+    assert!(fake.ps_calls().is_empty(), "nothing may be listed");
+}
+
+#[test]
+fn the_ps_tool_takes_no_path_argument_because_nothing_can_answer_one() {
+    // `path` is on the wire and not on this surface: the one implementation of `ps` reads
+    // `tasklist`, which gives no path at all, so a caller could only ever be told the
+    // filter was unanswerable. An argument that cannot work is worse than an absent one.
+    let fake = FakeRun::default();
+    let error = dispatch(
+        "ps",
+        &object! { "agent" => Json::str("a:1"), "path" => Json::str("bin") },
+        &fake,
+    )
+    .expect_err("this surface does not take a path filter");
+
+    assert!(error.to_string().contains("path"), "{error}");
 }
 
 #[test]

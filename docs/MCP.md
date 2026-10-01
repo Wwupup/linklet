@@ -13,13 +13,14 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Five tools.**
+**Six tools.**
 
 | tool | question it answers |
 |---|---|
 | `check` | does each host:port accept a TCP connection |
 | `testbed` | does a machine match a testbed specification file |
 | `exec` | run a command on a remote agent and return its output |
+| `ps` | what is running on a remote agent's machine |
 | `push` | copy one local file to a remote agent |
 | `pull` | copy one file back from a remote agent |
 
@@ -29,6 +30,17 @@ while it existed where no agent could reach it: the capability was built and the
 surface was never told. An agent cannot ask for what it has not been told about,
 so that is a bug in the opposite direction from the usual one -- not a tool with
 nothing behind it, but something behind it and no tool.
+
+The sixth is `ps`, and it is the one the deploy loop could not be closed without:
+**kill the old build, push, start, confirm it stayed up** needs "is the old build
+still running", and `exec` could not answer it. Running `tasklist` through `exec`
+returns text an agent has to parse, and -- the part that matters -- it returns
+*nothing* when the answer is "nothing matched", with none of the counts that make
+an empty answer readable. That is the mistake `docs/ROADMAP.md` M10 records from
+a real machine, where `count: 0` was one step from overwriting a running binary.
+`ps` is therefore not "exec with a different command"; its **result** is a
+listing, and the listing carries what was examined, what filter was applied and
+what the machine could not say.
 
 That is also the argument for why these are separate rather than one tool with
 several argument sets. `check` needs nothing but an address; `testbed` needs a

@@ -98,11 +98,13 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/auth.rs` | the token, and the constant-time comparison that is the point of it |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
 | `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, and the pair that names a request that never finished |
+| `crates/linklet-core/src/process.rs` | what is running: the filter, the counts, and why an empty list has to say what it looked at |
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
 | `crates/linklet-adapters/src/transfer.rs` | moving a file: the `.part`, the running total, the digest, the rename |
 | `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
+| `crates/linklet-adapters/src/processes.rs` | `tasklist`, and the parser that survives its CSV and its localised notice |
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
 | `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
 | `crates/linklet-agent/src/log.rs` | the agent's log file, and what happens when it cannot be written |
@@ -117,6 +119,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/tests/channel_sealing.rs` | confidentiality, integrity, ordering |
 | `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |
 | `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary, transfers included |
+| `crates/linklet-client/tests/ps.rs` | the listing over a socket, and the test process as the process it looks for |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 | `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
 

@@ -37,8 +37,8 @@ use std::fmt::Write as _;
 
 /// What a request asked for, as the log names it.
 ///
-/// The protocol's own four `op` values plus `unknown`, rather than a second vocabulary --
-/// `docs/MCP.md` and `crate::wire` use the same four strings.
+/// The protocol's own `op` values plus `unknown`, rather than a second vocabulary --
+/// `docs/MCP.md` and `crate::wire` use the same strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
     /// Which agent this is.
@@ -49,6 +49,8 @@ pub enum Operation {
     Push,
     /// Send a file.
     Pull,
+    /// Ask what is running on the machine.
+    Ps,
     /// Something arrived that was not a request this version knows.
     ///
     /// **Recorded rather than skipped**, and that is a decision: a sealed body that is not
@@ -66,6 +68,7 @@ impl Operation {
             Self::Run => "run",
             Self::Push => "push",
             Self::Pull => "pull",
+            Self::Ps => "ps",
             Self::Unknown => "unknown",
         }
     }
@@ -86,6 +89,7 @@ impl Operation {
             "run" => Some(Self::Run),
             "push" => Some(Self::Push),
             "pull" => Some(Self::Pull),
+            "ps" => Some(Self::Ps),
             "unknown" => Some(Self::Unknown),
             _ => None,
         }
@@ -423,6 +427,7 @@ mod tests {
             (Operation::Run, "run"),
             (Operation::Push, "push"),
             (Operation::Pull, "pull"),
+            (Operation::Ps, "ps"),
             (Operation::Unknown, "unknown"),
         ] {
             assert_eq!(operation.as_str(), name);

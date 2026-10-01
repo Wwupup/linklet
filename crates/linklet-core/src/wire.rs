@@ -50,12 +50,15 @@ const OP_PUSH: &str = "push";
 /// The request that brings a file back from an agent.
 const OP_PULL: &str = "pull";
 
+/// The request that asks what is running on the agent's machine.
+const OP_PS: &str = "ps";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run, push, pull";
+const KNOWN_OPS: &str = "identity, run, push, pull, ps";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -324,6 +327,12 @@ pub enum Request {
         /// The file to read, inside the agent's root.
         path: String,
     },
+    /// Ask what is running on the agent's machine.
+    ///
+    /// The filter is the whole of this request, and an empty one means "everything". What
+    /// comes back is a [`crate::process::Listing`], which is a list **and** the counts and
+    /// notes that make an empty list readable -- `docs/ROADMAP.md` M10.
+    Ps(crate::process::Filter),
 }
 
 /// What the agent answers.
@@ -396,6 +405,17 @@ pub fn request_to_json(request: &Request) -> Json {
             Json::Object(entries)
         }
         Request::Pull { path } => object! { "op" => OP_PULL, "path" => path },
+        Request::Ps(filter) => {
+            // **An empty filter adds no fields at all**, which is why the pinned bytes of a
+            // bare `ps` are `{"op":"ps"}`: absent and empty are the same request, so there
+            // is no reason for two spellings of it on the wire.
+            let mut entries = match filter_to_json(filter) {
+                Json::Object(entries) => entries,
+                _ => BTreeMap::new(),
+            };
+            entries.insert("op".to_string(), Json::str(OP_PS));
+            Json::Object(entries)
+        }
     }
 }
 
@@ -426,6 +446,7 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
                 .ok_or_else(|| WireError::BadRequest("path: missing or not a string".to_string()))?
                 .to_string(),
         }),
+        OP_PS => Ok(Request::Ps(filter_from_json(value)?)),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),
@@ -802,6 +823,182 @@ pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
 /// assembled differently in two places.
 pub fn encode_run_reply(outcome: &RunOutcome) -> Json {
     reply_result(run_outcome_to_json(outcome))
+}
+
+/// A process filter as JSON, for a `ps` request.
+///
+/// **The field names are the caller's, and the same names come back in the reply's
+/// `applied` object.** That is what makes the echo worth having: a caller can compare what
+/// it sent with what was applied without a mapping table in between.
+///
+/// An empty filter is an empty object rather than `null`: a ps request always carries one,
+/// and a shape that was sometimes absent would need two readings of the same message.
+pub fn filter_to_json(filter: &crate::process::Filter) -> Json {
+    let mut entries = BTreeMap::new();
+    for (key, value) in [
+        ("name", &filter.name),
+        ("path", &filter.path),
+        ("cmdline", &filter.cmdline),
+        ("query", &filter.query),
+        ("exclude", &filter.exclude),
+    ] {
+        if let Some(value) = value {
+            entries.insert(key.to_string(), Json::str(value));
+        }
+    }
+    Json::Object(entries)
+}
+
+/// A process filter from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field that is not a string. A field that is simply
+/// absent is not an error: it means the caller did not filter on it, which is the ordinary
+/// case for four of the five.
+pub fn filter_from_json(value: &Json) -> Result<crate::process::Filter, WireError> {
+    let text = |field: &str| -> Result<Option<String>, WireError> {
+        match value.get(field) {
+            Some(Json::Str(text)) => Ok(Some(text.clone())),
+            Some(_) => Err(WireError::BadRequest(format!(
+                "{field}: not a string, and a filter is text"
+            ))),
+            None => Ok(None),
+        }
+    };
+
+    Ok(crate::process::Filter {
+        name: text("name")?,
+        path: text("path")?,
+        cmdline: text("cmdline")?,
+        query: text("query")?,
+        exclude: text("exclude")?,
+    })
+}
+
+/// A listing as the result of a `ps` reply.
+///
+/// Every field is written, including the empty ones, because each one is an answer to a
+/// question a reader has to be able to ask: how many matched, how many were looked at,
+/// whether the list was cut short, what filter was applied, and what the machine could not
+/// say. Leaving one out is how an empty list becomes indistinguishable from a machine that
+/// could not be read -- `docs/ROADMAP.md` M10.
+pub fn ps_listing_to_json(listing: &crate::process::Listing) -> Json {
+    let processes: Vec<Json> = listing
+        .processes
+        .iter()
+        .map(|process| {
+            let mut entries = BTreeMap::new();
+            entries.insert("pid".to_string(), Json::Int(i64::from(process.pid)));
+            entries.insert("name".to_string(), Json::str(&process.name));
+            // Absent rather than null for a field the machine could not supply: `null`
+            // would be a fourth state to interpret, and the reader already has the notes.
+            if let Some(path) = &process.path {
+                entries.insert("path".to_string(), Json::str(path));
+            }
+            if let Some(cmdline) = &process.cmdline {
+                entries.insert("cmdline".to_string(), Json::str(cmdline));
+            }
+            Json::Object(entries)
+        })
+        .collect();
+
+    let notes: Vec<Json> = listing.notes.iter().map(Json::str).collect();
+    let complete = match listing.incomplete() {
+        crate::process::Incomplete::No => "no",
+        crate::process::Incomplete::UnreadableLines => "unreadable-lines",
+        crate::process::Incomplete::NotEnumerated => "not-enumerated",
+    };
+
+    object! {
+        "processes" => Json::Array(processes),
+        "count" => listing.processes.len() as i64,
+        "total" => listing.total as i64,
+        "unreadable" => listing.unreadable as i64,
+        "truncated" => listing.truncated,
+        "complete" => complete,
+        "applied" => listing.applied.clone(),
+        "notes" => Json::Array(notes),
+    }
+}
+
+/// A listing out of a `ps` reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal -- a caller that wants the reason
+/// should match on [`Reply`] instead -- or when the result is not a listing at all. A
+/// listing missing its counts is **not** defaulted: an agent that did not say how many
+/// processes it looked at has not answered the question, and filling in zero would report
+/// a clean machine on no evidence.
+pub fn ps_listing_from_reply(reply: &Reply) -> Result<crate::process::Listing, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest(
+            "the ps request was refused".to_string(),
+        ));
+    };
+
+    let processes_value = value
+        .get("processes")
+        .and_then(Json::as_array)
+        .ok_or_else(|| WireError::BadRequest("processes: missing or not an array".to_string()))?;
+
+    let mut processes = Vec::new();
+    for entry in processes_value {
+        let pid = match entry.get("pid") {
+            Some(Json::Int(pid)) if *pid >= 0 => *pid as u32,
+            _ => {
+                return Err(WireError::BadRequest("a process needs a pid".to_string()));
+            }
+        };
+        let name = entry
+            .get_str("name")
+            .ok_or_else(|| WireError::BadRequest("a process needs a name".to_string()))?
+            .to_string();
+        processes.push(crate::process::Process {
+            pid,
+            name,
+            path: entry.get_str("path").map(str::to_string),
+            cmdline: entry.get_str("cmdline").map(str::to_string),
+        });
+    }
+
+    let number = |field: &str| -> Result<usize, WireError> {
+        match value.get(field) {
+            Some(Json::Int(number)) if *number >= 0 => Ok(*number as usize),
+            Some(_) => Err(WireError::BadRequest(format!("{field}: not a count"))),
+            None => Err(WireError::BadRequest(format!("{field}: missing"))),
+        }
+    };
+
+    let notes = value
+        .get("notes")
+        .and_then(Json::as_array)
+        .map(|notes| {
+            notes
+                .iter()
+                .filter_map(Json::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(crate::process::Listing {
+        processes,
+        total: number("total")?,
+        unreadable: number("unreadable")?,
+        truncated: value.get("truncated").and_then(Json::as_bool) == Some(true),
+        applied: value
+            .get("applied")
+            .cloned()
+            .unwrap_or(Json::Object(BTreeMap::new())),
+        notes,
+    })
+}
+
+/// A listing, wrapped as a reply.
+pub fn encode_ps_reply(listing: &crate::process::Listing) -> Json {
+    reply_result(ps_listing_to_json(listing))
 }
 
 /// Whether a reply fits in the bytes one frame may carry.

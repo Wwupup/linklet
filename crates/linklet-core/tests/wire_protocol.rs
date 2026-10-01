@@ -689,6 +689,126 @@ fn a_reply_from_before_this_field_existed_still_decodes() {
     assert!(!outcome.stdout.is_lossy());
 }
 
+// --- looking at what is running ----------------------------------------------
+
+/// A listing with one process, one filter and one thing the machine could not tell us --
+/// so that every field has something in it and a dropped field fails the round trip.
+fn a_listing() -> linklet_core::process::Listing {
+    use linklet_core::process::{Filter, Process, apply};
+
+    let processes = vec![
+        Process {
+            pid: 100,
+            name: "linklet-agent.exe".to_string(),
+            path: None,
+            cmdline: None,
+        },
+        Process::named(200, "explorer.exe"),
+    ];
+    let filter = Filter {
+        name: Some("agent".to_string()),
+        ..Filter::any()
+    };
+
+    apply(processes, &filter, 2)
+}
+
+#[test]
+fn a_listing_round_trips_with_every_field_a_reader_needs() {
+    // **The reply shape M10 asks for**: count, total, truncated, and the filters that were
+    // actually applied. Each is checked separately because a reader that got an empty list
+    // has to be able to tell "nothing matched" from "nothing was asked" from "the machine
+    // could not be read", and two of those three are not lists at all.
+    let listing = a_listing();
+    let encoded = json::write(&wire::encode_ps_reply(&listing));
+    let decoded = wire::ps_listing_from_reply(
+        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+    )
+    .expect("its own output should decode");
+
+    assert_eq!(decoded.count(), 1, "{decoded:#?}");
+    assert_eq!(decoded.processes[0].name, "linklet-agent.exe");
+    assert_eq!(decoded.processes[0].pid, 100);
+    assert_eq!(decoded.total, 2, "the total is before the filter");
+    assert_eq!(decoded.unreadable, 2);
+    assert!(!decoded.truncated);
+    assert_eq!(decoded.applied.get_str("name"), Some("agent"));
+    assert!(!decoded.notes.is_empty(), "{decoded:#?}");
+}
+
+#[test]
+fn an_empty_filter_comes_back_as_an_empty_object_and_not_as_nothing() {
+    // A caller reading a reply has to be able to tell "no filters were asked for" from
+    // "the filters were dropped on the way out", and only one of those is safe to act on.
+    use linklet_core::process::{Filter, apply};
+
+    let listing = apply(Vec::new(), &Filter::any(), 0);
+    let encoded = json::write(&wire::encode_ps_reply(&listing));
+    let decoded = wire::ps_listing_from_reply(
+        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+    )
+    .expect("decodes");
+
+    assert_eq!(decoded.applied, Json::Object(Default::default()));
+    assert_eq!(decoded.count(), 0);
+}
+
+#[test]
+fn every_part_of_a_process_filter_survives_the_wire() {
+    use linklet_core::process::Filter;
+
+    let filter = Filter {
+        name: Some("agent".to_string()),
+        path: Some("bin".to_string()),
+        cmdline: Some("--port 8790".to_string()),
+        query: Some("linklet".to_string()),
+        exclude: Some("test".to_string()),
+    };
+
+    let request = Request::Ps(filter.clone());
+    let encoded = json::write(&wire::request_to_json(&request));
+    let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
+        .expect("its own output should decode");
+
+    assert_eq!(decoded, request, "{encoded}");
+    let Request::Ps(decoded) = decoded else {
+        panic!("a ps request decoded as something else");
+    };
+    assert_eq!(decoded, filter);
+}
+
+#[test]
+fn a_ps_request_with_no_arguments_is_a_listing_of_everything() {
+    let request = Request::Ps(linklet_core::process::Filter::any());
+    let encoded = json::write(&wire::request_to_json(&request));
+
+    assert_eq!(
+        encoded, r#"{"op":"ps"}"#,
+        "an empty filter is not written out"
+    );
+    assert_eq!(
+        wire::request_from_json(&json::parse(&encoded).expect("valid JSON")).expect("decodes"),
+        request
+    );
+}
+
+#[test]
+fn a_filter_field_of_the_wrong_shape_is_refused_by_name() {
+    // The filter is the caller's text and it goes into a message, so it is read the way
+    // every other field is: by name, with the field that is wrong in the sentence.
+    for (body, expected) in [
+        (r#"{"op":"ps","name":5}"#, "name"),
+        (r#"{"op":"ps","exclude":true}"#, "exclude"),
+    ] {
+        let error = wire::request_from_json(&json::parse(body).expect("valid JSON"))
+            .expect_err("this filter should have been refused");
+        assert!(
+            error.to_string().contains(expected),
+            "for {body}, expected {expected:?} in {error}"
+        );
+    }
+}
+
 // --- what the agent reads ----------------------------------------------------
 
 #[test]

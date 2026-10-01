@@ -299,6 +299,38 @@ pub fn push(
     }
 }
 
+/// Asks an agent what is running on its machine.
+///
+/// The filter is applied **on the agent**, not here, and that is the point of it being a
+/// request rather than a convention: a machine with hundreds of processes should send the
+/// handful that match, and the caller should not have to receive the rest to find them.
+///
+/// **An empty listing is not an error and is not the same fact as a machine that could not
+/// be read.** The answer carries the counts, the filter that was applied, and a note for
+/// anything the machine could not supply; [`linklet_core::process::Listing::incomplete`] is
+/// where a caller branches on that. This is the difference `docs/ROADMAP.md` M10 records,
+/// and the reason the deploy loop can now ask "is the old build still running" before it
+/// overwrites the file.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know what is running:
+/// an unreachable agent, a reply that could not be read, or an agent that refused.
+pub fn ps(
+    address: &AgentAddress,
+    filter: &linklet_core::process::Filter,
+) -> Result<linklet_core::process::Listing, CallError> {
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    let reply = ask(
+        &mut connection,
+        session.as_mut(),
+        &Request::Ps(filter.clone()),
+        HANDSHAKE_ALLOWANCE,
+    )?;
+
+    wire::ps_listing_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
+}
+
 /// Brings one file back from a path under the agent's transfer root.
 ///
 /// The agent describes the file before sending a byte of it: the reply is a manifest,

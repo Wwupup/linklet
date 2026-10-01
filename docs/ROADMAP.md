@@ -391,13 +391,40 @@ on everything in this list -- which is why reading it beats designing from scrat
       an empty log as "it logged nothing". (The one `^C` in it was the shell's own echo.) This
       is the second time on one target that an unexplained observation looked like a fact
       about the agent; both are now written down where the next reader will meet them.
-- [ ] **`spawn`, `ps`, `kill`.** Today `exec` blocks until the command exits or the deadline
+- [-] **`spawn`, `ps`, `kill`.** Today `exec` blocks until the command exits or the deadline
       kills the whole tree, and a child inherits the agent's pipes -- so starting a
       long-running program with it is the exact trap lanlink documents ("never use
       `lan_exec` with `start app.exe`"). There is also no way to ask what is running or to
       stop it, which means the deploy loop (kill the old build, push, start, confirm it
       stayed up) cannot be closed without a person. `ps` needs the fields that make an empty
       result readable: count, total, truncated, and the filters that were actually applied.
+
+      **`ps` is done; `spawn` and `kill` are not, so this item stays open.** What landed:
+      `linklet ps --agent <host:port> [--name|--cmdline|--query|--exclude <text>]`, the
+      `ps` request on the wire, and `ps` as the sixth tool on the MCP surface. The shape is
+      the part that was designed rather than the code: one line per process, `pid name`,
+      then a summary that is **always printed** -- `0 of 271 match, filter name=agent` --
+      because an empty list on its own is what the first real target got one step wrong
+      from. `count`, `total`, `truncated`, the filter echoed back, and a note for every
+      field the machine could not supply are all in the reply, in the core type
+      (`linklet_core::process::Listing`) rather than assembled at the edge.
+
+      **A field the machine cannot answer is reported and never defaulted.** `tasklist`
+      gives a name and a pid to anyone and a command line to nobody, so a `--cmdline`
+      filter returns no matches *and* a note naming the field, and the exit code is 1: the
+      call was made and the answer is incomplete. That is M10's own example, implemented
+      rather than quoted.
+
+      **The exit code follows `check` and not `exec`** -- there is no command whose status
+      could be passed through, and `1` for an incomplete listing is a fact about the
+      machine rather than about the network, which is what the scheme is for.
+
+      Still to do in this item: **`kill`** (by pid or by name, with the `matched`/`killed`
+      distinction that makes a name match that was deliberately not killed a failure rather
+      than a clean result) and **`spawn`** (a program started so that it survives the
+      request, with its own output file rather than the agent's pipes -- the trap this item
+      opens with). The deploy loop needs all three, so nothing can be closed with this
+      alone: after `ps` says the old build is running, there is still no way to stop it.
 - [ ] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
       log" is currently "pull it and grep locally", which is defensible -- the pull is
       digest-verified and root-bounded -- but it is wrong for a two-gigabyte log and it

@@ -50,6 +50,7 @@ usage:
   linklet check [options] <target>[,<target>...]
   linklet testbed check <spec-file> <target>
   linklet exec --agent <host:port> [options] <command...>
+  linklet ps --agent <host:port> [options]
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -66,6 +67,18 @@ options for check:
 about transfers:
   A path under the agent's transfer root -- the directory it was started with, or
   --root on the agent. One file per command, and a directory is your own loop.
+
+options for ps:
+  --name <text>       keep processes whose image name contains this
+  --cmdline <text>    keep processes whose command line contains this
+  --query <text>      keep processes matching this in any readable field
+  --exclude <text>    drop processes whose name or command line contains this
+
+about the listing:
+  One line per process, `pid name`, then a summary saying how many of how many
+  matched and what filter was applied. An empty list is only readable next to that
+  summary, which is why it is always printed -- and exit 1 rather than 0 when the
+  machine could not be read completely.
 
 about mcp:
   Speaks the Model Context Protocol on stdin and stdout, for an AI agent to
@@ -163,6 +176,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("pull") {
         return run_transfer(Direction::Pull, &arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("ps") {
+        return run_ps(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -415,6 +432,10 @@ impl ToolRunner for LiveRunner {
             to,
             token_from_environment().as_ref(),
         )
+    }
+
+    fn ps(&self, agent: &str, filter: &linklet_core::process::Filter) -> ToolOutcome {
+        ps_on(agent, filter, token_from_environment().as_ref())
     }
 }
 
@@ -688,8 +709,116 @@ fn parse_transfer(direction: Direction, arguments: &[String]) -> Result<Transfer
     })
 }
 
-/// Moves one file and renders what happened.
+/// Lists what is running on an agent's machine, and prints what it found.
 ///
+/// The exit code is the shape `check` uses rather than `exec`'s: `0` when a listing arrived
+/// and was complete, `1` when it arrived and something about it could not be read, `2` for a
+/// wrong invocation, and `3` when the call could not be made. **An incomplete listing is exit
+/// 1 and not 3**, because the call *was* made: what went wrong is on the machine, and the
+/// distinction is the one the whole exit-code scheme exists for.
+fn run_ps(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut filter = linklet_core::process::Filter::any();
+    let mut words = arguments.iter();
+
+    while let Some(argument) = words.next() {
+        let mut value = |flag: &str| -> Result<String, u8> {
+            words.next().cloned().ok_or_else(|| {
+                eprintln!("linklet: {flag} needs a value");
+                ExitCode::USAGE
+            })
+        };
+        match argument.as_str() {
+            "--agent" => match value("--agent") {
+                Ok(got) => agent = Some(got),
+                Err(code) => return code,
+            },
+            "--name" => match value("--name") {
+                Ok(got) => filter.name = Some(got),
+                Err(code) => return code,
+            },
+            "--cmdline" => match value("--cmdline") {
+                Ok(got) => filter.cmdline = Some(got),
+                Err(code) => return code,
+            },
+            "--query" => match value("--query") {
+                Ok(got) => filter.query = Some(got),
+                Err(code) => return code,
+            },
+            "--exclude" => match value("--exclude") {
+                Ok(got) => filter.exclude = Some(got),
+                Err(code) => return code,
+            },
+            other => {
+                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+                return ExitCode::USAGE;
+            }
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: ps needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+
+    let outcome = ps_on(&agent, &filter, token_from_environment().as_ref());
+    println!("{}", outcome.text);
+
+    if outcome.is_error {
+        // The call could not be made, so there is no listing and no count to branch on.
+        // Printed to stdout by the line above because the same text is the tool's whole
+        // answer, and a caller that has to merge two streams to reconstruct one will not.
+        return ExitCode::REFUSED;
+    }
+
+    match complete_from_text(&outcome.text) {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::NOT_ALL_ALIVE,
+    }
+}
+
+/// Whether a rendered listing says the answer is the whole truth.
+///
+/// A small parse of a format this project owns, the same way `exit_code_from_text` is, and
+/// for the same reason: the alternative is threading the [`linklet_core::process::Listing`]
+/// through the renderer as well as through the text, which puts one fact in two parameters.
+/// The format is pinned by tests in `linklet_core::process`, so a change that breaks this
+/// parser breaks those first.
+///
+/// The markers are the two the renderer writes: a summary that could not read the process
+/// list, and a count of lines that could not be read.
+fn complete_from_text(text: &str) -> bool {
+    let summary = text.lines().next().unwrap_or_default();
+
+    !summary.contains("could not be read")
+        && !summary.contains("unreadable")
+        && !text.contains("\nnote: ")
+}
+
+/// Asks an agent what is running and renders what it said.
+///
+/// Shared by the command and the tool, like `exec_on` and `transfer_on`, so that the two
+/// cannot disagree about what a failure looks like.
+fn ps_on(
+    agent: &str,
+    filter: &linklet_core::process::Filter,
+    token: Option<&Token>,
+) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    match linklet_client::ps(&address, filter) {
+        Ok(listing) => ToolOutcome::ok(linklet_core::process::render(&listing)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
+}
+
+/// Moves one file and renders what happened.
 /// Shared by the command and the tool, so that the two cannot disagree about what a
 /// failure looks like -- the same shape [`exec_on`] has. The distinction it keeps is the
 /// one this project is arranged around: a call that could not be made is `is_error`, and

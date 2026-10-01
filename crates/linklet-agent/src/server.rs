@@ -287,6 +287,15 @@ fn answer(
             Response::Sealed(receive(connection, session, &manifest, root))
         }
         Ok(Request::Pull { path }) => send(connection, session, &path, root),
+        // The one request that looks at the machine rather than at the transfer root, and
+        // the only one whose answer is mostly *about the answer*: a listing carries its own
+        // counts and notes, so an empty list is readable as "nothing matched" rather than
+        // as "nothing is running". `linklet_core::process` decides that; the adapter runs
+        // `tasklist` and does not fail, reporting a machine it could not ask as a listing
+        // with a note rather than as an error.
+        Ok(Request::Ps(filter)) => Response::Sealed(wire::encode_ps_reply(
+            &linklet_adapters::list_processes(&filter),
+        )),
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.

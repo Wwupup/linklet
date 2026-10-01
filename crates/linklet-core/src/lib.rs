@@ -31,6 +31,7 @@ pub mod json;
 pub mod log;
 mod outcome;
 mod probe;
+pub mod process;
 mod target;
 pub mod testbed;
 mod tool;

@@ -149,6 +149,19 @@ pub trait ToolRunner {
     ///
     /// The mirror of [`ToolRunner::push`], and here it is `to` that is local.
     fn pull(&self, agent: &str, from: &str, to: &str) -> ToolOutcome;
+
+    /// Reports what is running on the agent's machine.
+    ///
+    /// Takes the filter's fields rather than a [`crate::process::Filter`] for the same
+    /// reason [`ToolRunner::exec`] takes a command string: what a tool call means is
+    /// decided here, and the implementation only carries it out.
+    ///
+    /// `name`, `path`, `cmdline`, `query` and `exclude` are the filter, and every one is
+    /// optional -- no filter means everything. **The answer is a listing and not a list**:
+    /// how many were examined, what filter was applied and what the machine could not
+    /// supply are part of it, because an empty list without them is the shape
+    /// `docs/ROADMAP.md` M10 records as dangerous.
+    fn ps(&self, agent: &str, filter: &crate::process::Filter) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -174,6 +187,28 @@ fn reject_unknown(arguments: &Json, allowed: &[&str]) -> Result<(), ToolError> {
         }
     }
     Ok(())
+}
+
+/// An optional string argument.
+///
+/// Absent is `None` and not an error, which is what makes a filter's fields optional: a
+/// caller that did not filter on a field did not make a mistake.
+///
+/// **A value of the wrong shape is an error** rather than a silent `None`: a caller that
+/// sent `"name": 5` meant to filter and said it wrong, and dropping the filter would answer
+/// a different question than the one asked -- which, for a listing, is the failure this
+/// whole feature is arranged against.
+///
+/// Returns `Result` rather than `Option` for that reason.
+fn optional_str(arguments: &Json, name: &'static str) -> Result<Option<String>, ToolError> {
+    match arguments.get(name) {
+        None => Ok(None),
+        Some(Json::Str(text)) => Ok(Some(text.clone()).filter(|text| !text.trim().is_empty())),
+        Some(other) => Err(ToolError::BadArgument {
+            name,
+            problem: format!("expected a string, got {}", type_name(other)),
+        }),
+    }
 }
 
 /// A required string argument.
@@ -445,6 +480,46 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "ps",
+            // Short, and every word is there because a reader would otherwise have to
+            // guess at it: *what* is listed (processes), and *where* (the remote agent's
+            // machine, not this one). What makes it different from reading a list -- that
+            // it says how many it examined, so an empty answer is readable -- is in the
+            // result rather than in the description, which is the right place for it:
+            // `docs/MCP.md` refuses a description that has to teach a manual.
+            description: "List processes on a remote linklet agent's machine.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "keep processes whose image name contains this"
+                        },
+                        "cmdline": {
+                            "type": "string",
+                            "description": "keep processes whose command line contains this"
+                        },
+                        "query": {
+                            "type": "string",
+                            "description": "keep processes matching this in any field"
+                        },
+                        "exclude": {
+                            "type": "string",
+                            "description": "drop processes whose name or command line contains this"
+                        }
+                    },
+                    "required": ["agent"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -550,6 +625,23 @@ pub fn dispatch(
             // not leave the tree.
             let to = relative_local_path(arguments, "to")?;
             Ok(runner.pull(&agent, &from, &to))
+        }
+        "ps" => {
+            reject_unknown(arguments, &["agent", "name", "cmdline", "query", "exclude"])?;
+            let agent = required_str(arguments, "agent")?;
+            // Every filter field is optional and they are the same five the protocol
+            // carries. `path` is accepted by the wire and **not** by this tool, because the
+            // one implementation of `ps` cannot supply it: a tool argument that is always
+            // unanswerable is worse than an absent one, and `docs/MCP.md` says so about
+            // tools that exist with nothing behind them.
+            let filter = crate::process::Filter {
+                name: optional_str(arguments, "name")?,
+                path: None,
+                cmdline: optional_str(arguments, "cmdline")?,
+                query: optional_str(arguments, "query")?,
+                exclude: optional_str(arguments, "exclude")?,
+            };
+            Ok(runner.ps(&agent, &filter))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }

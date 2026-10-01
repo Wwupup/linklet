@@ -4,11 +4,11 @@ A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
 > **Status: M0-M7 done, both defects M10 found are fixed, and the agent keeps a log.**
-> Five crates, 416 tests, one command that runs every gate. A host can check
+> Five crates, 447 tests, one command that runs every gate. A host can check
 > reachability, run a command on a target through a sealed channel, read what it did,
-> and move one file in either direction. See `docs/ROADMAP.md` for what is next and
-> what was parked, and `docs/decisions.md` for the choices that are not obvious from
-> the code.
+> see what is running there, and move one file in either direction. See
+> `docs/ROADMAP.md` for what is next and what was parked, and `docs/decisions.md` for
+> the choices that are not obvious from the code.
 
 ## What it does
 
@@ -32,6 +32,14 @@ $ echo $?
 ```
 
 ```console
+$ linklet ps --agent 10.0.0.5:8787 --name app.exe
+5144 app.exe
+1 of 214 match, filter name=app.exe
+$ echo $?
+0
+```
+
+```console
 $ linklet push --agent 10.0.0.5:8787 --from dist/app.exe --to app.exe
 app.exe: 4194304 bytes, sha256 9f86d081884c7d65...
 $ linklet pull --agent 10.0.0.5:8787 --from build.log --to build.log
@@ -42,6 +50,12 @@ A transfer goes to the directory the agent was started in, or the one it was giv
 `--root`, and nowhere else -- in either direction. The digest on the line is the one the
 receiving side computed, so a caller can check it against the file it sent or the file
 it now has.
+
+`ps` prints one line per process, `pid name`, then a summary. **The summary is the
+point**: `0 of 214 match, filter name=app.exe` cannot be read as a clean machine, and an
+agent that treats an empty list as one will deploy over a running binary. For the same
+reason an incomplete listing -- one that could not read the machine, or could not check
+a field the caller filtered on -- exits 1 and says so in a note.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`
@@ -60,14 +74,17 @@ took, and what it printed. It needs an agent on the target and a shared token.
 
 | code | meaning |
 |---|---|
-| 0 | the run completed, and either everything is alive or the command exited 0 |
-| 1 | the run completed and something is not |
+| 0 | the run completed and the answer is the whole truth -- everything alive, the command exited 0, or the listing was complete |
+| 1 | the run completed and something is not: a target is down, the command failed, or a listing could not be read completely |
 | 2 | the invocation was wrong |
 | 3 | the run was refused before anything was looked at |
 
 For `exec`, the command's own exit code is passed through when the command ran,
 so `linklet exec ... && next` behaves the way the command would. A call that could
-not be made gets 3, which no command can produce.
+not be made gets 3, which no command can produce. `ps` follows `check` rather than
+`exec`: there is no command whose status could be passed through, and **1 means the
+call was made and the answer is incomplete** -- a listing the machine could not
+finish is a fact about the machine, and 3 would send the reader to the network.
 
 The distinction between 1 and 3 is the one an agent needs: "the machines are down"
 and "the tool could not start" send it to different places, and collapsing them
