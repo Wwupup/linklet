@@ -5,13 +5,13 @@ agent rather than by a person reading a manual.
 
 > **Status: M0-M7 done, both defects M10 found are fixed, the deploy loop can be closed
 > from an agent, a target's files can be looked at without moving them, the machines on a
-> network can be found without being told where they are, and one command can be run across
-> several of them.** Five crates, 533 tests, one command that runs every gate. A host can
-> check reachability, run a command on a target through a sealed channel, read what it did,
-> see what is running there, start something that outlives the call, stop it again, list and
-> search a directory on the target, and move one file in either direction. See
-> `docs/ROADMAP.md` for what is next and what was parked, and `docs/decisions.md` for the
-> choices that are not obvious from the code.
+> network can be found without being told where they are, one command can be run across
+> several of them, and an agent that dies or wedges is restarted.** Five crates, 544 tests,
+> one command that runs every gate. A host can check reachability, run a command on a target
+> through a sealed channel, read what it did, see what is running there, start something that
+> outlives the call, stop it again, list and search a directory on the target, and move one
+> file in either direction. See `docs/ROADMAP.md` for what is next and what was parked, and
+> `docs/decisions.md` for the choices that are not obvious from the code.
 
 ## What it does
 
