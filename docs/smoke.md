@@ -177,11 +177,15 @@ schtasks /Run /TN linklet-supervisor
 ```bat
 @echo off
 set LINKLET_TOKEN=<the secret>
-pwsh -NoProfile -File C:\linklet\linklet-supervise.ps1 -Config C:\linklet\supervisor.json -Log C:\linklet\supervisor.log
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\linklet\linklet-supervise.ps1 -Config C:\linklet\supervisor.json -Log C:\linklet\supervisor.log
 ```
 
-Five things about that, four of them measured on a real machine:
+Six things about that, five of them measured on a real machine:
 
+- **`powershell`, not `pwsh`.** Windows PowerShell 5.1 is on every Windows machine and
+  PowerShell 7 is not -- the bench this was verified on has no `pwsh` at all, and the first
+  version of this block used it, so the task started, exited, and left no log and no agent.
+  The script is written for 5.1 and runs there.
 - **The supervisor must have the token in its environment**, because the probe completes a
   handshake and the handshake needs it. Without one every probe reports "a sealed call needs a
   token" and the supervisor restarts a perfectly healthy agent forever. Its own log shows this
@@ -204,6 +208,41 @@ Five things about that, four of them measured on a real machine:
 nothing watches *it*. If the supervisor dies, the agent it started keeps running and nothing
 restarts the supervisor. That is one level less bad than the gap M10 opened with -- a dead
 agent no longer goes unnoticed -- and it is named here rather than implied.
+
+**Both recoveries were verified on the real bench** (`192.168.100.2`, agent on 8790, the
+supervisor started by `schtasks`). The supervisor's own log is the evidence, and its times are
+the machine's:
+
+*Death.* The agent was killed outright from this side with the supervisor untouched:
+
+```text
+04:24:48 probe 0 -> 127.0.0.1:8790: answered 127.0.0.1:8790: linklet-agent
+04:24:55 probe 1 -> 127.0.0.1:8790: nothing listening at 127.0.0.1:8790
+04:24:55 nothing at 127.0.0.1:8790; starting it
+04:24:55 started pid 4044: C:\linklet\bin\linklet-agent.exe
+04:24:57 probe 0 -> 127.0.0.1:8790: answered 127.0.0.1:8790: linklet-agent
+```
+
+*Wedged.* A plain Python socket that accepted and never answered was put on the agent's port,
+so that the thing holding it was **not an agent at all** -- the case the first version of the
+script could not clear, because it killed by name:
+
+```text
+04:25:31 probe 0 -> 127.0.0.1:8790: answered 127.0.0.1:8790: linklet-agent
+04:25:38 probe 4 -> 127.0.0.1:8790: no answer from 127.0.0.1:8790: no reply within 2000 ms
+04:25:38 127.0.0.1:8790 accepted a connection and did not answer; killing it
+04:25:38 something is on port 8790; stopping pid 11508
+04:25:38 taskkill (machine code page): SUCCESS: The process with PID 11508 (child process
+         of PID 7504) has been terminated.
+04:25:42 probe 1 -> 127.0.0.1:8790: nothing listening at 127.0.0.1:8790
+04:25:42 nothing at 127.0.0.1:8790; starting it
+04:25:42 started pid 6880: C:\linklet\bin\linklet-agent.exe
+```
+
+Across the link, that same wedged socket is what `check` calls healthy: it reported
+`live 192.168.100.2:8790 connected` while the probe reported exit 4. After the supervisor
+cleared it, `linklet exec --agent 192.168.100.2:8790 "echo recovered"` answered on the first
+try.
 
 ### Three things about starting it by hand
 
