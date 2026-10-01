@@ -39,7 +39,7 @@ Nothing but a running `linklet-agent` and the same token on both sides.
 # On the target, once:
 $env:LINKLET_TOKEN = '<at least sixteen bytes>'
 mkdir C:\linklet\transfers
-linklet-agent.exe --port 8787 --root C:\linklet\transfers
+linklet-agent.exe --port 8787 --root C:\linklet\transfers --log C:\linklet\agent.log
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 ```
@@ -48,12 +48,44 @@ The firewall rule is the step that matters and the reason this layer exists. It 
 also the one step that `linklet` deliberately does not do for you: the agent cannot
 open a port on a machine it has not been installed on yet.
 
+### The agent's own log, and why `--log` exists
+
+`--log <file>` appends one line per request to that file, and the format is a pair:
+
+```
+-> #000001 run
+<- #000001 run ok 2411 ms
+```
+
+`->` is a request taken, `<-` is a request answered, the number ties the two, and the
+reason on a refusal is quoted at the end of the completion line. **The absence of the
+second line is the evidence**: a request that wedged the agent, or that was in flight
+when it died, leaves a `->` and nothing else, which is what names it. A log that wrote
+one line per request could not do that — a request that never finished would write
+nothing, and would look exactly like a request that never arrived. That is what the
+first real target left: an agent that had answered calls all afternoon and not one
+record of what it had been asked.
+
+The command line and the file paths are **not** in the log. A log on someone else's
+machine outlives the reason it was written, and a command line is where a secret gets
+left by accident.
+
+**A shell redirect is not a logging strategy, and this is measured rather than
+assumed.** Starting the agent as `cmd /c linklet-agent.exe ... > agent.log` leaves that
+file **empty** — the redirect captures nothing from the child — so an empty
+`agent.log` is evidence about the launcher and not about the agent. `AGENTS.md` section
+8 has the measurement and the second time it was confirmed.
+
 Three things about that block, all of them learned by doing it on a real machine:
 
 - **The root has to exist.** The agent refuses to start if `--root` is not a directory,
   rather than starting and failing every transfer later with a filesystem error naming a
   path nobody typed. `--root` also defaults to the directory the agent was started in,
   which is why it is worth passing explicitly on a target.
+- **`--log` is checked the same way, and for the same reason.** An operator who asked for
+  a log and silently did not get one has a machine whose evidence they believe exists and
+  does not — which is the mistake this whole feature is a reaction to. A log path that is
+  a directory, or cannot be opened, is a refusal to start with exit 2.
 - **A program rule is the one that keeps working.** `-Program <the agent's path>` (any
   port) survives a change of `--port`; a rule for one port does not. The port form above
   is what the first version of this documented, and both are fine.
@@ -143,8 +175,10 @@ that is silently dropped rather than refused -- the same symptom as a firewall t
 never opened. That is how it presented on the first real target: the agent had died with
 its console, `netstat` showed nothing listening, and `linklet check` said "no answer within
 5 s" for a machine that was up and reachable. Look at the process before the firewall:
-`tasklist | findstr linklet-agent` first, `netsh advfirewall` second. The agent keeps no
-per-request record (M10 in `docs/ROADMAP.md`), so a death leaves nothing to read -- and
-note that **an empty log file is not evidence that it logged nothing**: a
-`cmd /c ... > file` launched through the spawn call captures nothing from the child at all,
-which was measured, so start the agent in a way whose output you can actually read.
+`tasklist | findstr linklet-agent` first, `netsh advfirewall` second.
+
+**The agent now leaves a record, so look at it third.** With `--log`, an agent that died
+mid-request leaves a `->` with no `<-`, and that line names the request it died on. An
+agent that died between requests leaves pairs, and the last one is simply the last thing it
+did. Read it with `linklet pull --agent <address> --from <the log's path> --to <local>` if
+it is inside the agent's root, or read it on the machine another way if it is not.

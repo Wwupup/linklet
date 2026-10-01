@@ -97,6 +97,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
 | `crates/linklet-core/src/auth.rs` | the token, and the constant-time comparison that is the point of it |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
+| `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, and the pair that names a request that never finished |
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
@@ -104,6 +105,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
 | `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
+| `crates/linklet-agent/src/log.rs` | the agent's log file, and what happens when it cannot be written |
 | `crates/linklet-agent/src/execute.rs` | running a command, and killing the tree it started |
 | `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |

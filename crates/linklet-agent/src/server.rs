@@ -26,7 +26,7 @@
 //! The cost is a handshake each time, which is a round trip on a LAN.
 
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use linklet_adapters::{
     Connection, ConnectionError, HkdfChannel, describe, receive_body, send_body,
@@ -35,8 +35,11 @@ use linklet_core::auth::{self, Token};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::{FrameError, Kind};
 use linklet_core::json::{self, Json};
+use linklet_core::log::{Operation, Outcome};
 use linklet_core::transfer::{Destination, Manifest};
 use linklet_core::wire::{self, Request, WireError};
+
+use crate::log::RequestLog;
 
 /// How long the agent waits for the first message of a connection.
 ///
@@ -64,7 +67,12 @@ const MESSAGE_BUDGET: Duration = Duration::from_secs(30);
 /// connection is closed otherwise. Nothing is logged and dropped: a peer that gets
 /// nothing back has to guess whether the agent is slow, dead or refusing, and
 /// guessing is what this project exists to remove.
-pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination) {
+///
+/// `log` records one pair of lines per request, and is a no-op when the operator did not
+/// ask for a log. It is threaded through rather than reached for, so that the one place
+/// that decides what a line says (`linklet_core::log`) and the one place that writes it
+/// (`crate::log`) are the only two things involved.
+pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination, log: &RequestLog) {
     let mut connection = Connection::with_budget(stream, HELLO_BUDGET);
 
     let hello = match connection.read_frame(Kind::Hello) {
@@ -98,7 +106,7 @@ pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination)
     };
 
     connection.set_budget(MESSAGE_BUDGET);
-    answer_one(&mut connection, session, root);
+    answer_one(&mut connection, session, root, log);
 }
 
 /// Reads the one sealed request on a connection and answers it.
@@ -107,8 +115,20 @@ pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination)
 /// reason to hold state across them -- `docs/transfer.md` T12. The connection's own
 /// message budget is what enforces it: two messages is the default, and a request that
 /// carries a transfer raises it by exactly the number of chunks the manifest declares.
-fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>, root: &Destination) {
+///
+/// **This is where the two log lines are written**, and the order matters more than the
+/// wording: the first is written as soon as the request can be named, before a byte of the
+/// answer exists, so a request that never finishes leaves a `->` with no `<-` and names
+/// itself. The second is written after the reply is on the wire, because "answered" is a
+/// fact about the socket rather than about the handler.
+fn answer_one(
+    connection: &mut Connection,
+    mut session: Box<dyn Sealed>,
+    root: &Destination,
+    log: &RequestLog,
+) {
     let Ok(body) = connection.read_frame(Kind::Sealed) else {
+        // Nothing was read, so there is nothing to name: no operation arrived.
         return;
     };
 
@@ -121,24 +141,93 @@ fn answer_one(connection: &mut Connection, mut session: Box<dyn Sealed>, root: &
         // seal it is exactly what failed. The worst an attacker who can rewrite
         // traffic gains is turning one message about a failed call into another
         // message about a failed call, because a refusal is never read as a result.
+        //
+        // Nothing is logged here either, and for the same reason there is nothing to
+        // name: a message that will not open is not a request, and guessing an
+        // operation from bytes that failed authentication would be inventing evidence.
         let refusal = json::write(&wire::reply_refused(auth::unauthorized_reason()));
         let _ = connection.write_frame(Kind::Sealed, refusal.as_bytes());
         return;
     }
+
+    // A request this version cannot read is still a request that arrived, and the log
+    // says `unknown` rather than dropping it -- see `Operation::Unknown`.
+    let named = named_operation(&plaintext);
+    let id = log.taken(named);
+    let started = Instant::now();
 
     let reply = answer(connection, session.as_mut(), &plaintext, root);
 
     // Sealed with the same session, so the command's output -- the part a caller most
     // wants kept -- never crosses the network in the clear. One buffer, reused for
     // the seal rather than allocated per message: T10.
-    let Response::Sealed(reply) = reply else {
+    match reply {
+        Response::Sealed(reply) => {
+            let wrote = write_reply(connection, session.as_mut(), &reply);
+            // Three outcomes rather than two. A reply that was refused is the agent saying
+            // no to something it understood, which is a fact about the request; a reply
+            // that would not go is the agent failing to do something it had accepted,
+            // which is a fact about the machine. A reader looking for what went wrong on
+            // this target needs to tell those apart.
+            let (outcome, reason) = match (wrote, refused(&reply)) {
+                (false, _) => (
+                    Outcome::Failed,
+                    Some("the reply could not be sent".to_string()),
+                ),
+                (true, true) => (Outcome::Refused, refusal_reason(&reply)),
+                (true, false) => (Outcome::Ok, None),
+            };
+            log.answered(id, named, outcome, elapsed_ms(started), reason);
+        }
         // The request answered itself while it was being handled, because what answers
         // it is a stream rather than a message -- a pull sends the manifest and then the
-        // file, and there is no third thing to say afterwards.
-        return;
-    };
+        // file, and there is no third thing to say afterwards. Both of those went out, so
+        // this is a request that was answered.
+        Response::AlreadySent => {
+            log.answered(id, named, Outcome::Ok, elapsed_ms(started), None);
+        }
+    }
+}
 
-    let _ = write_reply(connection, session.as_mut(), &reply);
+/// Whether a reply is the agent saying no.
+///
+/// The refusal shape is `wire`'s own (`{"ok": false, "error": ...}`) and it is read back
+/// here rather than carried alongside the reply, because a second field on every reply
+/// would be a second thing to keep in step with the first.
+fn refused(reply: &Json) -> bool {
+    reply.get("ok").and_then(Json::as_bool) == Some(false)
+}
+
+/// The reason out of a refusal, for the log line.
+///
+/// Absent rather than invented when the field is not there: a refusal with no `error` is a
+/// reply this version would not have sent, and a log line is not the place to guess at
+/// what it meant.
+fn refusal_reason(reply: &Json) -> Option<String> {
+    reply.get_str("error").map(str::to_string)
+}
+
+/// Which operation a sealed body names, for the log.
+///
+/// Read out of the JSON rather than out of a parsed [`Request`], because the case that
+/// matters most is the request that **could not be parsed**: a body that is not JSON, or
+/// carries an `op` this version does not know, is exactly the traffic an operator wants to
+/// find in a log, and a name taken from a successful parse would be missing for all of it.
+///
+/// Deliberately ignores the rest of the message. The command line is the caller's, it can
+/// contain anything, and a log on someone else's machine is a file that outlives the
+/// reason it was written.
+fn named_operation(plaintext: &[u8]) -> Operation {
+    wire::parse_body(plaintext)
+        .ok()
+        .and_then(|value| value.get_str("op").map(str::to_string))
+        .and_then(|name| Operation::named(&name))
+        .unwrap_or(Operation::Unknown)
+}
+
+/// Milliseconds since a request was taken, for the log line.
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 /// Seals one reply and writes it, saying whether it went.

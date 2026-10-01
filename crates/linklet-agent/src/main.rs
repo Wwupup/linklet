@@ -37,9 +37,11 @@
 #![forbid(unsafe_code)]
 
 mod execute;
+mod log;
 mod server;
 
 use std::net::TcpListener;
+use std::path::PathBuf;
 
 use linklet_core::auth::Token;
 use linklet_core::transfer::Destination;
@@ -54,13 +56,16 @@ const USAGE: &str = "\
 linklet-agent -- run a command on this machine when a host asks
 
 usage:
-  linklet-agent [--port <port>] [--root <directory>]
+  linklet-agent [--port <port>] [--root <directory>] [--log <file>]
 
 options:
   --port <port>   the port to listen on (default 8787)
   --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
   --root <directory>  the only directory a transfer may write in or read from, and it
                       must exist (default: the directory the agent was started in)
+  --log <file>    append one line per request to this file (or LINKLET_LOG). Without
+                  it the agent keeps no log, and a request that never finishes leaves
+                  no evidence behind
   -h, --help      print this
 ";
 
@@ -70,6 +75,7 @@ fn main() {
     let mut port = DEFAULT_PORT;
     let mut root: Option<String> = None;
     let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
+    let mut log_path: Option<String> = std::env::var("LINKLET_LOG").ok();
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
         match argument.as_str() {
@@ -90,6 +96,13 @@ fn main() {
                     }
                 }
             }
+            "--log" => match iterator.next() {
+                Some(value) => log_path = Some(value.clone()),
+                None => {
+                    eprintln!("linklet-agent: --log needs a file");
+                    std::process::exit(2);
+                }
+            },
             "--root" => match iterator.next() {
                 Some(value) => root = Some(value.clone()),
                 None => {
@@ -171,6 +184,21 @@ fn main() {
         std::process::exit(2);
     }
 
+    // The log, opened before the port is bound for the same reason as the token and the
+    // root: an operator who asked for a log and silently did not get one has a machine
+    // whose evidence they believe exists and does not. That is the mistake this feature
+    // is a reaction to, so a failure here is a refusal to start rather than a warning.
+    let request_log = match &log_path {
+        Some(path) => match log::RequestLog::open(&PathBuf::from(path)) {
+            Ok(log) => log,
+            Err(reason) => {
+                eprintln!("linklet-agent: --log: {reason}");
+                std::process::exit(2);
+            }
+        },
+        None => log::RequestLog::none(),
+    };
+
     // Bound before the banner is printed, so that "listening on" is only said
     // once it is true. A message that claims something before trying it is the
     // failure mode this whole project is a reaction to.
@@ -199,11 +227,19 @@ fn main() {
 
     // The root is on the banner because it is the answer to "what can this agent write
     // to", which is the first question a person who is about to push a build should be
-    // able to answer without reading a manual.
-    println!(
-        "linklet-agent listening on 0.0.0.0:{bound} transfers under {}",
-        root.root().display()
-    );
+    // able to answer without reading a manual. The log is on it for the same reason and
+    // one more: a person reading the log later needs to know it is the log this agent is
+    // writing, and the file it names is the answer.
+    match &log_path {
+        Some(path) => println!(
+            "linklet-agent listening on 0.0.0.0:{bound} transfers under {} log {path}",
+            root.root().display()
+        ),
+        None => println!(
+            "linklet-agent listening on 0.0.0.0:{bound} transfers under {} no log",
+            root.root().display()
+        ),
+    }
 
     for stream in listener.incoming() {
         match stream {
@@ -213,7 +249,8 @@ fn main() {
                 // pool would be machinery bought with nothing.
                 let token = token.clone();
                 let root = root.clone();
-                std::thread::spawn(move || server::serve_connection(stream, &token, &root));
+                let log = request_log.clone();
+                std::thread::spawn(move || server::serve_connection(stream, &token, &root, &log));
             }
             // One failed accept is not a reason to stop serving. The listener is
             // still bound and the next caller may be fine.

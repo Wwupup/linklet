@@ -60,6 +60,11 @@ struct Agent {
 impl Agent {
     /// Starts the agent on a port the OS picks, and waits until it is listening.
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// The same, with extra arguments -- so that a test can ask the agent to keep a log.
+    fn start_with(extra: &[&str]) -> Self {
         let root = scratch_dir();
         let mut child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
             // Through the environment rather than --token, which exercises the
@@ -70,31 +75,14 @@ impl Agent {
             .arg("0")
             .arg("--root")
             .arg(&root)
+            .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("the agent should start");
 
         let stdout = child.stdout.take().expect("stdout was piped");
-        let mut reader = BufReader::new(stdout);
-        let mut banner = String::new();
-        reader
-            .read_line(&mut banner)
-            .expect("the agent prints a banner when it is listening");
-
-        // "linklet-agent listening on 0.0.0.0:51234 transfers under C:\somewhere", so
-        // the port is the word that starts with the bound address -- not the last thing
-        // after a colon, which is wrong the moment a Windows path shares the line.
-        let port = banner
-            .split_whitespace()
-            .find_map(|word| word.strip_prefix("0.0.0.0:"))
-            .and_then(|text| text.parse().ok())
-            .unwrap_or_else(|| panic!("cannot read a port from the banner: {banner:?}"));
-
-        // Keep the reader alive on the child's stdout: dropping it closes the
-        // pipe, and a process writing to a closed pipe is a process that may
-        // exit for a reason unrelated to the test.
-        std::mem::forget(reader);
+        let port = read_banner(stdout);
 
         Self { child, port, root }
     }
@@ -161,6 +149,30 @@ fn scratch_dir() -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&path).expect("a scratch directory");
     path
+}
+
+/// Reads the banner and returns the port the agent actually bound.
+///
+/// "linklet-agent listening on 0.0.0.0:51234 transfers under C:\somewhere no log", so the
+/// port is the word that starts with the bound address -- not the last thing after a
+/// colon, which is wrong the moment a Windows path is on the line. Reading the banner is
+/// also the proof that the port is open: it is printed after the bind.
+///
+/// The reader is leaked on purpose. Dropping it closes the child's stdout, and a process
+/// writing to a closed pipe is a process that may exit for a reason unrelated to the test.
+fn read_banner(stdout: impl std::io::Read + Send + 'static) -> u16 {
+    let mut reader = BufReader::new(stdout);
+    let mut banner = String::new();
+    reader
+        .read_line(&mut banner)
+        .expect("the agent prints a banner when it is listening");
+    std::mem::forget(reader);
+
+    banner
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("0.0.0.0:"))
+        .and_then(|text| text.parse().ok())
+        .unwrap_or_else(|| panic!("cannot read a port from the banner: {banner:?}"))
 }
 
 /// A handshake that is done and a connection that can carry a request.
@@ -401,6 +413,154 @@ fn run_with(agent: &Agent, command: &str, timeout_seconds: u64) -> RunOutcome {
         command: command.to_string(),
         timeout_seconds,
     })))
+}
+
+// --- what the agent recorded about the requests it served --------------------
+
+/// The lines of a log file, or a panic naming the path.
+fn logged(path: &std::path::Path) -> Vec<String> {
+    let text = std::fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    text.lines().map(str::to_string).collect()
+}
+
+/// The number out of a log line, which is what ties a `->` to its `<-`.
+fn number_of(line: &str) -> String {
+    line.split_whitespace()
+        .nth(1)
+        .unwrap_or_else(|| panic!("a log line names a request: {line:?}"))
+        .to_string()
+}
+
+#[test]
+fn a_request_leaves_a_taken_line_and_an_answered_line() {
+    // **The property the whole log exists for.** A line written only when a request
+    // finishes cannot describe a request that did not, and a process that dies mid-request
+    // writes nothing at all -- so the final request of an agent that died looks exactly
+    // like a request that never arrived. Two lines make the absence of the second one the
+    // evidence.
+    let log_path =
+        std::env::temp_dir().join(format!("linklet-agent-log-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&log_path);
+
+    let agent = Agent::start_with(&["--log", &log_path.to_string_lossy()]);
+    let outcome = run(&agent, "echo logged");
+    assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
+
+    let lines = logged(&log_path);
+    let _ = std::fs::remove_file(&log_path);
+
+    assert_eq!(lines.len(), 2, "one request, two lines: {lines:#?}");
+    assert!(lines[0].starts_with("-> "), "{lines:#?}");
+    assert!(lines[0].ends_with(" run"), "{lines:#?}");
+    assert!(lines[1].starts_with("<- "), "{lines:#?}");
+    assert!(lines[1].contains(" run ok "), "{lines:#?}");
+    assert!(lines[1].ends_with(" ms"), "{lines:#?}");
+
+    assert_eq!(
+        number_of(&lines[0]),
+        number_of(&lines[1]),
+        "the two lines have to be the same request: {lines:#?}"
+    );
+}
+
+#[test]
+fn a_request_this_version_cannot_read_is_still_recorded() {
+    // The traffic an operator most wants to find: a body that arrived and was not a
+    // request. A log that only recorded what it understood would agree with the protocol
+    // instead of with the machine.
+    let log_path = std::env::temp_dir().join(format!(
+        "linklet-agent-log-unknown-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&log_path);
+
+    let agent = Agent::start_with(&["--log", &log_path.to_string_lossy()]);
+    let reason = refusal(agent.sealed().ask_json("not a request at all"));
+    assert!(!reason.is_empty());
+
+    let lines = logged(&log_path);
+    let _ = std::fs::remove_file(&log_path);
+
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(lines[0].ends_with(" unknown"), "{lines:#?}");
+    assert!(lines[1].contains(" unknown refused "), "{lines:#?}");
+    assert!(
+        lines[1].contains(&reason),
+        "the reason the caller was given belongs in the log too: {lines:#?}"
+    );
+}
+
+#[test]
+fn the_log_says_which_agent_it_is_for_a_request_that_worked() {
+    // `identity` is the other operation on the surface, and this is the baseline: a
+    // request that asks for nothing and succeeds is still two lines.
+    let log_path = std::env::temp_dir().join(format!(
+        "linklet-agent-log-identity-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&log_path);
+
+    let agent = Agent::start_with(&["--log", &log_path.to_string_lossy()]);
+    let _ = agent.sealed().ask(&Request::Identity);
+
+    let lines = logged(&log_path);
+    let _ = std::fs::remove_file(&log_path);
+
+    assert_eq!(lines.len(), 2, "{lines:#?}");
+    assert!(lines[0].ends_with(" identity"), "{lines:#?}");
+    assert!(lines[1].contains(" identity ok "), "{lines:#?}");
+}
+
+#[test]
+fn an_agent_without_a_log_writes_no_log() {
+    // The default, and it is not a stub: an agent that was not asked to keep a log keeps
+    // none. Without this the log could be created by accident and a reader would have to
+    // find out which way round the option works.
+    let agent = Agent::start();
+    let outcome = run(&agent, "echo unlogged");
+
+    assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
+    assert!(
+        !agent.root.join("linklet-agent.log").exists(),
+        "an agent with no --log wrote something anyway"
+    );
+}
+
+#[test]
+fn the_agent_refuses_to_start_with_a_log_it_cannot_open() {
+    // The same argument as the token and the root: an operator who asked for a log and
+    // silently did not get one has a machine whose evidence they believe exists and does
+    // not. That is the mistake this feature is a reaction to.
+    let directory = scratch_dir();
+    let child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
+        .env("LINKLET_TOKEN", TEST_TOKEN)
+        .arg("--port")
+        .arg("0")
+        .arg("--root")
+        .arg(&directory)
+        // A directory where a file was expected: `RequestLog::open` refuses it by name
+        // rather than letting the first write fail.
+        .arg("--log")
+        .arg(&directory)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the agent should start");
+
+    let output = child.wait_with_output().expect("the agent should exit");
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected a refusal to start, and the agent is running"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--log") && stderr.contains("directory"),
+        "the message should name the option and what was wrong with it: {stderr}"
+    );
 }
 
 // --- who is there ------------------------------------------------------------

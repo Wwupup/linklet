@@ -342,7 +342,7 @@ lanlink is the reference for all of these: `E:\projects\lanlink` on this machine
 debugging tool for the same machines, written by the same hand, and it is ahead of linklet
 on everything in this list -- which is why reading it beats designing from scratch.
 
-- [ ] **Residency, and an agent that keeps a log.** The agent died with its console during
+- [-] **Residency, and an agent that keeps a log.** The agent died with its console during
       this round: `tasklist` found nothing, and the caller saw a connect **timeout** rather
       than a refusal. Nothing brought it back, and nothing recorded what it had been asked --
       the agent prints a banner and answers errors to the client, and keeps no per-request
@@ -354,6 +354,23 @@ on everything in this list -- which is why reading it beats designing from scrat
       down, and this is the first target saying it needs one. Smallest honest shape: one log
       line per request with its outcome and duration, written by the agent to a file of its
       own, plus a documented way to start it that survives its console.
+
+      **The log is done; surviving the console is not, so this item is half-checked.** What
+      landed: `linklet-agent --log <file>` (or `LINKLET_LOG`), appending two lines per
+      request -- `-> #000001 run` when it is taken and `<- #000001 run ok 2411 ms` when it is
+      answered, with the reason quoted on a refusal. The pair is the design and not a
+      flourish: a request that never finishes writes only the first line, and that is what
+      names it. `linklet_core::log` decides what a line says and is tested in microseconds;
+      `linklet-agent/src/log.rs` owns the file and the lock. A log path that cannot be opened
+      is a refusal to start, because an operator who asked for a log and silently did not get
+      one has evidence they believe exists and does not. The command line and the paths are
+      deliberately absent from a line.
+
+      **What is left is the launcher.** The agent still dies with its console, and nothing
+      restarts it. Open: whether that is a `--detach` in the agent or a documented way to
+      start it detached, and whether a supervisor is wanted at all -- lanlink has one with
+      backoff and a three-exit-code probe, and the parked list still refuses a daemon on the
+      host. `docs/smoke.md` carries the log format and how to read a death out of it.
 
       **A shell redirect is not a logging strategy**, and that was measured after the fact
       rather than assumed: `hostname > file` launched through the spawn call leaves the file
