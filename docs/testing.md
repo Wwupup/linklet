@@ -51,6 +51,23 @@ test cannot catch a report printed to stderr or an exit code dropped on the way
 out of `main` -- those are the bugs that break an agent, and they are invisible
 to every other layer.
 
+## What a contract test is for, and its one failure mode
+
+The contract layer asserts an interface that **other software branches on**. The
+MCP tool surface is one: a description that grew past a length, or a tool that
+vanished, breaks a caller that was working.
+
+The failure mode worth naming is a contract asserted **per subject instead of
+across subjects**. `crates/linklet-cli/tests/arguments.rs` is the receipt:
+`--agent` was parsed nine times and had drifted into two different messages for
+the same mistake, and nothing caught it because each copy was only ever tested
+against itself. Every one of those nine was green.
+
+So that file walks every command in one test and asserts **the commands agree**.
+Adding a tenth command means adding a row to a table, which is the whole
+mechanism: a test that named one command would have let this drift happen and
+would not notice the next one.
+
 ## What is deliberately not tested
 
 - **Nothing is asserted about hostnames.** Deciding what a hostname looks like

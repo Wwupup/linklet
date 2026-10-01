@@ -23,6 +23,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod arguments;
 pub mod auth;
 pub mod channel;
 pub mod discover;

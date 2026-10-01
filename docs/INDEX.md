@@ -91,6 +91,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/lib.rs` | the public surface, and why the traits live here |
 | `crates/linklet-core/src/target.rs` | `Host`, `Port`, `Target`, `parse_targets`, and the rule order |
 | `crates/linklet-core/src/error.rs` | `TargetError`, one variant per way to fail |
+| `crates/linklet-core/src/arguments.rs` | reading a command's flags: one table, one parser, and the line between a flag and a command tail |
 | `crates/linklet-core/src/probe.rs` | the `Probe` trait, `check_targets`, the limits |
 | `crates/linklet-cli/src/probe.rs` | the probe command: whether an agent is working or only listening, and the exit codes a supervisor reads |
 | `crates/linklet-core/src/outcome.rs` | the output format and the exit codes: the contract |
@@ -135,6 +136,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-cli/tests/fanout.rs` | one command across several agents: the labels and the exit codes, and a refusal told apart from an unreachable machine |
 | `crates/linklet-client/tests/probe.rs` | whether an agent is working or only listening, against a socket that accepts and says nothing |
 | `crates/linklet-cli/tests/probe.rs` | the probe's exit codes as a supervisor reads them |
+| `crates/linklet-cli/tests/arguments.rs` | every command's flags, asserted as one contract rather than ten behaviours |
 | `tools/linklet-supervise.ps1` | keeping an agent running: restart on death and on wedged, by port, with backoff |
 
 ## Keeping this true

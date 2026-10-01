@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
+use linklet_core::arguments::{Args, Flag, Strictness};
 use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::wire::{
@@ -141,12 +142,12 @@ about mcp:
 /// decision in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CliError {
-    /// A flag that takes a value did not get one.
-    MissingValue {
-        /// The flag.
-        flag: String,
-    },
     /// A flag that takes a number did not get one.
+    ///
+    /// **`MissingValue` used to live here too and is gone**, because there is one sentence for a
+    /// missing value now and `linklet_core::arguments` owns it. A variant that only wrapped
+    /// somebody else's message would be a layer with no decision in it -- which is the argument
+    /// this enum's own doc comment made for not having one in the first place.
     NotANumber {
         /// The flag.
         flag: String,
@@ -160,11 +161,42 @@ enum CliError {
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingValue { flag } => write!(f, "{flag} needs a value"),
             Self::NotANumber { flag, value } => {
                 write!(f, "{flag} needs a number, got {value:?}")
             }
             Self::Usage(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+/// Reads a command's flags, or reports the first thing wrong with them.
+///
+/// **The bridge between a pure parser and a process.** `linklet_core::arguments` decides what is
+/// wrong and says so without knowing about exit codes or streams, which is what makes it
+/// testable in microseconds; this turns that into the sentence a caller reads and the code a
+/// script branches on, which is the only part that needs to know either.
+fn read(arguments: &[String], flags: &[Flag], strictness: Strictness) -> Result<Args, u8> {
+    Args::parse(arguments, flags, strictness).map_err(|error| {
+        eprintln!("linklet: {error}; see linklet --help");
+        ExitCode::USAGE
+    })
+}
+
+/// Reads a number out of a flag, or says what arrived instead.
+///
+/// **What the caller typed is echoed**, because "needs a number" without the value sends a
+/// reader back to their own command line to work out what was wrong with it. `None` means the
+/// flag was not given, which is different from a flag given badly -- the caller decides what an
+/// absent flag defaults to.
+fn number(args: &Args, flag: &str) -> Result<Option<u64>, u8> {
+    let Some(text) = args.value(flag) else {
+        return Ok(None);
+    };
+    match text.parse::<u64>() {
+        Ok(value) => Ok(Some(value)),
+        Err(_) => {
+            eprintln!("linklet: {flag} needs a number, got {text:?}");
+            Err(ExitCode::USAGE)
         }
     }
 }
@@ -280,46 +312,49 @@ fn dispatch(arguments: &[String]) -> u8 {
 /// `Ok(None)` means help was asked for. The distinction between "asked for help"
 /// and "made a mistake" exists so the two can print to different streams.
 fn parse_arguments(arguments: &[String]) -> Result<Option<Options>, CliError> {
-    let mut specs: Vec<String> = Vec::new();
-    let mut budget_seconds = DEFAULT_BUDGET_SECONDS;
-    let mut max_targets = MAX_TARGETS;
-    let mut command_seen = false;
-    let mut iterator = arguments.iter();
+    let flags = [
+        Flag::takes_value("--timeout"),
+        Flag::takes_value("--max-targets"),
+        Flag::switch("-h"),
+        Flag::switch("--help"),
+    ];
+    let args = Args::parse(arguments, &flags, Strictness::AllowWords)
+        .map_err(|error| CliError::Usage(error.to_string()))?;
 
-    while let Some(argument) = iterator.next() {
-        match argument.as_str() {
-            "-h" | "--help" => return Ok(None),
-            "--timeout" => {
-                let value = iterator.next().ok_or_else(|| CliError::MissingValue {
-                    flag: "--timeout".to_string(),
-                })?;
-                budget_seconds = value.parse().map_err(|_| CliError::NotANumber {
-                    flag: "--timeout".to_string(),
-                    value: value.clone(),
-                })?;
-            }
-            "--max-targets" => {
-                let value = iterator.next().ok_or_else(|| CliError::MissingValue {
-                    flag: "--max-targets".to_string(),
-                })?;
-                max_targets = value.parse().map_err(|_| CliError::NotANumber {
-                    flag: "--max-targets".to_string(),
-                    value: value.clone(),
-                })?;
-            }
-            "check" if !command_seen => command_seen = true,
-            other if other.starts_with('-') => {
-                return Err(CliError::Usage(format!("unknown option {other:?}")));
-            }
-            other => specs.push(other.to_string()),
+    // `-h` before anything else, including before the verb is checked: a caller who asked for
+    // help gets help and not a complaint about a missing command.
+    if args.switch("-h") || args.switch("--help") {
+        return Ok(None);
+    }
+
+    // The words are the verb and its targets, and the verb is checked rather than assumed. It
+    // is read out of the words rather than from `arguments[0]` because `linklet --timeout 5
+    // check a:1` has to keep working, and it did.
+    let mut words = args.words().iter();
+    match words.next().map(String::as_str) {
+        Some("check") => {}
+        _ => {
+            return Err(CliError::Usage(
+                "no command given; expected `check`".to_string(),
+            ));
         }
     }
+    let specs: Vec<String> = words.cloned().collect();
 
-    if !command_seen {
-        return Err(CliError::Usage(
-            "no command given; expected `check`".to_string(),
-        ));
-    }
+    let budget_seconds = match args.value("--timeout") {
+        Some(text) => text.parse().map_err(|_| CliError::NotANumber {
+            flag: "--timeout".to_string(),
+            value: text.to_string(),
+        })?,
+        None => DEFAULT_BUDGET_SECONDS,
+    };
+    let max_targets = match args.value("--max-targets") {
+        Some(text) => text.parse().map_err(|_| CliError::NotANumber {
+            flag: "--max-targets".to_string(),
+            value: text.to_string(),
+        })?,
+        None => MAX_TARGETS,
+    };
 
     if specs.is_empty() {
         return Err(CliError::Usage("no targets given".to_string()));
@@ -696,31 +731,18 @@ fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Toke
 /// and a script has to tell them apart: `check` says whether a socket is there, and this says
 /// whether the agent behind it is working.
 fn run_probe_command(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut words = arguments.iter();
+    let flags = [Flag::takes_value("--agent")];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = words.next() {
-        match argument.as_str() {
-            "--agent" => match words.next() {
-                Some(value) => agent = Some(value.clone()),
-                None => {
-                    eprintln!("linklet: --agent needs a host:port");
-                    return ExitCode::USAGE;
-                }
-            },
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
-                return ExitCode::USAGE;
-            }
-        }
-    }
-
-    let Some(agent) = agent else {
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: probe needs --agent <host:port>");
         return ExitCode::USAGE;
     };
 
-    probe::run_probe(&agent, token_from_environment().as_ref())
+    probe::run_probe(agent, token_from_environment().as_ref())
 }
 
 /// Runs the MCP server on stdio until the client closes it.
@@ -813,80 +835,52 @@ fn run_testbed(arguments: &[String]) -> u8 {
 /// script can tell "it ran and failed" from "it never ran" without reading a word
 /// of output.
 fn run_exec(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut agents: Option<Vec<String>> = None;
-    let mut timeout = DEFAULT_EXEC_TIMEOUT_SECONDS;
-    let mut words: Vec<String> = Vec::new();
-    let mut iterator = arguments.iter();
+    // **`AllowWords` because this ends in a command**, and the command may have flags of its
+    // own: `linklet exec --agent a:1 myapp.cmd --verbose` has to be possible. Everything in the
+    // table is this tool's; everything else is the command's.
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--agents"),
+        Flag::takes_value("--timeout"),
+    ];
+    let args = match read(arguments, &flags, Strictness::AllowWords) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = iterator.next() {
-        match argument.as_str() {
-            "--agent" => match iterator.next() {
-                Some(value) => agent = Some(value.clone()),
-                None => {
-                    eprintln!("linklet: --agent needs a host:port");
-                    return ExitCode::USAGE;
-                }
-            },
-            // **A separate flag from `--agent` rather than a list it also accepts.** The two
-            // answer different questions and they end differently: one target's exit status is
-            // passed through, because `linklet exec ... && next` has to behave the way the
-            // command would, and a run over several has no single status to pass through. A
-            // flag that meant both would be a flag whose exit code depends on how many values
-            // were typed.
-            "--agents" => match iterator.next() {
-                Some(value) => {
-                    let list: Vec<String> = value
-                        .split([',', ' '])
-                        .filter(|part| !part.trim().is_empty())
-                        .map(str::to_string)
-                        .collect();
-                    if list.is_empty() {
-                        eprintln!("linklet: --agents needs at least one host:port");
-                        return ExitCode::USAGE;
-                    }
-                    agents = Some(list);
-                }
-                None => {
-                    eprintln!("linklet: --agents needs a list of host:port");
-                    return ExitCode::USAGE;
-                }
-            },
-            "--timeout" => match iterator.next().and_then(|value| value.parse().ok()) {
-                Some(value) => timeout = value,
-                None => {
-                    eprintln!("linklet: --timeout needs a number of seconds");
-                    return ExitCode::USAGE;
-                }
-            },
-            other => words.push(other.to_string()),
-        }
-    }
+    let timeout = match number(&args, "--timeout") {
+        Ok(Some(got)) => got,
+        Ok(None) => DEFAULT_EXEC_TIMEOUT_SECONDS,
+        Err(code) => return code,
+    };
 
     // One target or several, and never both: a caller that gave both has two intentions and
     // guessing between them would run a command somewhere it did not name.
-    if agent.is_some() && agents.is_some() {
+    let single = args.value("--agent");
+    let several = args.value("--agents");
+    if single.is_some() && several.is_some() {
         eprintln!("linklet: give --agent for one machine or --agents for several, not both");
         return ExitCode::USAGE;
     }
-    if let Some(agents) = &agents {
-        if words.is_empty() {
+
+    if several.is_some() {
+        if args.words().is_empty() {
             eprintln!("linklet: exec needs a command");
             return ExitCode::USAGE;
         }
         return run_exec_across(
-            agents,
-            &words.join(" "),
+            &args.list("--agents"),
+            &args.tail(),
             timeout,
             token_from_environment().as_ref(),
         );
     }
 
-    let Some(agent) = agent else {
+    let Some(agent) = single else {
         eprintln!("linklet: exec needs --agent <host:port>, or --agents for several");
         return ExitCode::USAGE;
     };
-    if words.is_empty() {
+    if args.words().is_empty() {
         eprintln!("linklet: exec needs a command");
         return ExitCode::USAGE;
     }
@@ -894,9 +888,9 @@ fn run_exec(arguments: &[String]) -> u8 {
     // Joined rather than taken one word at a time, so that the command is exactly
     // what was typed after the options. A tool that reassembled a command line
     // from pieces would be a second interpretation of the caller's quoting.
-    let command = words.join(" ");
+    let command = args.tail();
 
-    let outcome = exec_on(&agent, &command, timeout, token_from_environment().as_ref());
+    let outcome = exec_on(agent, &command, timeout, token_from_environment().as_ref());
     println!("{}", outcome.text);
 
     if outcome.is_error {
@@ -941,7 +935,11 @@ fn run_transfer(direction: Direction, arguments: &[String]) -> u8 {
     let options = match parse_transfer(direction, arguments) {
         Ok(options) => options,
         Err(problem) => {
-            eprintln!("linklet: {problem}");
+            // The same pointer the shared parser adds, because a caller who mistyped a flag
+            // needs the same thing to read next whether the command was `push` or `ps`. It was
+            // the only message in the tool without it, and the reason was that transfers had
+            // their own printer -- which is the drift this refactor was about.
+            eprintln!("linklet: {problem}; see linklet --help");
             return ExitCode::USAGE;
         }
     };
@@ -978,34 +976,31 @@ struct TransferOptions {
 /// Every flag is required and none has a default: a transfer with a guessed destination
 /// is a file written somewhere nobody asked for, and this project would rather refuse.
 fn parse_transfer(direction: Direction, arguments: &[String]) -> Result<TransferOptions, String> {
-    let mut agent: Option<String> = None;
-    let mut from: Option<String> = None;
-    let mut to: Option<String> = None;
-
-    let mut words = arguments.iter();
-    while let Some(argument) = words.next() {
-        let mut take = |flag: &str| -> Result<String, String> {
-            words
-                .next()
-                .cloned()
-                .ok_or_else(|| format!("{flag} needs a value"))
-        };
-        match argument.as_str() {
-            "--agent" => agent = Some(take("--agent")?),
-            "--from" => from = Some(take("--from")?),
-            "--to" => to = Some(take("--to")?),
-            "-h" | "--help" => {
-                return Err("this command takes no --help; see linklet --help".into());
-            }
-            other => return Err(format!("unknown option {other:?}")),
-        }
-    }
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--from"),
+        Flag::takes_value("--to"),
+    ];
+    // Strict, and this one refuses `--help` too: the parser does not know `-h`, so it is
+    // reported as an unknown option, which is a usage error and is what the previous version
+    // said in its own words.
+    let args =
+        Args::parse(arguments, &flags, Strictness::Strict).map_err(|error| error.to_string())?;
 
     let name = direction.name();
     Ok(TransferOptions {
-        agent: agent.ok_or_else(|| format!("{name} needs --agent <host:port>"))?,
-        from: from.ok_or_else(|| format!("{name} needs --from"))?,
-        to: to.ok_or_else(|| format!("{name} needs --to"))?,
+        agent: args
+            .required("--agent")
+            .map(str::to_string)
+            .map_err(|_| format!("{name} needs --agent <host:port>"))?,
+        from: args
+            .required("--from")
+            .map(str::to_string)
+            .map_err(|_| format!("{name} needs --from"))?,
+        to: args
+            .required("--to")
+            .map(str::to_string)
+            .map_err(|_| format!("{name} needs --to"))?,
     })
 }
 
@@ -1017,51 +1012,32 @@ fn parse_transfer(direction: Direction, arguments: &[String]) -> Result<Transfer
 /// 1 and not 3**, because the call *was* made: what went wrong is on the machine, and the
 /// distinction is the one the whole exit-code scheme exists for.
 fn run_ps(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--name"),
+        Flag::takes_value("--cmdline"),
+        Flag::takes_value("--query"),
+        Flag::takes_value("--exclude"),
+    ];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+
     let mut filter = linklet_core::process::Filter::any();
-    let mut words = arguments.iter();
+    // Set rather than assigned one by one, so that the flag names live in the table above and
+    // nowhere else -- the drift being fixed was nine copies of the same three lines.
+    filter.name = args.value("--name").map(str::to_string);
+    filter.cmdline = args.value("--cmdline").map(str::to_string);
+    filter.query = args.value("--query").map(str::to_string);
+    filter.exclude = args.value("--exclude").map(str::to_string);
 
-    while let Some(argument) = words.next() {
-        let mut value = |flag: &str| -> Result<String, u8> {
-            words.next().cloned().ok_or_else(|| {
-                eprintln!("linklet: {flag} needs a value");
-                ExitCode::USAGE
-            })
-        };
-        match argument.as_str() {
-            "--agent" => match value("--agent") {
-                Ok(got) => agent = Some(got),
-                Err(code) => return code,
-            },
-            "--name" => match value("--name") {
-                Ok(got) => filter.name = Some(got),
-                Err(code) => return code,
-            },
-            "--cmdline" => match value("--cmdline") {
-                Ok(got) => filter.cmdline = Some(got),
-                Err(code) => return code,
-            },
-            "--query" => match value("--query") {
-                Ok(got) => filter.query = Some(got),
-                Err(code) => return code,
-            },
-            "--exclude" => match value("--exclude") {
-                Ok(got) => filter.exclude = Some(got),
-                Err(code) => return code,
-            },
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
-                return ExitCode::USAGE;
-            }
-        }
-    }
-
-    let Some(agent) = agent else {
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: ps needs --agent <host:port>");
         return ExitCode::USAGE;
     };
 
-    let outcome = ps_on(&agent, &filter, token_from_environment().as_ref());
+    let outcome = ps_on(agent, &filter, token_from_environment().as_ref());
     println!("{}", outcome.text);
 
     if outcome.is_error {
@@ -1120,32 +1096,43 @@ fn run_discover(arguments: &[String]) -> u8 {
     // the agent default would find nothing on a network that is full of them. It is a literal
     // here because `linklet-cli` does not depend on `linklet-agent` -- the host tool has no
     // business linking the target binary -- and `tests/cli.rs` pins the two together.
-    let mut port = 8787u16;
-    let mut networks_only = false;
-    let mut targets = false;
-    let mut words = arguments.iter();
+    let flags = [
+        Flag::takes_value("--port"),
+        Flag::switch("--networks"),
+        Flag::switch("--targets"),
+        Flag::switch("-h"),
+        Flag::switch("--help"),
+    ];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = words.next() {
-        match argument.as_str() {
-            "--port" => match words.next().and_then(|value| value.parse::<u16>().ok()) {
-                Some(value) => port = value,
-                None => {
-                    eprintln!("linklet: --port needs a port number");
-                    return ExitCode::USAGE;
-                }
-            },
-            "--networks" => networks_only = true,
-            "--targets" => targets = true,
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return ExitCode::USAGE;
-            }
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+    // The usage, for the two ways of asking for it. `discover` is the one command that answered
+    // `-h` before this parser existed, and dropping it would be a feature change dressed up as
+    // a refactor -- see the note in `docs/COMMANDS.md`.
+    if args.switch("-h") || args.switch("--help") {
+        println!("{USAGE}");
+        return ExitCode::USAGE;
+    }
+
+    // The port is parsed here rather than by the parser, and the parser has no opinion about
+    // numbers: `--max needs a number` and `--port needs a port number` are different sentences
+    // because the flags are different shapes, and a parser that knew about both would be a
+    // parser with a type table in it.
+    let mut port = 8787u16;
+    if let Some(text) = args.value("--port") {
+        match text.parse::<u16>() {
+            Ok(value) => port = value,
+            Err(_) => {
+                eprintln!("linklet: --port needs a port number, got {text:?}");
                 return ExitCode::USAGE;
             }
         }
     }
+
+    let networks_only = args.switch("--networks");
+    let targets = args.switch("--targets");
 
     if networks_only {
         return match linklet_adapters::local_interfaces() {
@@ -1235,48 +1222,31 @@ fn run_discover(arguments: &[String]) -> u8 {
 /// sending the reader to the network for a directory they typed wrong is the mistake the
 /// exit-code scheme exists to prevent.
 fn run_ls(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut path: Option<String> = None;
-    let mut words = arguments.iter();
+    // **One flag table, one parser.** The reasoning is in `linklet_core::arguments`; what is
+    // local is which flags this command has and which of them are required.
+    let flags = [Flag::takes_value("--agent"), Flag::takes_value("--from")];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = words.next() {
-        let mut value = |flag: &str| -> Result<String, u8> {
-            words.next().cloned().ok_or_else(|| {
-                eprintln!("linklet: {flag} needs a value");
-                ExitCode::USAGE
-            })
-        };
-        match argument.as_str() {
-            "--agent" => match value("--agent") {
-                Ok(got) => agent = Some(got),
-                Err(code) => return code,
-            },
-            "--from" => match value("--from") {
-                Ok(got) => path = Some(got),
-                Err(code) => return code,
-            },
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
-                return ExitCode::USAGE;
-            }
-        }
-    }
-
-    let Some(agent) = agent else {
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: ls needs --agent <host:port>");
         return ExitCode::USAGE;
     };
     // A path is required rather than defaulted to the root. The root is the agent's own
     // choice and a caller that asked for "everything" would get a listing of a directory it
     // did not name, which is the shape of a guess.
-    let Some(path) = path else {
+    let Some(path) = args.value("--from") else {
         eprintln!("linklet: ls needs --from <path on the target>");
         return ExitCode::USAGE;
     };
 
     let outcome = ls_on(
-        &agent,
-        &LsRequest { path },
+        agent,
+        &LsRequest {
+            path: path.to_string(),
+        },
         token_from_environment().as_ref(),
     );
     println!("{}", outcome.text);
@@ -1330,144 +1300,107 @@ fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> ToolOutcome
 /// reader to the network for a path they typed wrong is the mistake the whole exit-code
 /// scheme exists to prevent.
 fn run_grep(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut path: Option<String> = None;
-    let mut text: Option<String> = None;
-    let mut case_sensitive = true;
-    let mut direction = linklet_core::search::Direction::First;
-    let mut limit = linklet_core::search::Limit::default();
-    let mut words = arguments.iter();
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--from"),
+        Flag::takes_value("--pattern"),
+        Flag::takes_value("--max"),
+        Flag::takes_value("--context"),
+        // The short form is a switch like the long one, and both are in the table so that
+        // neither is a special case the parser has to be told about.
+        Flag::switch("-i"),
+        Flag::switch("--ignore-case"),
+        Flag::switch("--last"),
+        Flag::switch("--first"),
+    ];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = words.next() {
-        let mut value = |flag: &str| -> Result<String, u8> {
-            words.next().cloned().ok_or_else(|| {
-                eprintln!("linklet: {flag} needs a value");
-                ExitCode::USAGE
-            })
-        };
-        match argument.as_str() {
-            "--agent" => match value("--agent") {
-                Ok(got) => agent = Some(got),
-                Err(code) => return code,
-            },
-            "--from" => match value("--from") {
-                Ok(got) => path = Some(got),
-                Err(code) => return code,
-            },
-            "--pattern" => match value("--pattern") {
-                Ok(got) => text = Some(got),
-                Err(code) => return code,
-            },
-            // The default is the opposite of the protocol's, and deliberately: at a command
-            // line a person searching a log for `ERROR` means the upper-case one, and
-            // `-i` is the shorter thing to type for the other reading.
-            "-i" | "--ignore-case" => case_sensitive = false,
-            "--last" => direction = linklet_core::search::Direction::Last,
-            "--first" => direction = linklet_core::search::Direction::First,
-            "--max" => match value("--max").and_then(|got| {
-                got.parse::<usize>().map_err(|_| {
-                    eprintln!("linklet: --max needs a number, got {got:?}");
-                    ExitCode::USAGE
-                })
-            }) {
-                Ok(got) => limit.max_matches = got,
-                Err(code) => return code,
-            },
-            "--context" => match value("--context").and_then(|got| {
-                got.parse::<usize>().map_err(|_| {
-                    eprintln!("linklet: --context needs a number, got {got:?}");
-                    ExitCode::USAGE
-                })
-            }) {
-                Ok(got) => limit.context = got,
-                Err(code) => return code,
-            },
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
-                return ExitCode::USAGE;
-            }
-        }
+    // The default is the opposite of the protocol's, and deliberately: at a command line a
+    // person searching a log for `ERROR` means the upper-case one, and `-i` is the shorter
+    // thing to type for the other reading.
+    let case_sensitive = !(args.switch("-i") || args.switch("--ignore-case"));
+    let direction = if args.switch("--last") {
+        linklet_core::search::Direction::Last
+    } else {
+        linklet_core::search::Direction::First
+    };
+
+    let mut limit = linklet_core::search::Limit::default();
+    match number(&args, "--max") {
+        Ok(Some(got)) => limit.max_matches = got as usize,
+        Ok(None) => {}
+        Err(code) => return code,
+    }
+    match number(&args, "--context") {
+        Ok(Some(got)) => limit.context = got as usize,
+        Ok(None) => {}
+        Err(code) => return code,
     }
 
-    let Some(agent) = agent else {
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: grep needs --agent <host:port>");
         return ExitCode::USAGE;
     };
-    let Some(path) = path else {
+    let Some(path) = args.value("--from") else {
         eprintln!("linklet: grep needs --from <path on the target>");
         return ExitCode::USAGE;
     };
-    let Some(text) = text else {
+    let Some(text) = args.value("--pattern") else {
         eprintln!("linklet: grep needs --pattern <text>");
         return ExitCode::USAGE;
     };
 
     let request = GrepRequest {
-        path,
+        path: path.to_string(),
         pattern: linklet_core::search::Pattern {
-            text,
+            text: text.to_string(),
             case_sensitive,
         },
         direction,
         limit,
     };
 
-    report_search(grep_on(&agent, &request, token_from_environment().as_ref()))
+    report_search(grep_on(agent, &request, token_from_environment().as_ref()))
 }
 
 /// Reads the last lines of a file on an agent's machine and prints them.
 ///
 /// The exit code follows [`run_grep`], and for the same reason.
 fn run_tail(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut path: Option<String> = None;
-    let mut count = 20usize;
-    let mut words = arguments.iter();
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--from"),
+        Flag::takes_value("--lines"),
+    ];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = words.next() {
-        let mut value = |flag: &str| -> Result<String, u8> {
-            words.next().cloned().ok_or_else(|| {
-                eprintln!("linklet: {flag} needs a value");
-                ExitCode::USAGE
-            })
-        };
-        match argument.as_str() {
-            "--agent" => match value("--agent") {
-                Ok(got) => agent = Some(got),
-                Err(code) => return code,
-            },
-            "--from" => match value("--from") {
-                Ok(got) => path = Some(got),
-                Err(code) => return code,
-            },
-            "--lines" => match value("--lines").and_then(|got| {
-                got.parse::<usize>().map_err(|_| {
-                    eprintln!("linklet: --lines needs a number, got {got:?}");
-                    ExitCode::USAGE
-                })
-            }) {
-                Ok(got) => count = got,
-                Err(code) => return code,
-            },
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
-                return ExitCode::USAGE;
-            }
-        }
-    }
+    let count = match number(&args, "--lines") {
+        Ok(Some(got)) => got as usize,
+        Ok(None) => 20,
+        Err(code) => return code,
+    };
 
-    let Some(agent) = agent else {
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: tail needs --agent <host:port>");
         return ExitCode::USAGE;
     };
-    let Some(path) = path else {
+    let Some(path) = args.value("--from") else {
         eprintln!("linklet: tail needs --from <path on the target>");
         return ExitCode::USAGE;
     };
 
     report_search(tail_on(
-        &agent,
-        &TailRequest { path, count },
+        agent,
+        &TailRequest {
+            path: path.to_string(),
+            count,
+        },
         token_from_environment().as_ref(),
     ))
 }
@@ -1551,36 +1484,19 @@ fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> ToolOut
 /// Confirming it stayed up is the caller's next two commands, and they are the ones the
 /// deploy loop is made of: `linklet ps` to look, `linklet kill` to stop it again.
 fn run_spawn(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut output: Option<String> = None;
-    let mut words: Vec<String> = Vec::new();
-    let mut iterator = arguments.iter();
+    // `AllowWords` because everything after the options is the command to run, which may have
+    // flags of its own. See the line `linklet_core::arguments` draws.
+    let flags = [Flag::takes_value("--agent"), Flag::takes_value("--output")];
+    let args = match read(arguments, &flags, Strictness::AllowWords) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = iterator.next() {
-        match argument.as_str() {
-            "--agent" => match iterator.next() {
-                Some(value) => agent = Some(value.clone()),
-                None => {
-                    eprintln!("linklet: --agent needs a host:port");
-                    return ExitCode::USAGE;
-                }
-            },
-            "--output" => match iterator.next() {
-                Some(value) => output = Some(value.clone()),
-                None => {
-                    eprintln!("linklet: --output needs a path on the target");
-                    return ExitCode::USAGE;
-                }
-            },
-            other => words.push(other.to_string()),
-        }
-    }
-
-    let Some(agent) = agent else {
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: spawn needs --agent <host:port>");
         return ExitCode::USAGE;
     };
-    if words.is_empty() {
+    if args.words().is_empty() {
         eprintln!("linklet: spawn needs a command");
         return ExitCode::USAGE;
     }
@@ -1588,7 +1504,7 @@ fn run_spawn(arguments: &[String]) -> u8 {
     // nowhere is a program the caller cannot look at afterwards, which is the one thing this
     // feature is for. A default like `linklet-spawn.log` in the agent's working directory
     // would be a file nobody asked for in a place nobody chose.
-    let Some(output) = output else {
+    let Some(output) = args.value("--output") else {
         eprintln!("linklet: spawn needs --output <path on the target>: the program writes");
         eprintln!("linklet:   its own output there, which is how you read it afterwards");
         return ExitCode::USAGE;
@@ -1598,11 +1514,11 @@ fn run_spawn(arguments: &[String]) -> u8 {
         // The command is exactly what was typed after the options, joined the way `exec`
         // joins it: a tool that reassembled a command line from pieces would be a second
         // interpretation of the caller's quoting.
-        command: words.join(" "),
-        output,
+        command: args.tail(),
+        output: output.to_string(),
     };
 
-    let outcome = spawn_on(&agent, &request, token_from_environment().as_ref());
+    let outcome = spawn_on(agent, &request, token_from_environment().as_ref());
     println!("{}", outcome.text);
 
     if outcome.is_error {
@@ -1648,99 +1564,67 @@ fn spawn_on(agent: &str, request: &SpawnRequest, token: Option<&Token>) -> ToolO
 /// passed through. `0` when everything the request matched is gone, `1` when something is
 /// still there, `3` when the call could not be made or was refused.
 fn run_kill(arguments: &[String]) -> u8 {
-    let mut agent: Option<String> = None;
-    let mut to_kill: Option<linklet_core::process::ToKill> = None;
-    let mut force = false;
-    let mut exclude: Option<String> = None;
-    let mut candidates = linklet_core::process::Filter::any();
-    let mut words = arguments.iter();
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--pid"),
+        Flag::takes_value("--name"),
+        Flag::takes_value("--contains"),
+        Flag::takes_value("--exclude"),
+        Flag::takes_value("--candidates-name"),
+        Flag::takes_value("--candidates-cmdline"),
+        Flag::switch("--yes"),
+    ];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
 
-    while let Some(argument) = words.next() {
-        let mut value = |flag: &str| -> Result<String, u8> {
-            words.next().cloned().ok_or_else(|| {
-                eprintln!("linklet: {flag} needs a value");
-                ExitCode::USAGE
-            })
-        };
-        let mut set_target = |target: linklet_core::process::ToKill| -> Result<(), u8> {
-            if to_kill.is_some() {
-                eprintln!("linklet: kill takes one of --pid, --name or --contains, not several");
-                return Err(ExitCode::USAGE);
-            }
-            to_kill = Some(target);
-            Ok(())
-        };
-
-        match argument.as_str() {
-            "--agent" => match value("--agent") {
-                Ok(got) => agent = Some(got),
-                Err(code) => return code,
-            },
-            "--pid" => {
-                let Ok(text) = value("--pid") else {
-                    return ExitCode::USAGE;
-                };
-                let Ok(pid) = text.parse::<u32>() else {
-                    eprintln!("linklet: --pid needs a process identifier, got {text:?}");
-                    return ExitCode::USAGE;
-                };
-                if let Err(code) = set_target(linklet_core::process::ToKill::Pid(pid)) {
-                    return code;
-                }
-            }
-            "--name" => {
-                let Ok(text) = value("--name") else {
-                    return ExitCode::USAGE;
-                };
-                if let Err(code) = set_target(linklet_core::process::ToKill::Name(text)) {
-                    return code;
-                }
-            }
-            "--contains" => {
-                let Ok(text) = value("--contains") else {
-                    return ExitCode::USAGE;
-                };
-                if let Err(code) = set_target(linklet_core::process::ToKill::Matching(text)) {
-                    return code;
-                }
-            }
-            "--exclude" => match value("--exclude") {
-                Ok(got) => exclude = Some(got),
-                Err(code) => return code,
-            },
-            "--candidates-name" => match value("--candidates-name") {
-                Ok(got) => candidates.name = Some(got),
-                Err(code) => return code,
-            },
-            "--candidates-cmdline" => match value("--candidates-cmdline") {
-                Ok(got) => candidates.cmdline = Some(got),
-                Err(code) => return code,
-            },
-            "--yes" => force = true,
-            other => {
-                eprintln!("linklet: unknown option {other:?}; see linklet --help");
+    // **Built by naming the flags once, in one place.** The three target flags are read into a
+    // small list and then checked, rather than each arm checking the others: the version this
+    // replaced had a closure per arm doing the same test three times.
+    let mut targets: Vec<linklet_core::process::ToKill> = Vec::new();
+    if let Some(text) = args.value("--pid") {
+        match text.parse::<u32>() {
+            Ok(pid) => targets.push(linklet_core::process::ToKill::Pid(pid)),
+            Err(_) => {
+                eprintln!("linklet: --pid needs a process identifier, got {text:?}");
                 return ExitCode::USAGE;
             }
         }
     }
+    if let Some(text) = args.value("--name") {
+        targets.push(linklet_core::process::ToKill::Name(text.to_string()));
+    }
+    if let Some(text) = args.value("--contains") {
+        targets.push(linklet_core::process::ToKill::Matching(text.to_string()));
+    }
 
-    let Some(agent) = agent else {
+    if targets.len() > 1 {
+        eprintln!("linklet: kill takes one of --pid, --name or --contains, not several");
+        return ExitCode::USAGE;
+    }
+
+    let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: kill needs --agent <host:port>");
         return ExitCode::USAGE;
     };
-    let Some(to_kill) = to_kill else {
+    let Some(to_kill) = targets.pop() else {
         eprintln!("linklet: kill needs one of --pid, --name or --contains");
         return ExitCode::USAGE;
     };
 
+    let mut candidates = linklet_core::process::Filter::any();
+    candidates.name = args.value("--candidates-name").map(str::to_string);
+    candidates.cmdline = args.value("--candidates-cmdline").map(str::to_string);
+
     let request = KillRequest {
         to_kill,
-        force,
+        force: args.switch("--yes"),
         candidates,
-        exclude,
+        exclude: args.value("--exclude").map(str::to_string),
     };
 
-    let outcome = kill_on(&agent, &request, token_from_environment().as_ref());
+    let outcome = kill_on(agent, &request, token_from_environment().as_ref());
     println!("{}", outcome.text);
 
     if outcome.is_error {
