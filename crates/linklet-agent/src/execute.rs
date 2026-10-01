@@ -26,12 +26,13 @@ use linklet_core::wire::{KILLED_BY_DEADLINE, RunOutcome, RunRequest};
 /// - **No output limit of its own, and a limit it does meet.** A command that writes a
 ///   gigabyte writes a gigabyte, and this function will hold all of it: bounded output is a
 ///   real need and belongs in the wire protocol as a field, not as a silent truncation
-///   here. But the *reply* is one frame, so `MAX_PAYLOAD` (16 MiB) is the real ceiling --
-///   and today a command past it is **reported as a dropped connection**, because the
-///   sealed reply cannot be framed, the agent sends nothing, and closes. That is a defect
-///   and not a design: `docs/ROADMAP.md` M10 carries it, with the measurement (20,000,000
-///   bytes of output, the command exiting 0 on the target, the caller told "could not reach
-///   the agent").
+///   here. What bounds it today is the reply: it is one frame, so `MAX_PAYLOAD` (16 MiB)
+///   is the real ceiling, and `server::run_reply` is where that is applied -- a command
+///   past it is **refused by name**, with both stream sizes in the reason, rather than
+///   reported as a dropped connection. That refusal is the fix for the defect
+///   `docs/ROADMAP.md` M10 records, and the measurement that found it was 20,000,000 bytes
+///   of output, the command exiting 0 on the target, and the caller told "could not reach
+///   the agent".
 pub fn run(request: &RunRequest) -> RunOutcome {
     let started = Instant::now();
     let deadline = Duration::from_secs(request.timeout_seconds);

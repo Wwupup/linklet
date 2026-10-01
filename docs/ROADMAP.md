@@ -263,13 +263,13 @@ section; what is left is below.
 
 ### Two defects, before any new capability
 
-- [ ] **A reply too large to frame is reported as a network failure.** A command whose
-      output was 20,000,000 bytes ran to completion on the target -- `exit 0`, 20,000,000
-      bytes measured there -- and the caller was told *"could not reach the agent: the agent
-      closed the connection without answering"*. The real ceiling is the frame's
-      `MAX_PAYLOAD` of 16 MiB: the sealed reply cannot be framed, so the agent sends nothing
-      and closes, and a transport error is the only thing the caller can conclude. Three
-      shapes, in increasing order of honesty:
+- [x] **A reply too large to frame is refused by name, and not reported as a network
+      failure.** A command whose output was 20,000,000 bytes ran to completion on the target
+      -- `exit 0`, 20,000,000 bytes measured there -- and the caller was told *"could not
+      reach the agent: the agent closed the connection without answering"*. The real ceiling
+      is the frame's `MAX_PAYLOAD` of 16 MiB: the sealed reply could not be framed, so the
+      agent sent nothing and closed, and a transport error was the only thing the caller
+      could conclude. Three shapes were on the table, in increasing order of honesty:
 
       1. **refuse it by name** -- the agent answers "the output was too large to return",
          which the caller can tell apart from a dropped connection. Smallest change;
@@ -278,6 +278,26 @@ section; what is left is below.
          the problem the transfer already solved by chunking. It is also the one that stops
          a single command deciding how much memory the agent spends, which `read_to_end`
          currently lets it.
+
+      **Shape 1 was taken.** `wire::reply_fits` is the decision, with the ceiling as a
+      parameter rather than a constant read from the frame module, and `wire::run_reply_too_large`
+      is the refusal: both stream sizes and the reply ceiling in one sentence, so a caller
+      knows which stream was large and what it would have had to fit in. `server::run_reply`
+      asks before it seals, because by the time `write_frame` refuses the bytes are gone and
+      there is nothing left to describe.
+
+      **Shapes 2 and 3 are still open on purpose**, and the reason is the shape of the
+      failure rather than the number in it: the agent still holds the whole output before it
+      knows the reply will not fit, so a command that writes a gigabyte still costs the agent
+      a gigabyte. Refusing by name turns that from an unexplained drop into a named fact, and
+      it does not make it cheap. That is what option 3 would buy, and it is a protocol change.
+
+      **What it cost to test**, and worth writing down because it will be met again: the
+      command that produces the output cannot carry a quote. The agent runs commands through
+      `cmd`, and a path that needs quoting does not survive the trip -- a `cmd /C "..."`
+      form and a `powershell -Command "..."` form were both measured and both came back as
+      the command's own text. The test builds a directory with no space in its name and uses
+      `certutil`, which needs no quotes at all.
 
       The claim itself is corrected in this commit: `execute.rs` said "No output limit. A
       command that writes a gigabyte writes a gigabyte", and that was not true. The limit

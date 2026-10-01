@@ -660,6 +660,89 @@ pub fn encode_run_reply(outcome: &RunOutcome) -> Json {
     reply_result(run_outcome_to_json(outcome))
 }
 
+/// Whether a reply fits in the bytes one frame may carry.
+///
+/// **The ceiling is a parameter and not a constant**, so that this decision can be
+/// asked with a number a test chose and not only with the frame module's sixteen
+/// mebibytes -- the same reason `Probe` takes a budget. What the agent passes is
+/// [`reply_ceiling`], which is the frame's own limit less the room the seal needs.
+///
+/// The encoded length, rather than the outcome's own fields: what has to fit is
+/// the message, and the JSON around the output is part of it. The encoding is
+/// deterministic and escapes what has to be escaped, so measuring it is exact --
+/// an estimate of it would be a number that is wrong exactly where it matters.
+pub fn reply_fits(reply: &Json, ceiling: usize) -> bool {
+    json::write(reply).len() <= ceiling
+}
+
+/// The largest reply this protocol can send, in the bytes that reply encodes to.
+///
+/// **The name says reply rather than plaintext on purpose**, because the number is
+/// not a limit on a command's output: what has to fit is the reply *around* the
+/// output -- `stdout` and `stderr` as JSON, their escapes, and the other three
+/// fields. A command may write less than this and still not fit, and that is the
+/// case [`run_reply_too_large`] exists to report.
+///
+/// It is the frame's limit less the channel's tag, which is the only thing sealing
+/// adds: the nonce is the message count, which both sides already know, so it is
+/// authenticated rather than transmitted. Written as arithmetic rather than as
+/// `16 * 1024 * 1024 - 16`, so that moving either number moves this one, and pinned
+/// against the frame module's own constants by a test here and against the cipher's
+/// by one in `linklet-adapters`.
+///
+/// The dependency on `crate::frame` is a read of constants and nothing else -- this
+/// module still opens no socket and holds no buffer, which is what rule 1 protects.
+pub fn reply_ceiling() -> usize {
+    // The tag length, named here rather than imported from the adapter:
+    // `linklet-core` cannot depend on `linklet-adapters`, because the arrow points
+    // the other way. A second copy of a constant is a risk; a second copy with a
+    // test that fails when the two differ is the version of that risk this project
+    // can afford.
+    const CHANNEL_TAG_BYTES: usize = 16;
+
+    crate::frame::MAX_PAYLOAD - CHANNEL_TAG_BYTES
+}
+
+/// The refusal for a command whose reply will not fit in one frame.
+///
+/// **This is the answer where there used to be silence.** The agent took the
+/// command's output, built the reply, and found it could not be framed, so it sent
+/// nothing and closed -- and a caller cannot tell that from a machine that dropped
+/// off the network. `docs/ROADMAP.md` M10 carries the measurement: 20,000,000 bytes
+/// of output, the command exiting 0 on the target, the caller told "could not reach
+/// the agent".
+///
+/// The reason names **both stream sizes and the ceiling**, because those are the
+/// facts the caller needs to act on: which stream was large, how large, and what the
+/// reply would have had to fit in. The sizes carry no thousands separator, so a
+/// number in this sentence can be compared with a file's without being parsed out of
+/// prose.
+///
+/// **The stream sizes are bytes the command wrote, and the ceiling is bytes of a
+/// reply**, which are different measurements and are labelled as such. A caller that
+/// read the ceiling as an output limit would think a 20 MB stdout was over a 16 MB
+/// one by three megabytes, when what actually overflowed was the JSON carrying it.
+///
+/// It is a refusal and not a result on purpose -- the output did not come back, so a
+/// caller must not go looking for it in a reply that cannot hold it. And it is a
+/// refusal rather than **raising the ceiling or streaming the reply**, which are the
+/// other two shapes: a larger number buys the same silence above it, and streaming is
+/// a change to the protocol rather than a report about one. That is the choice
+/// `docs/ROADMAP.md` M10 records, and this is the smallest shape that ends the
+/// silence.
+///
+/// `ceiling` is the same parameter [`reply_fits`] takes, and it is quoted in the
+/// message so the number a caller reads is the number that was applied.
+pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Json {
+    reply_refused(&format!(
+        "the command's output is too large to return: stdout was {} bytes and stderr {} \
+         bytes, and a reply of at most {ceiling} bytes is what this agent can send. Write \
+         the output to a file on the target and pull that instead",
+        outcome.stdout.len(),
+        outcome.stderr.len(),
+    ))
+}
+
 /// The identity reply, as the agent builds it.
 pub fn identity_to_json(name: &str, version: &str) -> Json {
     reply_result(object! { "name" => name, "version" => version })

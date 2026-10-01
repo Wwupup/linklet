@@ -21,6 +21,7 @@ use linklet_core::wire::{
     self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, Reply, Request, RunOutcome, RunRequest,
     WireError,
 };
+use linklet_core::{frame, frame::Kind};
 
 /// A digest of the right shape, for the messages that carry one.
 ///
@@ -473,6 +474,134 @@ fn a_body_that_is_not_json_is_a_bad_request_and_not_a_panic() {
     // both are refusals, and neither is a panic.
     assert!(wire::parse_body(b"{}").is_ok());
     assert!(wire::parse_body(&[0xff, 0xfe]).is_err());
+}
+
+// --- a reply that will not fit in a frame ------------------------------------
+
+#[test]
+fn the_reply_ceiling_leaves_room_for_the_tag_and_nothing_else() {
+    // The arithmetic the agent's refusal is based on, pinned to the frame module's
+    // own constants. It is 16 bytes short of the frame limit because that is the tag
+    // the channel appends, and the test in `linklet-adapters` is what holds the 16 to
+    // the cipher -- this file cannot see the cipher.
+    let ceiling = wire::reply_ceiling();
+
+    assert!(
+        ceiling < frame::MAX_PAYLOAD,
+        "a sealed reply is longer than the plaintext it carries"
+    );
+    assert_eq!(
+        frame::MAX_PAYLOAD - ceiling,
+        16,
+        "the room the seal needs is the channel's tag, which is 16 bytes"
+    );
+}
+
+#[test]
+fn a_reply_that_fills_the_ceiling_can_still_be_framed() {
+    // **The boundary, and the reason the ceiling is not just a number a comment
+    // mentions.** The predicate and the sender have to agree exactly: a predicate one
+    // byte optimistic would let the agent build a reply it could not send, which is
+    // the defect this change is about, and one byte pessimistic would refuse output
+    // that would have gone.
+    //
+    // The claim is the pair: what the predicate accepts, [`frame::header`] must accept
+    // once the reply is sealed. Both halves run against the real constants rather than
+    // against numbers chosen here, and the reply is built to a measured length -- the
+    // size of the JSON about an empty output, plus padding -- so `reply_ceiling()`
+    // itself is what is being checked.
+    let empty = wire::encode_run_reply(&outcome_of_stdout(0));
+    let padding = wire::reply_ceiling() - json::write(&empty).len();
+
+    let at_the_ceiling = json::write(&wire::encode_run_reply(&outcome_of_stdout(padding)));
+    assert_eq!(
+        at_the_ceiling.len(),
+        wire::reply_ceiling(),
+        "the reply built here should be exactly the ceiling"
+    );
+
+    let sealed = at_the_ceiling.len() + 16;
+    assert!(
+        frame::header(Kind::Sealed, sealed).is_ok(),
+        "a reply the predicate accepts has to be a frame the receiver accepts"
+    );
+
+    assert!(
+        wire::reply_fits(
+            &wire::encode_run_reply(&outcome_of_stdout(padding)),
+            wire::reply_ceiling()
+        ),
+        "the ceiling itself is within the ceiling"
+    );
+    assert!(
+        !wire::reply_fits(
+            &wire::encode_run_reply(&outcome_of_stdout(padding + 1)),
+            wire::reply_ceiling()
+        ),
+        "one byte past it is not"
+    );
+}
+
+/// An outcome whose stdout is `bytes` bytes of one character.
+fn outcome_of_stdout(bytes: usize) -> RunOutcome {
+    RunOutcome {
+        exit_code: Some(0),
+        stdout: "x".repeat(bytes),
+        stderr: String::new(),
+        duration_ms: 1,
+        reason: None,
+    }
+}
+
+#[test]
+fn a_reply_that_fits_is_not_refused() {
+    // The other half of the test below, and the reason it is a predicate rather
+    // than a comparison written at the call site: an agent that refused every
+    // reply would pass a test that only checked the too-large case.
+    assert!(
+        wire::reply_fits(&wire::encode_run_reply(&outcome_of_stdout(1024)), 4096),
+        "a small reply fits in a 4 KiB frame budget"
+    );
+}
+
+#[test]
+fn a_reply_too_large_to_frame_is_refused_by_name() {
+    // **This is the defect M10 carries.** A command whose output is past the
+    // frame ceiling used to leave the agent with a reply it could not frame, and
+    // it said nothing: the caller's only possible conclusion was "the agent
+    // closed the connection without answering", which is a statement about the
+    // network and not about the command. The decision here is what lets the
+    // agent answer instead.
+    let reply = wire::encode_run_reply(&outcome_of_stdout(1024));
+
+    assert!(
+        !wire::reply_fits(&reply, 128),
+        "a reply of about a kilobyte cannot fit in a 128 byte budget"
+    );
+
+    let refusal = wire::run_reply_too_large(&outcome_of_stdout(20_000_000), 128);
+    let text = match wire::reply_from_json(&refusal).expect("the refusal is a reply") {
+        Reply::Refused(reason) => reason,
+        Reply::Result(value) => panic!("too large is a refusal and not a result: {value:?}"),
+    };
+
+    // A caller has to be able to act on it, so it names the size that did not fit
+    // and the ceiling it did not fit in -- not a sentence about a socket.
+    assert!(text.contains("20000000"), "{text}");
+    assert!(text.contains("128"), "{text}");
+    assert!(
+        text.contains("stdout"),
+        "the size that did not fit is the fact that decides what the caller does next: {text}"
+    );
+
+    // And the two measurements are told apart in words, because they are not the
+    // same number: the stream sizes are bytes the command wrote, the ceiling is
+    // bytes of a reply. A caller that read one as the other would look for three
+    // megabytes of difference between an output and a message about it.
+    assert!(
+        text.contains("a reply of at most 128 bytes"),
+        "the ceiling should be labelled as a limit on the reply: {text}"
+    );
 }
 
 // --- what the agent reads ----------------------------------------------------

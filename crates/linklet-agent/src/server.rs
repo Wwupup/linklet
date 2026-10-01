@@ -193,9 +193,7 @@ fn answer(
             "linklet-agent",
             env!("CARGO_PKG_VERSION"),
         )),
-        Ok(Request::Run(run)) => {
-            Response::Sealed(wire::encode_run_reply(&crate::execute::run(&run)))
-        }
+        Ok(Request::Run(run)) => Response::Sealed(run_reply(&crate::execute::run(&run))),
         Ok(Request::Push(manifest)) => {
             Response::Sealed(receive(connection, session, &manifest, root))
         }
@@ -205,6 +203,33 @@ fn answer(
         // a reply that is not coming.
         Err(error) => Response::Sealed(wire::reply_refused(&refusal_text(&error))),
     }
+}
+
+/// The reply to a command that ran, refusing by name when it will not fit.
+///
+/// **This is the answer where there used to be silence, and `docs/ROADMAP.md` M10 is
+/// the whole of it.** A command whose output was past the frame ceiling ran to
+/// completion on the target, produced a reply that could not be framed, and got
+/// nothing back: the caller was told "the agent closed the connection without
+/// answering", which is a sentence about the network and not about the command.
+///
+/// The decision is made here rather than at the write for a reason worth stating:
+/// by the time `write_frame` refuses, the bytes are sealed and gone, and the only
+/// thing left to say is "too large" without any of the sizes. Asking first is what
+/// lets the refusal name what did not fit.
+///
+/// Both branches are sealed and framed the same way by the caller, so there is no
+/// second send path here -- an agent with two ways to send a reply has a way for
+/// them to disagree.
+fn run_reply(outcome: &wire::RunOutcome) -> Json {
+    let ceiling = wire::reply_ceiling();
+    let reply = wire::encode_run_reply(outcome);
+
+    if wire::reply_fits(&reply, ceiling) {
+        return reply;
+    }
+
+    wire::run_reply_too_large(outcome, ceiling)
 }
 
 /// Receives one pushed file.

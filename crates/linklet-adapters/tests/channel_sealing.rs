@@ -89,6 +89,28 @@ fn the_sealed_form_is_longer_by_the_tag() {
 }
 
 #[test]
+fn the_room_the_core_leaves_for_sealing_is_this_channel_s_overhead() {
+    // `linklet_core::wire` works out how much plaintext one frame can carry by
+    // subtracting a tag length it cannot import -- the dependency arrow points from
+    // here to there, not the other way. So the number is written down twice, and this
+    // is the test that makes the second copy safe: an agent that refused a reply a
+    // few bytes early would be a nuisance, and one that accepted a reply it could not
+    // send would be the defect this whole change exists to fix.
+    let (mut host, _) = host_to_agent();
+    let sealed = host.seal(b"").expect("sealing nothing");
+    assert_eq!(
+        sealed.len(),
+        OVERHEAD_BYTES,
+        "the tag is the only thing sealing adds"
+    );
+    assert_eq!(
+        linklet_core::frame::MAX_PAYLOAD - linklet_core::wire::reply_ceiling(),
+        OVERHEAD_BYTES,
+        "the core's ceiling is the frame limit less this channel's tag"
+    );
+}
+
+#[test]
 fn the_same_plaintext_seals_differently_each_time() {
     // A counter nonce, so two identical messages in one session produce different
     // bytes. If they produced the same bytes, an observer could tell that two

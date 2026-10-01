@@ -244,6 +244,66 @@ fn an_error_the_agent_reports_does_not_look_like_a_command_result() {
     );
 }
 
+// --- a reply the agent could not frame ---------------------------------------
+
+#[test]
+fn output_too_large_to_return_is_refused_by_name_and_not_a_dropped_connection() {
+    // **The defect M10 carries, over the whole chain.** A command that writes more
+    // than the frame ceiling to stdout leaves the agent with a reply it cannot frame.
+    // Before this test existed the agent sent nothing and closed, and the caller's
+    // only possible reading was "could not reach the agent: the agent closed the
+    // connection without answering" -- which sends whoever reads it to the network
+    // for a command that ran perfectly.
+    //
+    // 16,000,000 bytes of zeros are 21,333,338 bytes of base64: past the ceiling by
+    // about 4.5 MB, all of it ASCII, so nothing about this case depends on JSON
+    // escaping. `certutil` produces them in about a fifth of a second, against the
+    // loop a shell would need.
+    //
+    // **No command below carries a quote, and that is not fastidiousness.** The agent
+    // runs commands through `cmd`, and this test's own scratch directory has a space in
+    // its name: a path that needs quoting cannot survive the trip, and the failure reads
+    // as the command not existing. So the test makes a directory with no space in the
+    // name, and a `cmd` builtin runs in it. `certutil` was chosen over a PowerShell
+    // one-liner for the same reason: the one-liner needs quotes, and the quoted forms
+    // were measured on this machine -- they came back as the command's own text.
+    let agent = Agent::start();
+    let workspace = agent.root.join("too-large");
+    std::fs::create_dir(&workspace).expect("a directory for the command to work in");
+    std::fs::write(workspace.join("zeros.bin"), vec![0u8; 16_000_000])
+        .expect("a file whose base64 cannot be framed");
+
+    let result = run(
+        &agent.address,
+        &RunRequest {
+            command: format!(
+                "cd /d {} && certutil -encode zeros.bin zeros.b64 && type zeros.b64",
+                workspace.display()
+            ),
+            timeout_seconds: 60,
+        },
+    );
+
+    let error = result.expect_err("the reply cannot be framed, so this cannot be a result");
+    let CallError::Refused(reason) = &error else {
+        panic!("the caller must be told what happened, and got {error:?}");
+    };
+
+    // Named, both of them: the stream that overflowed and the ceiling it did not
+    // fit in. A refusal that only said "too large" would leave the caller with no
+    // idea whether to narrow the command or to stop trying.
+    assert!(reason.contains("stdout"), "{reason}");
+    assert!(
+        reason.contains(&wire::reply_ceiling().to_string()),
+        "the reason should name the ceiling it did not fit in: {reason}"
+    );
+    assert!(
+        render_call_error(&error).contains("refused"),
+        "a refusal is not a transport failure: {}",
+        render_call_error(&error)
+    );
+}
+
 // --- what the client says when there is no agent ----------------------------
 
 #[test]
