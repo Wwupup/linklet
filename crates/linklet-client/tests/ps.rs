@@ -15,10 +15,10 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use linklet_client::{AgentAddress, CallError, kill, ps, run};
+use linklet_client::{AgentAddress, CallError, kill, ps, run, spawn};
 use linklet_core::auth::Token;
 use linklet_core::process::{Filter, Incomplete, Listing, ToKill};
-use linklet_core::wire::{KillRequest, RunRequest};
+use linklet_core::wire::{KillRequest, RunRequest, SpawnRequest};
 
 /// The token these tests configure the agent with.
 const TEST_TOKEN: &str = "test-token-0123456789";
@@ -260,29 +260,34 @@ fn a_ps_call_to_a_machine_with_no_agent_is_a_transport_failure_and_not_an_empty_
 ///
 /// **Started through `exec` and deliberately not waited for.** `exec` blocks until the
 /// command exits, so this runs on its own thread and the test proceeds: what is being set up
-/// is a process that outlives the request that started it, which is exactly the shape
-/// `spawn` will eventually provide. Until then this is the honest way to produce one, and it
-/// is why the `exec` thread is left to finish on its own rather than joined.
-fn start_a_marker(agent: &Agent) -> String {
+/// is a process that outlives the request that started it, which is what `spawn` provides and
+/// `exec` cannot. Until the caller has `spawn` in hand this is the honest way to produce one,
+/// and the `exec` thread is left to finish on its own rather than joined.
+///
+/// **`executable` is a parameter because these tests run concurrently.** Two markers of the
+/// same name are two processes no test can tell apart: the deploy-loop test looks for
+/// `PING.EXE` and a spawn test that started one would make its empty-listing assertion fail
+/// intermittently. Each caller passes an executable of its own for that reason.
+fn start_a_marker(agent: &Agent, executable: &str) -> String {
     // Long enough that the test always stops it rather than racing it: the process has to
-    // outlive the two calls that look for it and stop it. `ping -n 40` was written first and
-    // the race was lost -- the marker exited on its own between the `ps` and the `kill`, and
-    // the failure read as the filter not matching.
-    let command = "ping -n 600 127.0.0.1";
+    // outlive the calls that look for it and stop it. `ping -n 40` was written first and the
+    // race was lost -- the marker exited on its own between the `ps` and the `kill`, and the
+    // failure read as the filter not matching.
+    let command = format!("{executable} -n 600 127.0.0.1");
     let address = agent.address.clone();
     std::thread::spawn(move || {
         let _ = run(
             &address,
             &RunRequest {
-                command: command.to_string(),
+                command,
                 timeout_seconds: 60,
             },
         );
     });
 
-    // The image name of what `cmd` starts for that command. `exec` runs through `cmd /C`,
-    // so the process that lives is the ping, not the shell.
-    "PING.EXE".to_string()
+    // The image name `cmd` starts for that command: `exec` runs through `cmd /C`, so the
+    // process that lives is the program, not the shell.
+    format!("{}.EXE", executable.to_uppercase())
 }
 
 #[test]
@@ -292,10 +297,11 @@ fn the_deploy_loop_can_be_closed_look_start_and_stop() {
     // This closes the loop with a real process on a real machine: find it, confirm it is
     // running, stop it by pid, and confirm it is gone.
     let agent = Agent::start();
-    let marker = start_a_marker(&agent);
+    let marker = start_a_marker(&agent, "ping");
 
     // Look. The wait is for the ping to actually exist; a `ps` immediately after the request
-    // can beat the shell that has to start it.
+    // can beat the shell that has to start it. **The baseline is taken before the request**,
+    // so what is looked for is a process that appeared, and not one another test is running.
     let mut found = None;
     for _ in 0..40 {
         let listing = ps(
@@ -420,4 +426,165 @@ fn a_pid_that_is_not_running_is_a_report_of_nothing_and_not_a_failure() {
     assert_eq!(report.matched, 0, "{report:#?}");
     assert!(report.matched_nothing());
     assert!(report.complete(), "nothing was left running");
+}
+
+// --- and starting the new one ------------------------------------------------
+
+#[test]
+fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file() {
+    // **The difference from `exec`, and the trap M10 opens with.** `exec` blocking on a
+    // long-running program holds the request, the connection and the agent's pipes; this
+    // returns a pid at once, and the program it started writes to a file of its own -- which
+    // is also how a caller reads it afterwards, with the `pull` that already exists.
+    let agent = Agent::start();
+    let output = agent.root.join("spawned.log");
+
+    // What was running before, so the program can be identified by being new. The pid the
+    // reply carries is the shell's -- `spawn` runs through `cmd`, exactly as `run` does --
+    // and the shell is not what the caller wants to watch: it exits as soon as the program
+    // is started, while the program keeps running. The pid is still the right handle to stop
+    // the tree, which is what `kill` does with it.
+    let before: Vec<u32> = ps(
+        &agent.address,
+        &Filter {
+            name: Some("PING.EXE".to_string()),
+            ..Filter::any()
+        },
+    )
+    .expect("the agent should answer")
+    .processes
+    .iter()
+    .map(|process| process.pid)
+    .collect();
+
+    let started = std::time::Instant::now();
+    let report = spawn(
+        &agent.address,
+        &SpawnRequest {
+            // `ping` again, and the two tests cannot be confused for each other because each
+            // looks only for pids that were not there before it started. `timeout /T` was
+            // tried for a distinct executable and cannot be used: it refuses redirected
+            // input, which is how `spawn` runs a command, so it exits at once.
+            command: "ping -n 300 127.0.0.1".to_string(),
+            output: output.to_string_lossy().into_owned(),
+        },
+    )
+    .expect("the agent should answer");
+    assert!(
+        report.command.contains("ping"),
+        "the command is echoed back: {report:#?}"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "spawn waited {:?}, which is `exec` with another name",
+        started.elapsed()
+    );
+
+    // And it is really running, which is the claim the reply deliberately does not make.
+    // This is the `ps` in the deploy loop, and it is a separate call on purpose.
+    let mut spawned = None;
+    for _ in 0..40 {
+        let listing = ps(
+            &agent.address,
+            &Filter {
+                name: Some("PING.EXE".to_string()),
+                ..Filter::any()
+            },
+        )
+        .expect("the agent should answer");
+        if let Some(process) = listing
+            .processes
+            .iter()
+            .find(|process| !before.contains(&process.pid))
+        {
+            spawned = Some(process.pid);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let pid = spawned.unwrap_or_else(|| panic!("the spawned program never appeared in a listing"));
+
+    // Stop it, so the test leaves nothing behind -- and by the pid the reply gave, which is
+    // the shell: `taskkill /T` takes the program it started with it, which is why that is
+    // the pid worth returning.
+    let killed = kill(
+        &agent.address,
+        &KillRequest {
+            to_kill: ToKill::Pid(report.pid),
+            force: false,
+            candidates: Filter::any(),
+            exclude: None,
+        },
+    )
+    .expect("the agent should answer");
+    assert_eq!(killed.killed.len(), 1, "{killed:#?}");
+
+    // The program itself is gone too, which is the part `/T` is for.
+    let after = ps(
+        &agent.address,
+        &Filter {
+            name: Some("PING.EXE".to_string()),
+            ..Filter::any()
+        },
+    )
+    .expect("the agent should answer");
+    assert!(
+        !after.processes.iter().any(|process| process.pid == pid),
+        "the program outlived the shell that was stopped: {after:#?}"
+    );
+
+    // The output file the spawn was told to write. It is inside the agent's root, so the
+    // existing `pull` reaches it -- which is why `spawn` needs no new way to read a file.
+    //
+    // Read after the program was stopped, so the file is complete; `ping` writes its first
+    // line immediately, which is what this asserts is there.
+    let text = std::fs::read_to_string(&output).unwrap_or_else(|error| {
+        panic!("the program's own output file is not there: {error}");
+    });
+    assert!(
+        text.contains("127.0.0.1"),
+        "the program's own output should be in its own file: {text:?}"
+    );
+}
+
+#[test]
+fn a_spawn_onto_an_output_file_it_cannot_write_is_refused_and_starts_nothing() {
+    // The refusal has to come before the process exists, because a program started with
+    // nowhere to write is the one thing this feature exists to prevent.
+    let agent = Agent::start();
+    let directory = agent.root.join("a-directory");
+    std::fs::create_dir(&directory).expect("a directory to aim the output at");
+
+    let error = spawn(
+        &agent.address,
+        &SpawnRequest {
+            // A marker of its own again, so "nothing was started" cannot be about another
+            // test's process: nothing in this test runs at all.
+            command: "arp -a".to_string(),
+            output: directory.to_string_lossy().into_owned(),
+        },
+    )
+    .expect_err("a directory is not a file to write");
+
+    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
+
+    // And nothing was started, which is the half of "refused" that matters: a program
+    // started with nowhere to write is the one thing this feature exists to prevent.
+    //
+    // **Read over the wire and not from the filesystem.** The first version of this checked
+    // `directory.read_dir()` -- the *test's* disk -- while the output path is on the
+    // *agent's* machine. They are the same machine here, which is exactly why the mistake
+    // was invisible, and it would have been wrong the moment they were not.
+    let listing = ps(
+        &agent.address,
+        &Filter {
+            name: Some("ARP.EXE".to_string()),
+            ..Filter::any()
+        },
+    )
+    .expect("the agent should answer");
+    assert!(
+        listing.processes.is_empty(),
+        "a refused spawn started something: {listing:#?}"
+    );
 }

@@ -310,6 +310,16 @@ fn answer(
             Ok(report) => Response::Sealed(wire::encode_kill_reply(&report)),
             Err(refusal) => Response::Sealed(wire::reply_refused(&refusal.to_string())),
         },
+        // The request that returns before the program does. It answers with a pid and
+        // nothing about health: what was started is a fact, and whether it is still there is
+        // `ps`'s question -- asked by the caller, a moment later, which is the order the
+        // deploy loop actually runs in.
+        Ok(Request::Spawn(spawn)) => {
+            Response::Sealed(match crate::spawn::start(&spawn.command, &spawn.output) {
+                Ok(report) => wire::encode_spawn_reply(&report),
+                Err(reason) => wire::reply_refused(&reason),
+            })
+        }
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.

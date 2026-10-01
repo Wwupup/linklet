@@ -177,6 +177,14 @@ pub trait ToolRunner {
     /// attempted" and "nothing was killed" are different answers, and only one of them means
     /// the caller should think again.
     fn kill(&self, agent: &str, request: &crate::wire::KillRequest) -> ToolOutcome;
+
+    /// Starts a program on the agent's machine that outlives this call.
+    ///
+    /// **The difference from [`ToolRunner::exec`] is the point of the tool**, and the answer
+    /// says only what this side knows: a pid. Whether the program is still there a moment
+    /// later is [`ToolRunner::ps`]'s question, and a tool that answered both would be
+    /// claiming to have looked when it had not.
+    fn spawn(&self, agent: &str, request: &crate::wire::SpawnRequest) -> ToolOutcome;
 }
 
 /// The name of a JSON value's type, for an error message.
@@ -573,6 +581,36 @@ pub fn tools() -> Vec<Tool> {
             )
             .expect("the schema above is a literal and parses"),
         },
+        Tool {
+            name: "spawn",
+            // The one description where the *absence* of waiting is the fact a reader needs,
+            // and it cannot be said in the description's budget without becoming a manual.
+            // So the description says what it does and where, and the word "started" in the
+            // result is what tells a caller this is not `exec`: nothing was waited for.
+            description: "Start a program on a remote linklet agent's machine, and return at once.",
+            input_schema: json::parse(
+                r#"{
+                    "type": "object",
+                    "properties": {
+                        "agent": {
+                            "type": "string",
+                            "description": "the agent's host:port, for example 10.0.0.5:8787"
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "the command line, run through the target's shell"
+                        },
+                        "output": {
+                            "type": "string",
+                            "description": "where on the target the program's output goes"
+                        }
+                    },
+                    "required": ["agent", "command", "output"],
+                    "additionalProperties": false
+                }"#,
+            )
+            .expect("the schema above is a literal and parses"),
+        },
     ]
 }
 
@@ -753,6 +791,29 @@ pub fn dispatch(
                 exclude: None,
             };
             Ok(runner.kill(&agent, &request))
+        }
+        "spawn" => {
+            reject_unknown(arguments, &["agent", "command", "output"])?;
+            let agent = required_str(arguments, "agent")?;
+            let command = required_str(arguments, "command")?;
+            if command.trim().is_empty() {
+                return Err(ToolError::BadArgument {
+                    name: "command",
+                    problem: "empty".to_string(),
+                });
+            }
+            // **Required, and the same refusal the command line gives**: a program whose
+            // output goes nowhere cannot be looked at afterwards, which is the one thing this
+            // capability is for.
+            let output = required_str(arguments, "output")?;
+            if output.trim().is_empty() {
+                return Err(ToolError::BadArgument {
+                    name: "output",
+                    problem: "empty".to_string(),
+                });
+            }
+
+            Ok(runner.spawn(&agent, &crate::wire::SpawnRequest { command, output }))
         }
         other => Err(ToolError::NoSuchTool(other.to_string())),
     }

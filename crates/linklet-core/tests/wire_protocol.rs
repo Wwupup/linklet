@@ -809,6 +809,65 @@ fn a_filter_field_of_the_wrong_shape_is_refused_by_name() {
     }
 }
 
+// --- starting something that outlives the request ----------------------------
+
+#[test]
+fn a_spawn_request_carries_the_command_and_where_its_output_goes() {
+    use linklet_core::wire::SpawnRequest;
+
+    let request = Request::Spawn(SpawnRequest {
+        command: "app.exe --serve".to_string(),
+        output: r"logs\app.log".to_string(),
+    });
+
+    let encoded = json::write(&wire::request_to_json(&request));
+    let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
+        .expect("its own output should decode");
+
+    assert_eq!(decoded, request, "{encoded}");
+    assert!(
+        encoded.contains("\"op\":\"spawn\""),
+        "the operation is pinned by value like the others: {encoded}"
+    );
+}
+
+#[test]
+fn a_spawn_reply_carries_the_pid_and_not_a_promise() {
+    // **What a spawn can honestly say.** That the program started and what its pid is --
+    // and nothing about whether it is healthy, because at this moment nothing knows. The
+    // caller asks `ps` for that, which is what `ps` is for.
+    use linklet_core::wire::SpawnReport;
+
+    let report = SpawnReport {
+        pid: 5144,
+        command: "app.exe --serve".to_string(),
+    };
+
+    assert_eq!(
+        json::write(&wire::spawn_report_to_json(&report)),
+        r#"{"command":"app.exe --serve","pid":5144}"#
+    );
+}
+
+#[test]
+fn a_spawn_request_without_a_command_or_an_output_file_is_refused_by_name() {
+    for (body, expected) in [
+        (r#"{"op":"spawn","output":"a.log"}"#, "command"),
+        (r#"{"op":"spawn","command":"app.exe"}"#, "output"),
+        (
+            r#"{"op":"spawn","command":"   ","output":"a.log"}"#,
+            "command",
+        ),
+    ] {
+        let error = wire::request_from_json(&json::parse(body).expect("valid JSON"))
+            .expect_err("this spawn should have been refused");
+        assert!(
+            error.to_string().contains(expected),
+            "for {body}, expected {expected:?} in {error}"
+        );
+    }
+}
+
 // --- what the agent reads ----------------------------------------------------
 
 #[test]

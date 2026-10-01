@@ -56,12 +56,15 @@ const OP_PS: &str = "ps";
 /// The request that stops something on the agent's machine.
 const OP_KILL: &str = "kill";
 
+/// The request that starts something that outlives the request.
+const OP_SPAWN: &str = "spawn";
+
 /// Every `op` this version understands, for an error message that lists them.
 ///
 /// A single list rather than a sentence written at each refusal: a caller that sent
 /// an `op` this version does not know needs to see the ones it does, and a list that
 /// is written twice is a list that disagrees with itself eventually.
-const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill";
+const KNOWN_OPS: &str = "identity, run, push, pull, ps, kill, spawn";
 
 /// Encodes bytes as lowercase hexadecimal.
 ///
@@ -344,6 +347,44 @@ pub enum Request {
     /// the second is how a caller says "only among processes matching this", which is how
     /// one build is stopped without stopping the test harness that shares its name.
     Kill(KillRequest),
+    /// Start a program that outlives the request that started it.
+    ///
+    /// **The difference from [`Request::Run`], and the whole reason this exists**: `run`
+    /// waits for the command and holds its output in the reply, so a program that is meant
+    /// to keep running holds the request, the connection and the agent's pipes with it.
+    /// This starts the program with **its own output file** and answers with its pid, which
+    /// is the shape the deploy loop needs -- start the new build, then ask `ps` whether it
+    /// is still there. See `docs/ROADMAP.md` M10.
+    Spawn(SpawnRequest),
+}
+
+/// A request to start a program that keeps running.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnRequest {
+    /// The command line, run through the same shell `run` uses.
+    pub command: String,
+    /// Where the program's output goes, as a path on the **agent's** side.
+    ///
+    /// **Required, and not a convenience.** A child that inherited the agent's pipes would
+    /// keep them open for as long as it runs, which is what makes a long-running program
+    /// through `run` the trap `docs/ROADMAP.md` M10 opens with. Its own file is also how the
+    /// caller watches it afterwards -- and the reason `spawn` needs no log-reading feature
+    /// to be useful.
+    pub output: String,
+}
+
+/// What [`Request::Spawn`] answers with.
+///
+/// A pid and the command. **Nothing about health**, because at the moment of the reply
+/// nothing knows: the program has started, which is not the same as staying up. That
+/// question is `ps`'s, and answering it here with a guess would be the mistake this project
+/// exists to remove.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnReport {
+    /// The process identifier of what was started.
+    pub pid: u32,
+    /// The command line that was started, echoed.
+    pub command: String,
 }
 
 /// A request to stop something.
@@ -476,6 +517,11 @@ pub fn request_to_json(request: &Request) -> Json {
             entries.insert("op".to_string(), Json::str(OP_KILL));
             Json::Object(entries)
         }
+        Request::Spawn(spawn) => object! {
+            "op" => OP_SPAWN,
+            "command" => spawn.command,
+            "output" => spawn.output,
+        },
     }
 }
 
@@ -508,6 +554,7 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
         }),
         OP_PS => Ok(Request::Ps(filter_from_json(value)?)),
         OP_KILL => Ok(Request::Kill(kill_request_from_json(value)?)),
+        OP_SPAWN => Ok(Request::Spawn(spawn_request_from_json(value)?)),
         other => Err(WireError::BadRequest(format!(
             "op: {other:?} is not one of {KNOWN_OPS}"
         ))),
@@ -1229,6 +1276,79 @@ pub fn kill_report_from_reply(reply: &Reply) -> Result<crate::process::KillRepor
 /// A kill report, wrapped as a reply.
 pub fn encode_kill_reply(report: &crate::process::KillReport) -> Json {
     reply_result(kill_report_to_json(report))
+}
+
+/// A spawn request from JSON.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] naming the field. **Both fields are required**, and the output
+/// path is not optional for the reason [`SpawnRequest::output`] gives: a child with the
+/// agent's pipes keeps them open, which is the trap this request exists to avoid.
+pub fn spawn_request_from_json(value: &Json) -> Result<SpawnRequest, WireError> {
+    let command = value
+        .get_str("command")
+        .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
+        .to_string();
+    if command.trim().is_empty() {
+        return Err(WireError::BadRequest("command: empty".to_string()));
+    }
+
+    let output = value
+        .get_str("output")
+        .ok_or_else(|| WireError::BadRequest("output: missing or not a string".to_string()))?
+        .to_string();
+    if output.trim().is_empty() {
+        return Err(WireError::BadRequest("output: empty".to_string()));
+    }
+
+    Ok(SpawnRequest { command, output })
+}
+
+/// A spawn report as JSON.
+pub fn spawn_report_to_json(report: &SpawnReport) -> Json {
+    object! {
+        "pid" => i64::from(report.pid),
+        "command" => report.command,
+    }
+}
+
+/// A spawn report out of a reply.
+///
+/// # Errors
+///
+/// [`WireError::BadRequest`] when the reply is a refusal, or when there is no pid in it --
+/// **a spawn that did not report a pid has not answered the question**, and filling in zero
+/// would hand the caller a process identifier that belongs to the system idle process.
+pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> {
+    let Reply::Result(value) = reply else {
+        return Err(WireError::BadRequest(
+            "the spawn request was refused".to_string(),
+        ));
+    };
+
+    let pid = match value.get("pid") {
+        Some(Json::Int(pid)) if *pid > 0 => *pid as u32,
+        _ => {
+            return Err(WireError::BadRequest(
+                "pid: missing, or not a process identifier".to_string(),
+            ));
+        }
+    };
+
+    // The command is echoed back rather than assumed: a caller that has just started
+    // something has to be able to tell which of two spawns this reply is about.
+    let command = value
+        .get_str("command")
+        .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
+        .to_string();
+
+    Ok(SpawnReport { pid, command })
+}
+
+/// A spawn report, wrapped as a reply.
+pub fn encode_spawn_reply(report: &SpawnReport) -> Json {
+    reply_result(spawn_report_to_json(report))
 }
 
 /// Whether a reply fits in the bytes one frame may carry.

@@ -32,6 +32,7 @@ struct FakeRun {
     transfer_calls: RefCell<Vec<(String, String, String)>>,
     ps_calls: RefCell<Vec<(String, linklet_core::process::Filter)>>,
     kill_calls: RefCell<Vec<(String, linklet_core::wire::KillRequest)>>,
+    spawn_calls: RefCell<Vec<(String, linklet_core::wire::SpawnRequest)>>,
 }
 
 impl FakeRun {
@@ -121,6 +122,13 @@ impl ToolRunner for FakeRun {
             .push((agent.to_string(), request.clone()));
         ToolOutcome::ok("killed 1 of 1\n5144 app.exe")
     }
+
+    fn spawn(&self, agent: &str, request: &linklet_core::wire::SpawnRequest) -> ToolOutcome {
+        self.spawn_calls
+            .borrow_mut()
+            .push((agent.to_string(), request.clone()));
+        ToolOutcome::ok("started 5144")
+    }
 }
 
 #[test]
@@ -202,7 +210,7 @@ fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out()
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_seven_tools() {
+fn there_are_exactly_eight_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -212,14 +220,19 @@ fn there_are_exactly_seven_tools() {
     // `tools()`: an agent that cannot send a file cannot install a build, and one that
     // cannot bring a log back has to ask for it in a command's output instead.
     //
-    // The seventh and eighth are `ps` and `kill`, and together they are the deploy loop:
-    // **is the old build still running, and stop it.** `exec` cannot answer either --
+    // The sixth and seventh are `ps` and `kill`, and together they are most of the deploy
+    // loop: **is the old build still running, and stop it.** `exec` cannot answer either --
     // `tasklist` through `exec` returns text with none of the counts that make an empty
     // answer readable, and `taskkill` through it cannot refuse to stop the agent, because a
     // refusal is something an interface has and a command line does not.
+    //
+    // The eighth is `spawn`, and it is not `exec` with a flag: `exec` **waits**, so a program
+    // meant to keep running holds the request, the connection and the agent's pipes with it.
+    // A caller that has only `exec` cannot start the new build, which is the one step of the
+    // loop that was still missing.
     assert_eq!(
         tools().len(),
-        7,
+        8,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
@@ -228,7 +241,9 @@ fn there_are_exactly_seven_tools() {
     let names: Vec<&str> = tools().iter().map(|tool| tool.name).collect();
     assert_eq!(
         names,
-        vec!["check", "testbed", "exec", "push", "pull", "ps", "kill"]
+        vec![
+            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn"
+        ]
     );
 }
 
@@ -535,6 +550,9 @@ fn bad_news_is_not_an_error() {
         }
         fn kill(&self, _agent: &str, _request: &linklet_core::wire::KillRequest) -> ToolOutcome {
             ToolOutcome::ok("killed 0 of 1\\nfailed 5144 app.exe")
+        }
+        fn spawn(&self, _agent: &str, _request: &linklet_core::wire::SpawnRequest) -> ToolOutcome {
+            ToolOutcome::failed("cannot write the output file")
         }
     }
 

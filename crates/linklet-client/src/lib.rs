@@ -28,7 +28,9 @@ use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
 use linklet_core::json;
 use linklet_core::transfer::TransferError;
-use linklet_core::wire::{self, KillRequest, Reply, Request, RunOutcome, RunRequest, WireError};
+use linklet_core::wire::{
+    self, KillRequest, Reply, Request, RunOutcome, RunRequest, SpawnRequest, WireError,
+};
 
 /// Why a call could not be completed.
 ///
@@ -329,6 +331,46 @@ pub fn ps(
     )?;
 
     wire::ps_listing_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
+}
+
+/// Starts a program on an agent's machine that outlives this call.
+///
+/// **The difference from [`run`], and the reason both exist**: `run` waits for the command
+/// and returns its output, so a program meant to keep running holds the call, the connection
+/// and the agent's pipes with it. This starts the program with **its own output file** and
+/// returns its pid immediately.
+///
+/// That pid plus a [`ps`] call is the whole of "did it stay up": the reply deliberately says
+/// nothing about health, because at the moment it is sent nothing knows. The deploy loop is
+/// those calls in that order -- start, look, and stop if it has to be stopped again.
+///
+/// # Errors
+///
+/// [`CallError`] for anything that means the host does not know whether the program started,
+/// including an agent that refused because the output file could not be created.
+pub fn spawn(
+    address: &AgentAddress,
+    request: &SpawnRequest,
+) -> Result<wire::SpawnReport, CallError> {
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    let reply = ask(
+        &mut connection,
+        session.as_mut(),
+        &Request::Spawn(request.clone()),
+        HANDSHAKE_ALLOWANCE,
+    )?;
+
+    // **The refusal is checked first, and this is not a formality.** An agent that could not
+    // create the output file refuses, and reading that refusal as a malformed report reports
+    // "the agent's reply was not understood" -- a sentence that sends the reader to look at
+    // the protocol instead of at the path they typed. `kill` and `run` both do this; this
+    // one was written without it, and the test that spawns onto a directory is what caught
+    // it.
+    match reply {
+        Reply::Refused(reason) => Err(CallError::Refused(reason)),
+        Reply::Result(_) => wire::spawn_report_from_reply(&reply)
+            .map_err(|error| CallError::Protocol(error.to_string())),
+    }
 }
 
 /// Stops something on an agent's machine.

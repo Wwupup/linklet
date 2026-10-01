@@ -32,7 +32,7 @@ use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
-use linklet_core::wire::{self, KillRequest, RunRequest};
+use linklet_core::wire::{self, KillRequest, RunRequest, SpawnRequest};
 use linklet_core::{
     CheckError, DEFAULT_BUDGET_SECONDS, DEFAULT_EXEC_TIMEOUT_SECONDS, ExitCode, MAX_AT_ONCE,
     MAX_TARGETS, Report, Summary, ToolOutcome, ToolRunner, check_targets_concurrent, exit_code_for,
@@ -52,6 +52,7 @@ usage:
   linklet exec --agent <host:port> [options] <command...>
   linklet ps --agent <host:port> [options]
   linklet kill --agent <host:port> (--pid <n> | --name <exact> | --contains <text>) [options]
+  linklet spawn --agent <host:port> --output <remote> <command...>
   linklet push --agent <host:port> --from <local> --to <remote>
   linklet pull --agent <host:port> --from <remote> --to <local>
   linklet mcp
@@ -201,6 +202,10 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     if arguments.first().map(String::as_str) == Some("kill") {
         return run_kill(&arguments[1..]);
+    }
+
+    if arguments.first().map(String::as_str) == Some("spawn") {
+        return run_spawn(&arguments[1..]);
     }
 
     match parse_arguments(arguments) {
@@ -461,6 +466,10 @@ impl ToolRunner for LiveRunner {
 
     fn kill(&self, agent: &str, request: &KillRequest) -> ToolOutcome {
         kill_on(agent, request, token_from_environment().as_ref())
+    }
+
+    fn spawn(&self, agent: &str, request: &SpawnRequest) -> ToolOutcome {
+        spawn_on(agent, request, token_from_environment().as_ref())
     }
 }
 
@@ -818,6 +827,96 @@ fn complete_from_text(text: &str) -> bool {
     !summary.contains("could not be read")
         && !summary.contains("unreadable")
         && !text.contains("\nnote: ")
+}
+
+/// Starts a program on an agent's machine that outlives this command.
+///
+/// The exit code is `exec`'s: `0` when something was started, `3` when the call could not be
+/// made. There is no command status to pass through, because **this command does not wait for
+/// the program** -- that is the whole of it -- so a program that exits a second later is a
+/// program this command correctly reported as started.
+///
+/// Confirming it stayed up is the caller's next two commands, and they are the ones the
+/// deploy loop is made of: `linklet ps` to look, `linklet kill` to stop it again.
+fn run_spawn(arguments: &[String]) -> u8 {
+    let mut agent: Option<String> = None;
+    let mut output: Option<String> = None;
+    let mut words: Vec<String> = Vec::new();
+    let mut iterator = arguments.iter();
+
+    while let Some(argument) = iterator.next() {
+        match argument.as_str() {
+            "--agent" => match iterator.next() {
+                Some(value) => agent = Some(value.clone()),
+                None => {
+                    eprintln!("linklet: --agent needs a host:port");
+                    return ExitCode::USAGE;
+                }
+            },
+            "--output" => match iterator.next() {
+                Some(value) => output = Some(value.clone()),
+                None => {
+                    eprintln!("linklet: --output needs a path on the target");
+                    return ExitCode::USAGE;
+                }
+            },
+            other => words.push(other.to_string()),
+        }
+    }
+
+    let Some(agent) = agent else {
+        eprintln!("linklet: spawn needs --agent <host:port>");
+        return ExitCode::USAGE;
+    };
+    if words.is_empty() {
+        eprintln!("linklet: spawn needs a command");
+        return ExitCode::USAGE;
+    }
+    // Required rather than defaulted, and the refusal says why: a program whose output goes
+    // nowhere is a program the caller cannot look at afterwards, which is the one thing this
+    // feature is for. A default like `linklet-spawn.log` in the agent's working directory
+    // would be a file nobody asked for in a place nobody chose.
+    let Some(output) = output else {
+        eprintln!("linklet: spawn needs --output <path on the target>: the program writes");
+        eprintln!("linklet:   its own output there, which is how you read it afterwards");
+        return ExitCode::USAGE;
+    };
+
+    let request = SpawnRequest {
+        // The command is exactly what was typed after the options, joined the way `exec`
+        // joins it: a tool that reassembled a command line from pieces would be a second
+        // interpretation of the caller's quoting.
+        command: words.join(" "),
+        output,
+    };
+
+    let outcome = spawn_on(&agent, &request, token_from_environment().as_ref());
+    println!("{}", outcome.text);
+
+    if outcome.is_error {
+        return ExitCode::REFUSED;
+    }
+    ExitCode::SUCCESS
+}
+
+/// Starts a program on an agent's machine and renders what was started.
+///
+/// Shared by the command and the tool, like `ps_on` and `kill_on`.
+fn spawn_on(agent: &str, request: &SpawnRequest, token: Option<&Token>) -> ToolOutcome {
+    let mut address = match AgentAddress::new(agent) {
+        Ok(address) => address,
+        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+    };
+    if let Some(token) = token {
+        address = address.with_token(token.clone());
+    }
+
+    match linklet_client::spawn(&address, request) {
+        // `started <pid>`, and the word is chosen: "started" is what this side knows, where
+        // "running" would be a claim about a moment it has not looked at.
+        Ok(report) => ToolOutcome::ok(format!("started {}", report.pid)),
+        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+    }
 }
 
 /// Stops something on an agent's machine.

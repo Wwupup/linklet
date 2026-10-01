@@ -391,7 +391,7 @@ on everything in this list -- which is why reading it beats designing from scrat
       an empty log as "it logged nothing". (The one `^C` in it was the shell's own echo.) This
       is the second time on one target that an unexplained observation looked like a fact
       about the agent; both are now written down where the next reader will meet them.
-- [-] **`spawn`, `ps`, `kill`.** Today `exec` blocks until the command exits or the deadline
+- [x] **`spawn`, `ps`, `kill`.** Today `exec` blocks until the command exits or the deadline
       kills the whole tree, and a child inherits the agent's pipes -- so starting a
       long-running program with it is the exact trap lanlink documents ("never use
       `lan_exec` with `start app.exe`"). There is also no way to ask what is running or to
@@ -399,11 +399,12 @@ on everything in this list -- which is why reading it beats designing from scrat
       stayed up) cannot be closed without a person. `ps` needs the fields that make an empty
       result readable: count, total, truncated, and the filters that were actually applied.
 
-      **`ps` and `kill` are done; `spawn` is not, so this item stays open.** What landed:
+      **All three are done**, and this item is checked. What landed:
       `linklet ps --agent <host:port> [--name|--cmdline|--query|--exclude <text>]`,
-      `linklet kill --agent <host:port> (--pid <n> | --name <exact> | --contains <text>)`,
-      two new requests on the wire, and both as tools on the MCP surface. The shape is the
-      part that was designed rather than the code: one line per process, `pid name`, then a
+      `linklet kill --agent <host:port> (--pid <n> | --name <exact> | --contains <text>)`, and
+      `linklet spawn --agent <host:port> --output <remote-path> <command...>`, with three new
+      requests on the wire and all three as tools on the MCP surface. The shape is the part
+      that was designed rather than the code: one line per process, `pid name`, then a
       summary that is **always printed** -- `0 of 271 match, filter name=agent` -- because an
       empty list on its own is what the first real target got one step wrong from. `count`,
       `total`, `truncated`, the filter echoed back, and a note for every field the machine
@@ -441,11 +442,26 @@ on everything in this list -- which is why reading it beats designing from scrat
       with no ceiling, `apply` reports with one. **A cap on what is reported must not be a
       cap on what is acted on.**
 
-      Still to do in this item: **`spawn`** -- a program started so that it survives the
-      request that started it, with its own output file rather than the agent's pipes. That
-      is the trap this item opens with, and the deploy loop is not closed without it: `ps`
-      can say the old build is running and `kill` can stop it, and nothing can start the new
-      one except `exec`, which waits for it to exit.
+      **`spawn` is the third, and it is the one that was missing from the loop.** `exec`
+      **waits**, so a program meant to keep running holds the request, the connection and the
+      agent's pipes with it -- the trap this item opens with. `spawn` gives the child **its own
+      output file** and answers with a pid, which is also how the caller reads the program's
+      output afterwards: the `pull` that already existed, because the file is written on the
+      target and a path under the agent's root is reachable.
+
+      **What it deliberately does not say is whether the program is healthy.** A reply that
+      said "started and running" would be a claim about a moment this side has not looked at,
+      so the line is `started 5144` and the `ps` that follows is the question. An earlier
+      version slept for a moment and checked, so that a program that died at once could be
+      reported as a failure; it was dropped, because it delays every spawn, makes the answer
+      depend on how fast the machine is, and is a worse version of the `ps` the caller is
+      going to make anyway.
+
+      **One thing `spawn` still cannot do**, stated here rather than left to be discovered:
+      the child is in the agent's console and dies with it, exactly as the agent does. Making
+      it otherwise needs `DETACHED_PROCESS`, which `std` does not expose safely -- the same
+      refusal, for the same reason, as the agent's own `--detach`. A program that must outlive
+      the console is started the way `docs/smoke.md` starts the agent: from the scheduler.
 - [ ] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
       log" is currently "pull it and grep locally", which is defensible -- the pull is
       digest-verified and root-bounded -- but it is wrong for a two-gigabyte log and it

@@ -108,6 +108,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
 | `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
 | `crates/linklet-agent/src/log.rs` | the agent's log file, and what happens when it cannot be written |
+| `crates/linklet-agent/src/spawn.rs` | starting a program that outlives the request, with its own output file |
 | `crates/linklet-agent/src/execute.rs` | running a command, and killing the tree it started |
 | `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |

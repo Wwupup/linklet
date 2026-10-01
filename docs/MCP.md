@@ -13,7 +13,7 @@ client starts the process and talks to it.
 
 ## What is on the surface, and what is not
 
-**Seven tools.**
+**Eight tools.**
 
 | tool | question it answers |
 |---|---|
@@ -22,6 +22,7 @@ client starts the process and talks to it.
 | `exec` | run a command on a remote agent and return its output |
 | `ps` | what is running on a remote agent's machine |
 | `kill` | stop something running on a remote agent's machine |
+| `spawn` | start a program on a remote agent's machine, without waiting for it |
 | `push` | copy one local file to a remote agent |
 | `pull` | copy one file back from a remote agent |
 
@@ -48,6 +49,14 @@ through `exec` for one reason: **a refusal is something an interface has and a
 command line does not.** This tool will not stop the agent that is serving it, and
 it will not do a bulk match that was not confirmed. Through `exec` both of those
 are one careless string away, and the caller learns about it afterwards.
+
+The eighth is `spawn`, and it is not `exec` with a flag. **`exec` waits**, which is
+right for a build step and wrong for a program meant to keep running: the request,
+the connection and the agent's pipes are all held until the program exits, and a
+program that does not exit holds them forever. `spawn` starts the program with its
+own output file and answers with a pid. What it deliberately does **not** answer is
+whether the program is healthy -- that is `ps`'s question, asked a moment later,
+which is the order the deploy loop actually runs in.
 
 That is also the argument for why these are separate rather than one tool with
 several argument sets. `check` needs nothing but an address; `testbed` needs a

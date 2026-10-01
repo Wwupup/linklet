@@ -4,11 +4,12 @@ A small, honest tool for driving machines on a LAN, built to be called by an AI
 agent rather than by a person reading a manual.
 
 > **Status: M0-M7 done, both defects M10 found are fixed, and the deploy loop can be
-> closed from an agent.** Five crates, 464 tests, one command that runs every gate. A
+> closed from an agent.** Five crates, 469 tests, one command that runs every gate. A
 > host can check reachability, run a command on a target through a sealed channel, read
-> what it did, see what is running there, stop it, and move one file in either
-> direction. See `docs/ROADMAP.md` for what is next and what was parked, and
-> `docs/decisions.md` for the choices that are not obvious from the code.
+> what it did, see what is running there, start something that outlives the call, stop
+> it again, and move one file in either direction. See `docs/ROADMAP.md` for what is
+> next and what was parked, and `docs/decisions.md` for the choices that are not obvious
+> from the code.
 
 ## What it does
 
@@ -73,6 +74,21 @@ not stop the agent that is serving it, and that refusal comes from the target ra
 from here: filtering it out locally would report success on everything else while the one
 process the caller named kept running. `killed 0 of 1` is exit 1 -- the machine did not do
 what was asked.
+
+```console
+$ linklet spawn --agent 10.0.0.5:8787 --output logs\app.log "app.exe --serve"
+started 5144
+$ linklet ps --agent 10.0.0.5:8787 --name app.exe
+5144 app.exe
+1 of 214 match, filter name=app.exe
+```
+
+`spawn` is not `exec` with a flag. **`exec` waits** for the command and returns its output,
+which is right for a build step and wrong for a program meant to keep running: the request,
+the connection and the agent's pipes are held until it exits. `spawn` starts the program with
+**its own output file** and returns a pid at once -- and `started` is the word on the line
+because that is all this side knows. Whether it is still there is the `ps` you run next,
+which is the order the deploy loop actually goes in: start, look, stop if you have to.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`
