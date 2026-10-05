@@ -23,12 +23,13 @@ to answer one question: **what can I do now that I could not do before?**
   authenticate with a secret nobody named while telling the caller its token was
   wrong.
 
-- **The release carries a setup package beside the two binaries**: the MCP server entry
-  to install in a client, the skill that carries the order the calls go in, and the two
-  scripts that keep an agent alive on a target. A tool whose first sentence is that it
-  is built to be called by an agent was publishing nothing an agent could install.
-  `integrations/README.md` is what the package holds. **Nothing in it installs an agent
-  on a target** -- that first copy is a file copy, once, by hand.
+- **The release is one archive**, `linklet-<version>.zip`, with the executables under `bin/`
+  and everything needed to install and operate them beside them: the MCP client entry, the
+  skill that carries the order the calls go in, the two scripts that keep an agent alive on a
+  target, and the three documents an operator reads. Four loose assets had asked whoever
+  downloaded to work out which of them went where. `docs/VERSIONING.md` has the layout and
+  `integrations/README.md` has what the material is. **Nothing in it installs an agent on a
+  target** -- that first copy is a file copy, once, by hand.
 - **`tools/smoke.ps1 -TokenFile <file>`**, so the release's own gate can be run the way
   the installation is now documented to be. `-Token` also applies now: it was
   documented and ignored, so a run that passed one presented whatever `LINKLET_TOKEN`

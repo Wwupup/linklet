@@ -61,11 +61,10 @@ state that gets refused, with a sentence saying so.
 is step 2 below, because it needs a machine on a network -- so this list is still a list a
 person works through, with one step already done for them.
 
-Tagging runs `.github/workflows/release.yml`, which builds the binaries, builds the setup
-package beside them, writes a `SHA256SUMS` over all three, and attaches them to the release.
-**It refuses a tag that disagrees with the version in `Cargo.toml`**, which is the failure this
-project has already had once: a release was called 0.2.0 while every binary still reported
-0.1.0.
+Tagging runs `.github/workflows/release.yml`, which builds the binaries, assembles the release
+archive around them, writes a `SHA256SUMS` for the archive, and attaches the two. **It refuses a
+tag that disagrees with the version in `Cargo.toml`**, which is the failure this project has
+already had once: a release was called 0.2.0 while every binary still reported 0.1.0.
 
 **Every step is a person running one command.**
 
@@ -92,18 +91,30 @@ project has already had once: a release was called 0.2.0 while every binary stil
 6. **Commit, then tag: `git tag -a v0.2.0 -m "..."`.** The tag is what makes a release
    findable. Nothing in this repository writes version numbers into strings for the tag to
    disagree with; the tag is the record of which commit was released.
-7. **Build and keep the binaries, and the package that goes with them.** `cargo build
-   --release`, and the two `.exe` files go wherever they are distributed from. `git` does not
-   hold build output and must not -- `docs/rationale.md` says why. The tag is the source, and
-   the binaries are a function of it.
+7. **Build, and let the workflow assemble the release.** `cargo build --release` is step 7 for a
+   person checking their own work; the released artifact is built by the tag's workflow, because
+   `git` does not hold build output and must not -- `docs/rationale.md` says why. The tag is the
+   source, and the archive is a function of it.
 
-   **The release carries `linklet-<version>-setup.zip` as well, and it is not build output**:
-   it is files from the tag -- the MCP client entry, the skill, and the two scripts that keep
-   an agent alive on a target. Two executables are a build and not a deployment, and an agent
-   told to install this needs a server entry and the routine rather than a binary alone.
-   `integrations/README.md` is what the package holds and why. The workflow builds it and
-   **refuses to publish if any file in its list is not in the tag**, because a package that
-   quietly lost the skill would publish and only be missed by whoever tried to follow it.
+   **The release is one archive**, `linklet-<version>.zip`, holding:
+
+   | in the archive | what it is |
+   |---|---|
+   | `bin/linklet.exe` | the host tool, and the MCP server |
+   | `bin/linklet-agent.exe` | goes on each machine being driven |
+   | `integrations/` | the client entry, the skill, and how to install both |
+   | `tools/` | the supervisor and the real-machine smoke test |
+   | `README.md`, `CHANGELOG.md`, `LICENSE`, `docs/` | the three documents an operator needs |
+
+   **One archive because a release is one thing to download.** The binaries are self-contained,
+   so an archive is not needed to make them *run*; it is needed to make a release *coherent*.
+   Four loose assets asked the reader to work out which went where, and the executables and the
+   skill that explains how to use them are two halves of one product.
+
+   Everything except `bin/` is a file from the tag, and the workflow **refuses to publish if any
+   file in its list is not in the tag** -- a package that quietly lost the skill would publish
+   and only be missed by whoever tried to follow it. `integrations/README.md` is what the
+   material is and why.
 8. **Read the action pins.** For each `uses:` in `.github/workflows/`, fetch that action's
    `action.yml` and check its `runs.using`. `node24` is current and `node20` is a deprecation
    warning waiting to arrive as an email. No local tool reports this -- see below.
@@ -115,19 +126,22 @@ project has already had once: a release was called 0.2.0 while every binary stil
 
    That matters because of what step 2 claims. `CHANGELOG.md` for 0.2.0 says the version was
    driven on a real machine "with these exact binaries" -- which is only true if somebody
-   downloads the published assets and runs them, and it was made true that way:
+   downloads the published archive and runs it, and it was made true that way:
 
    ```powershell
    gh release download v0.2.0 --dir $env:TEMP\check
+   Expand-Archive "$env:TEMP\check\linklet-0.2.0.zip" -DestinationPath "$env:TEMP\check"
    # then the seven claims, and the deploy loop, against the target
-   pwsh tools/smoke.ps1 -Target <host:port> -Linklet "$env:TEMP\check\linklet.exe"
+   pwsh "$env:TEMP\check\linklet-0.2.0\tools\smoke.ps1" -Target <host:port> `
+       -Linklet "$env:TEMP\check\linklet-0.2.0\bin\linklet.exe"
    # add -TokenFile <file> if that is how the target's secret is deployed
    ```
 
-   **The setup package is not part of that claim, and this is the place to say so.** Nothing
-   in it runs on its own: the client entry is a configuration, the skill is instructions, and
-   the two scripts need a target. What can be checked about it is that it is complete and that
-   its files are the tag's, which is exactly what the workflow's payload check does.
+   **The rest of the archive is not part of that claim, and this is the place to say so.**
+   Nothing in it runs on its own: the client entry is a configuration, the skill is
+   instructions, and the two scripts need a target. What can be checked about it is that it is
+   complete and that its files are the tag's, which is exactly what the workflow's payload
+   check does.
 
    **Either do this, or word the claim as "the same commit" and not "these binaries".** A
    release note that says a specific artifact was verified, when a different artifact was, is

@@ -250,9 +250,10 @@ wiring a client up: it completes a handshake, so it answers whether the token an
 agent agree.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
-and the two places a caller goes wrong. `integrations/` is in this repository and is
-attached to every release as `linklet-<version>-setup.zip`, so an installation does not
-need a clone.
+and the two places a caller goes wrong. `integrations/` is in this repository, and a
+release is one archive -- `linklet-<version>.zip`, with the executables under `bin/`
+and this installation material beside them -- so an installation does not need a
+clone.
 
 ## The problem
 

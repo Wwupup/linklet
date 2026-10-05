@@ -16,13 +16,31 @@ tool was built to make visible, and none of which the tool descriptions can prev
 a description can say what a tool does and the order to call them in is a procedure.
 `docs/MCP.md` records the experiment that found that boundary.
 
+## Where these files are
+
+A release is one archive, `linklet-<version>.zip`, and this file is inside it. Unzip
+it anywhere and the paths below are relative to the folder it creates:
+
+```
+linklet-<version>/
+  bin/linklet.exe          the host tool, and the MCP server a client is pointed at
+  bin/linklet-agent.exe    goes on each machine being driven
+  integrations/            this file, the client entry, and the skill
+  tools/                   the supervisor and the real-machine smoke test
+  README.md, CHANGELOG.md, LICENSE, docs/
+```
+
+The two executables are self-contained -- no runtime, no installer -- so `bin/` can be
+copied to a target or put on `PATH` on its own. Everything else is documentation and
+configuration, and none of it needs to travel to the machines being driven.
+
 ## Install the skill
 
 The skill is a directory. Copy it to the client's skills directory, and the folder
 name is the skill's name -- `linklet`.
 
 ```powershell
-# DSH, user scope, from the unpacked release:
+# DSH, user scope, from the unpacked archive:
 robocopy integrations\skills\linklet $env:USERPROFILE\.dsh\skills\linklet /E
 
 # ZCode, user scope:

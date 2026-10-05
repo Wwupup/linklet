@@ -1,11 +1,11 @@
-# Attach the release assets to a GitHub release, from a tag: the two binaries, the setup
-# package, and one SHA256SUMS covering all three.
+# Attach the release to a GitHub release, from a tag: one archive holding the binaries and
+# everything that goes with them, and one SHA256SUMS to verify it with.
 #
 # `docs/VERSIONING.md` is the policy this implements. Its step 7 is the part that belongs here:
 # *"build and keep the binaries... `git` does not hold build output and must not. The tag is the
 # source, and the binaries are a function of it."* A workflow that builds on a tag is that
-# sentence done by a machine instead of by hand. The package is the same sentence about a
-# different subject: it is not built at all, it is copied out of the tag.
+# sentence done by a machine instead of by hand. Everything else in the archive is the same
+# sentence about a different subject: it is not built at all, it is copied out of the tag.
 #
 # # What this deliberately does not do
 #
@@ -14,9 +14,9 @@
 # `tools/smoke.ps1` needs a target on a network, and a runner has none. So this job starts from
 # the premise that the tag was pushed on purpose, after somebody did that.
 #
-# **It does not install anything.** The package is files: a client entry, a skill and two
-# scripts. Putting an agent on a target is still a file copy a person makes once, and
-# `integrations/README.md` says so where somebody about to try it will read it.
+# **It does not install anything.** The archive is files: two executables, a client entry, a
+# skill and two scripts. Putting an agent on a target is still a file copy a person makes once,
+# and `integrations/README.md` says so where somebody about to try it will read it.
 #
 # **It does not renumber anything.** The version in `Cargo.toml` and the tag have to agree, and
 # the job refuses if they do not -- rather than releasing a binary whose `--version` disagrees
@@ -99,40 +99,42 @@ jobs:
         shell: pwsh
         run: cargo build --workspace --release --locked
 
-      # The two binaries are what most people came for, so they stay top-level assets.
-      - name: Stage the binaries
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          foreach ($name in 'linklet.exe', 'linklet-agent.exe') {
-            $from = "target/release/$name"
-            if (-not (Test-Path $from)) { Write-Error "$from was not built"; exit 1 }
-            Copy-Item $from "dist/$name"
-          }
-
-      # **Two executables are a build, not a deployment.** The third asset is the rest of
-      # one: the MCP server entry an agent installs, the skill that carries the routine
-      # (`docs/MCP.md` records the experiment showing a tool description cannot), and the
-      # two scripts that keep an agent alive on a target. All of it is in the tag, so the
-      # package is a function of the tag exactly as the binaries are.
+      # **One archive, because a release is one thing to download.** The binaries are
+      # self-contained -- no runtime, no dependencies -- so an archive is not needed to make
+      # them run; it is needed to make a release *coherent*. Four loose assets asked the
+      # person downloading to work out which of them went where, and the executables and the
+      # skill that explains how to use them are two halves of the same product.
       #
       # The item list is explicit rather than "everything except .git", which is
       # `make_release.ps1`'s rule in the sibling project and the right one here: a file
-      # nobody listed is simply not shipped, so a new working file cannot reach a release
-      # by existing. **Every item is checked before anything is zipped**, because a package
+      # nobody listed is simply not shipped, so a new working file cannot reach a release by
+      # existing. **Every item is checked before anything is archived**, because a package
       # that quietly lost the skill would still publish and would only be missed by whoever
       # tried to follow it.
-      - name: Build the setup package
+      #
+      # `bin/` and not the archive root, so that the executables can go on a target or into a
+      # directory on `PATH` without dragging the documentation with them.
+      - name: Stage the release
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
-          $root = "linklet-$version-setup"
+          $root = "linklet-$version"
           $stage = "dist/$root"
           Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path "$stage/bin" | Out-Null
 
+          # The things that are built, and the only files here that are not in the tag.
+          foreach ($name in 'linklet.exe', 'linklet-agent.exe') {
+            $from = "target/release/$name"
+            if (-not (Test-Path $from)) { Write-Error "$from was not built"; exit 1 }
+            Copy-Item $from "$stage/bin/$name"
+          }
+
+          # Everything else is a file from the tag.
           $payload = @(
             'README.md'
             'CHANGELOG.md'
+            'LICENSE'
             'docs/MCP.md'
             'docs/machine.md'
             'docs/smoke.md'
@@ -142,7 +144,7 @@ jobs:
           )
 
           foreach ($item in $payload) {
-            if (-not (Test-Path $item)) { Write-Error "the setup package needs $item, which is not in the tag"; exit 1 }
+            if (-not (Test-Path $item)) { Write-Error "the release needs $item, which is not in the tag"; exit 1 }
             if (Test-Path $item -PathType Container) {
               Copy-Item $item $stage -Recurse -Force
             } else {
@@ -151,8 +153,8 @@ jobs:
             }
           }
 
-          # One top-level folder, so that unzipping into a shared directory does not
-          # scatter eight entries among whatever else is there.
+          # One top-level folder, so that unzipping into a shared directory does not scatter
+          # a dozen entries among whatever else is there.
           Compress-Archive -Path $stage -DestinationPath "dist/$root.zip" -Force
 
           $prefix = (Resolve-Path $stage).Path + '\'
@@ -160,20 +162,21 @@ jobs:
           Get-ChildItem -Recurse -File $stage |
             ForEach-Object { Write-Host "  $root/$($_.FullName.Replace($prefix, ''))" }
 
-      # A digest beside the files, because the transfer this tool performs is
-      # digest-verified and it would be incoherent to hand out its own binaries without
-      # one. `docs/transfer.md` T2 is the argument for the tool; this is the same courtesy
-      # to whoever downloads it. The package is in the list as well: it is an asset like
-      # the others, and "verify what you downloaded" should not have an exception in it.
-      - name: Digest everything
+      # A digest beside the archive, because the transfer this tool performs is
+      # digest-verified and it would be incoherent to hand out its own binaries without one.
+      # `docs/transfer.md` T2 is the argument for the tool; this is the same courtesy to
+      # whoever downloads it.
+      #
+      # **It stays outside the archive**, which is the one file here that is not in it: a
+      # digest inside the thing it verifies cannot be used to verify it, and the archive is
+      # what a download can corrupt.
+      - name: Digest the archive
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}" -replace '^v', ''
-          $lines = foreach ($name in 'linklet.exe', 'linklet-agent.exe', "linklet-$version-setup.zip") {
-            $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
-            "$hash  $name"
-          }
-          $lines | Set-Content dist/SHA256SUMS -Encoding ascii
+          $name = "linklet-$version.zip"
+          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Set-Content dist/SHA256SUMS -Encoding ascii
           Get-Content dist/SHA256SUMS
 
       # The body is a pointer and not a copy. `CHANGELOG.md` is the one place the answer to "what
@@ -193,22 +196,24 @@ jobs:
           $blob = "${{ github.server_url }}/${{ github.repository }}/blob/$tag"
 
           $notes = @(
-            "Binaries for linklet ``$version``, built from the tag on Windows.",
+            "linklet ``$version``, built from the tag on Windows. **One archive, and one file",
+            "to verify it with.**",
+            "",
+            "``linklet-$version.zip`` holds ``bin/`` (``linklet.exe``, the host tool and MCP",
+            "server, and ``linklet-agent.exe``, which goes on each machine being driven) and the",
+            "rest of a deployment: the client entry to install the MCP server, the skill that",
+            "carries the order the calls go in, and the two scripts that keep an agent alive on a",
+            "target. **Unzip it on the host** -- nothing here installs an agent on a target, and",
+            "that first copy is a file copy, once, by hand.",
             "",
             "**What changed** is in [``CHANGELOG.md``]($blob/CHANGELOG.md), under ``[$version]``.",
             "**What a version number means here**, which changes raise it, and the upgrade order",
             "are in [``docs/VERSIONING.md``]($blob/docs/VERSIONING.md).",
             "",
-            "``linklet-$version-setup.zip`` is the rest of a deployment rather than a build: the",
-            "MCP server entry to install in a client, the skill that carries the order the calls",
-            "go in, and the two scripts that keep an agent alive on a target. **Unzip it on the",
-            "host**; the two executables are the assets that go on the machines, and nothing",
-            "here installs an agent on a target -- the first copy is a file copy, once, by hand.",
-            "",
             "The agent and the tool should come from the same release. **The agent may be ahead",
             "of the tool and not behind it** -- see that document for why.",
             "",
-            "Verify what you downloaded against ``SHA256SUMS``."
+            "Verify the archive against ``SHA256SUMS`` before you unpack it."
           ) -join "`n"
 
           $notes | Set-Content dist/notes.md -Encoding utf8
@@ -225,4 +230,4 @@ jobs:
           $version = $tag -replace '^v', ''
           # `--verify-tag` so this cannot invent a tag that was not pushed.
           gh release create $tag --verify-tag --title $tag --notes-file dist/notes.md `
-            dist/linklet.exe dist/linklet-agent.exe "dist/linklet-$version-setup.zip" dist/SHA256SUMS
+            "dist/linklet-$version.zip" dist/SHA256SUMS
