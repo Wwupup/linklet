@@ -18,6 +18,20 @@ use linklet_core::ExitCode;
 /// The token both ends are configured with.
 const TEST_TOKEN: &str = "test-token-0123456789";
 
+/// A path that tries to leave the agent's transfer root, in this platform's syntax.
+///
+/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
+/// `..\..\escaped.exe` walks up out of the root, and on Linux a backslash is an ordinary
+/// character in a filename -- so the same string names a safe file *inside* the root and a
+/// test using it would pass while proving nothing.
+fn escaping_path(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"..\..\{name}")
+    } else {
+        format!("../../{name}")
+    }
+}
+
 /// Where the agent binary is, worked out the way `against_agent.rs` does.
 ///
 /// `CARGO_BIN_EXE_linklet-agent` does not exist in this package: that variable is
@@ -34,7 +48,10 @@ fn agent_binary() -> PathBuf {
         None => repository.join("target"),
     };
 
-    let path = target.join("debug/linklet-agent.exe");
+    let path = target.join(format!(
+        "debug/linklet-agent{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     assert!(
         path.is_file(),
         "the agent binary is not at {}; run `cargo build --workspace` first",
@@ -234,8 +251,11 @@ fn a_refused_transfer_is_exit_three_on_stderr_and_prints_no_result() {
         "--from",
         source.to_str().expect("a UTF-8 path"),
         // Outside the agent's root, which is T1 and the most severe thing in the document.
+        // Written in this platform's syntax: on Linux a backslash is an ordinary character
+        // in a filename, so the Windows form would be a safe name *inside* the root and the
+        // test would pass while proving nothing.
         "--to",
-        r"..\..\escaped.exe",
+        &escaping_path("escaped.exe"),
     ]);
 
     assert_eq!(code(&output), ExitCode::REFUSED);

@@ -38,7 +38,10 @@ fn agent_binary() -> PathBuf {
         None => repository.join("target"),
     };
 
-    let path = target.join("debug/linklet-agent.exe");
+    let path = target.join(format!(
+        "debug/linklet-agent{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     assert!(
         path.is_file(),
         "the agent binary is not at {}; run `cargo build --workspace` first",

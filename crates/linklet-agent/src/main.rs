@@ -39,6 +39,7 @@
 mod execute;
 mod log;
 mod server;
+mod shell;
 mod spawn;
 
 use std::net::TcpListener;

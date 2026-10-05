@@ -137,7 +137,10 @@ fn agent_binary() -> std::path::PathBuf {
         None => repository.join("target"),
     };
 
-    let path = target.join("debug/linklet-agent.exe");
+    let path = target.join(format!(
+        "debug/linklet-agent{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     assert!(
         path.is_file(),
         "the agent binary is not at {}; run `cargo build --workspace` first",
@@ -391,8 +394,19 @@ fn a_tool_call_reaches_the_network_and_answers_in_plain_text() {
 
     // Port 1 on loopback: nothing listens, and the machine says so at once.
     assert!(text.starts_with("dead 127.0.0.1:1 "), "got {text:?}");
+    // **Which reason comes back is the environment's business, and the claim is that one
+    // does.** On Windows a closed loopback port is refused and the word is `refused`. In the
+    // WSL distribution this was first run in, the same connect *times out* -- measured with
+    // bare Python sockets, which also time out against ports 1, 9 and 54321 -- because the
+    // reset is swallowed somewhere between the distribution and the host. `linklet` reported
+    // what the operating system told it, which is the whole design, so the test asserts the
+    // reason survived rather than which word the environment produced.
+    let reason = text
+        .trim_start_matches("dead 127.0.0.1:1 ")
+        .trim_end_matches("0 of 1 live")
+        .trim();
     assert!(
-        text.contains("refused"),
+        reason.contains("refused") || reason.contains("no answer"),
         "the reason should survive: {text:?}"
     );
     assert!(text.ends_with("0 of 1 live"), "got {text:?}");

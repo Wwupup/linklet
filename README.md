@@ -275,10 +275,12 @@ accident. This tool:
 - does not install an agent on a target by itself (the first copy has to be a file
   copy; there is nothing to talk to yet)
 - does not keep a database, a service, or a daemon on the host
-- **drives Windows targets and is built for Windows**, and the host side is not the Windows
-  part: the tool compiles and its protocol works on Linux, measured -- see `docs/ROADMAP.md`
-  M11. What is Windows-only is the *agent's* idea of running a command, and that is one
-  abstraction away from being portable rather than a rewrite
+- **drives Windows and Linux targets, in both directions, verified between two real
+  machines.** The protocol, the sealed channel, both transfer directions, `exec`, `ls`,
+  `grep`, `tail`, `check` and `probe` work either way round: a Windows host driving a Linux
+  agent and a Linux host driving a Windows one. **`ps`, `kill` and `spawn` are Windows-only
+  for now** -- they are `tasklist` and `taskkill` in `linklet-adapters`, and a `ps`-based
+  backend is the work `docs/ROADMAP.md` M11 specifies
 - does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
 - **has no service on the target, and no supervisor either.** An agent that dies stays

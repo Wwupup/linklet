@@ -31,7 +31,7 @@
 
 use std::fs::OpenOptions;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use linklet_core::wire::SpawnReport;
 
@@ -78,8 +78,7 @@ pub fn start(command: &str, output: &Path) -> Result<SpawnReport, String> {
         .try_clone()
         .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
 
-    let child = Command::new("cmd")
-        .args(["/C", command])
+    let child = crate::shell::command_line(command)
         // **The child's own file, not this process's pipes.** This is the whole difference:
         // a program that inherited the agent's stdout would hold it open for as long as it
         // runs, and the agent's thread would wait for a program that never exits -- the trap

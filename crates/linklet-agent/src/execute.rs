@@ -6,7 +6,7 @@
 //! has none of its own beyond the fact that the server uses it.
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use linklet_core::wire::{KILLED_BY_DEADLINE, RunOutcome, RunRequest, Text};
@@ -37,8 +37,7 @@ pub fn run(request: &RunRequest) -> RunOutcome {
     let started = Instant::now();
     let deadline = Duration::from_secs(request.timeout_seconds);
 
-    let mut child = match Command::new("cmd")
-        .args(["/C", &request.command])
+    let mut child = match crate::shell::command_line(&request.command)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -153,25 +152,10 @@ pub fn run(request: &RunRequest) -> RunOutcome {
 
 /// Kills a process and everything it started.
 ///
-/// `taskkill /T` walks the child list and `/F` does not ask. `Child::kill` alone
-/// is not enough on Windows: a shell that has started a program leaves that
-/// program running, holding the pipes, and the caller waits for output that will
-/// never arrive because nothing is going to write it and nothing has closed it.
-///
-/// The pid rather than the name, deliberately. Killing by name would match
-/// anything else on the machine with the same name, including a process the
-/// operator started and would like to keep.
-///
-/// A failure here is ignored on purpose: it is called from a deadline that has
-/// already passed, the caller is going to be told the command was killed either
-/// way, and an error path that cannot report anything useful would only obscure
-/// that.
+/// The decision of *how* belongs to `crate::shell`, which is the one module that knows what
+/// it is running on; this is the call site that has a pid and a deadline that has passed.
 fn kill_tree(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    crate::shell::kill_tree(pid);
 }
 
 /// Reads a pipe to the end and decodes it, **recording whether anything was lost**.

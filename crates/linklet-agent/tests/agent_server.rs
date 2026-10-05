@@ -388,11 +388,7 @@ fn a_pull_that_escapes_the_root_is_refused_by_name() {
     // reading the machine rather than the directory the agent was pointed at. A path
     // that must not be written must not be read either.
     let agent = Agent::start();
-    let reason = refusal(
-        agent
-            .sealed()
-            .pull(r"..\..\Windows\System32\drivers\etc\hosts"),
-    );
+    let reason = refusal(agent.sealed().pull(&escaping_path("hosts")));
 
     assert!(
         reason.contains("..") || reason.contains("outside"),
@@ -423,6 +419,22 @@ fn refusal(reply: Reply) -> String {
     }
 }
 
+/// A path that tries to leave the transfer root, written in this platform's syntax.
+///
+/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
+/// `..\..\escaped.exe` walks up out of the root. **On Linux a backslash is an ordinary
+/// character in a filename**, so the same string is a perfectly safe name *inside* the root
+/// and the test would pass while proving nothing -- which is what running this suite on
+/// Linux found, reported as "expected a refusal and got a result". The refusal was correct
+/// and the test was asserting the wrong thing.
+fn escaping_path(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"..\..\{name}")
+    } else {
+        format!("../../{name}")
+    }
+}
+
 /// The outcome out of a reply that must be a result.
 fn outcome(reply: Reply) -> RunOutcome {
     match reply {
@@ -448,11 +460,43 @@ fn run_with(agent: &Agent, command: &str, timeout_seconds: u64) -> RunOutcome {
 
 // --- what the agent recorded about the requests it served --------------------
 
-/// The lines of a log file, or a panic naming the path.
+/// The lines of a log file, once the agent has finished writing them.
+///
+/// **The wait is the point, and it is a fix rather than a convenience.** A completion line
+/// is written *after* the reply is on the wire -- deliberately, because "answered" is a fact
+/// about a reply that has gone -- so a test that reads the file the instant it holds the
+/// reply can read it one line early and see a `->` with no `<-`. That is a race in the test
+/// and not in the agent, and Windows timing hid it until this suite ran on Linux; it got
+/// wider when the log began opening the file per line rather than holding it.
+///
+/// Two identical reads in a row is the signal, rather than a fixed sleep: a writer that has
+/// already stopped is not waited for, and an empty log -- which two tests assert -- settles
+/// the same way instead of stalling the deadline.
 fn logged(path: &std::path::Path) -> Vec<String> {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-    text.lines().map(str::to_string).collect()
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut previous: Option<Vec<String>> = None;
+    let mut stable = 0;
+
+    loop {
+        let text = std::fs::read_to_string(path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        let lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+        if previous.as_ref() == Some(&lines) {
+            stable += 1;
+            if stable >= 2 {
+                return lines;
+            }
+        } else {
+            stable = 0;
+            previous = Some(lines.clone());
+        }
+
+        if std::time::Instant::now() > deadline {
+            return lines;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 /// The number out of a log line, which is what ties a `->` to its `<-`.
@@ -721,20 +765,39 @@ fn standard_error_survives_the_trip() {
 
 #[test]
 fn a_command_that_never_started_has_no_exit_code_and_says_so() {
+    // A name that is not a program, handed to the platform's shell: the shell reports it
+    // and exits non-zero, which is a *run* and not a failure to spawn. That difference is
+    // the point -- this asserts the outcome shape rather than a particular code, because
+    // which one the shell picks is the shell's business.
+    //
+    // **Both shells' wording is accepted**, and the reason is that the claim is portable
+    // while the sentence is not: `cmd` says "is not recognized" and `sh` says "not found".
+    // Asserting one of them is how a test that looks platform-neutral turns out not to be,
+    // which is what running this suite on Linux found.
     let agent = Agent::start();
-    // `cmd /C` on a name that is not a program: the shell reports it and exits
-    // non-zero, which is a *run* and not a failure to spawn. That difference is
-    // the point -- this asserts the outcome shape rather than a particular code,
-    // because which one the shell picks is the shell's business.
     let outcome = run(&agent, "this-program-does-not-exist-anywhere");
 
     assert!(outcome.exit_code.is_some(), "the shell ran: {outcome:#?}");
     assert_ne!(outcome.exit_code, Some(0));
+    let complaint = format!("{}{}", outcome.stderr.as_str(), outcome.stdout.as_str());
     assert!(
-        outcome.stderr.as_str().contains("not recognized")
-            || outcome.stdout.as_str().contains("not recognized"),
+        complaint.contains("not recognized") || complaint.contains("not found"),
         "the shell's complaint should reach the caller: {outcome:#?}"
     );
+}
+
+/// A command that runs long enough to be killed, on whichever shell this is.
+///
+/// `ping -n 30` on Windows and `sleep 30` everywhere else: the claim -- that a command past
+/// its deadline is killed and the reply still arrives -- is about this agent and not about
+/// either program, so the test supplies whichever one the platform has rather than the test
+/// being skipped off Windows.
+fn a_long_command() -> &'static str {
+    if cfg!(windows) {
+        "ping -n 30 127.0.0.1"
+    } else {
+        "sleep 30"
+    }
 }
 
 #[test]
@@ -743,7 +806,7 @@ fn a_caller_supplied_timeout_kills_the_command_and_says_which_failure_it_was() {
     // different fact from failing to start, and the reason constant is what the
     // host branches on.
     let agent = Agent::start();
-    let outcome = run_with(&agent, "ping -n 30 127.0.0.1", 1);
+    let outcome = run_with(&agent, a_long_command(), 1);
 
     assert_eq!(outcome.exit_code, None, "{outcome:#?}");
     assert_eq!(
@@ -956,7 +1019,7 @@ fn the_agent_answers_a_push_manifest_before_any_of_the_file_is_sent() {
 
     conversation.send_json(&json::write(&wire::request_to_json(&Request::Push(
         Manifest {
-            path: r"..\..\escaped.exe".to_string(),
+            path: escaping_path("escaped.exe"),
             bytes: 1024,
             sha256: DIGEST.to_string(),
         },
@@ -1012,7 +1075,7 @@ fn a_push_whose_path_escapes_the_root_is_refused_before_a_chunk_is_read() {
         .expect("hashing the source");
 
     let manifest = Manifest {
-        path: r"..\..\escaped.exe".to_string(),
+        path: escaping_path("escaped.exe"),
         bytes: content.len() as u64,
         sha256: digest,
     };

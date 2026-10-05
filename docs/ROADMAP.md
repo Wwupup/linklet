@@ -684,12 +684,21 @@ either.** Both binaries link.
 |---|---|
 | `linklet-core` | all pass -- it is pure, so this was never in question |
 | `linklet-adapters` | all pass, including the transfer and handshake suites |
-| `linklet-client` | all pass |
-| `linklet-agent` | **11 of 34 fail**, every one with `cannot spawn: No such file or directory` |
+| `linklet-client` | all pass except `tests/ps.rs`, which is `ps`, `kill` and `spawn` |
+| `linklet-agent` | **all 36 pass**, once `cmd` stopped being hardcoded |
+| `linklet-cli` | all pass |
 
-The failures are one cause: the agent runs a command by starting **`cmd`**, and `cmd`
-does not exist on Linux. It is not the protocol, the frames, the cipher or the
-transfer -- those passed on a machine they were never written on.
+The failures that remain are one module: **`ps`, `kill` and `spawn` are `tasklist`,
+`taskkill` and `wmic`**, in `linklet-adapters/src/processes.rs`, and that file has no
+platform split in it at all. Everything else -- the protocol, the frames, the cipher, the
+transfer, `exec`, `ls`, `grep`, `tail` -- passes on a machine none of it was written on.
+
+**`cmd` is no longer hardcoded**, which was the first step this section asked for and the
+one that mattered most: `crates/linklet-agent/src/shell.rs` is now the only module in the
+project that knows which operating system it is on, and it picks `cmd /C` or `sh -c` and
+the matching way to kill a process tree. `docs/testing.md` explains why that is `cfg` and
+not a trait -- two implementations that cannot both be present in one binary are a fact
+about the machine, not a choice a caller makes.
 
 **3. The host side works across platforms today, unmodified.** A `linklet` built on
 Linux drove the Windows bench agent at `192.168.100.2:8790`:
@@ -711,50 +720,89 @@ from-linux.txt: 34 bytes, sha256 88d4e8eb... == the digest of the local file
 down.txt: 34 bytes, sha256 88d4e8eb... == byte-identical
 ```
 
+**4. And the other direction now works too**, which is the half that needed the shell
+above. A `linklet` built on Windows drove a Linux agent in this machine's WSL distribution
+(Ubuntu 24.04), over the loopback WSL2 forwards:
+
+```text
+=== probe: a full handshake with a Linux agent, from Windows ===
+answered 127.0.0.1:8792: linklet-agent
+=== exec: a command run ON Linux, requested FROM Windows ===
+exit 0 / stdout: Linux / cross-platform-ok
+=== ls, grep: a Linux directory and a Linux file ===
+1 of 1 entries in . / 1 match in linux-note.txt, read as utf-8
+=== pull: a file from Linux to Windows ===
+sha256 4a71ae08... == identical on both sides
+=== push: a file from Windows to Linux ===
+win-note.txt: 35 bytes, sha256 53766481... == the digest of the local file
+```
+
 So the sealed channel, the protocol, every read-only operation and both transfer
-directions are **already cross-platform**, and the cross-platform half is the half that
-was hardest to get right.
+directions are **cross-platform in both directions**, verified between two real machines
+rather than reasoned about -- and the half that was hardest to get right is the half that
+did not need changing.
 
-### What is actually Windows-only, and what it would cost
+### What is left, which is one module
 
-It is a short list, and every item is in one crate except the last two -- which is what
-the layer rule bought:
+The list used to be six call sites. Two of them are done -- `execute.rs` and `spawn.rs`
+now go through `linklet-agent/src/shell.rs`, which is where the `cfg` lives:
 
-| where | what it assumes | used by |
-|---|---|---|
-| `linklet-agent/src/execute.rs` | `cmd /C` runs a command | `exec` |
-| `linklet-agent/src/spawn.rs` | `cmd /C` starts a program | `spawn` |
-| `linklet-adapters/src/processes.rs` | `tasklist`, `taskkill`, `wmic` | `ps`, `kill` |
-| `linklet-adapters/src/system.rs` | `tasklist` | `testbed` |
-| `linklet-adapters/src/discovery.rs` | `ipconfig`, `route print -4` | `discover` |
-| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 |
+| where | what it assumes | used by | state |
+|---|---|---|---|
+| `linklet-agent/src/shell.rs` | `cmd /C` or `sh -c`, and `taskkill /T` or `kill -9 -PGID` | `exec`, `spawn` | **done** |
+| `linklet-adapters/src/processes.rs` | `tasklist`, `taskkill`, `wmic` | `ps`, `kill` | open |
+| `linklet-adapters/src/system.rs` | `tasklist` | `testbed` | open |
+| `linklet-adapters/src/discovery.rs` | `ipconfig`, `route print -4` | `discover` | open |
+| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 | open, and harmless: Linux is UTF-8, so the path is never taken |
 
-**The shape of the fix is the one this project already uses and already calls its best
-idea.** M2 put a `Probe` trait in the core and the TCP implementation in `adapters`,
-because "the trait belongs to the core rather than to the adapter". A `Shell` trait
-(what command line runs a program, and how its tree is killed) and a `Processes` trait
-would be the same move for the same reason, and `tests/architecture.rs` would keep the
-implementation on the right side of the line.
+**`processes.rs` is the one that matters**, because `ps`, `kill` and `spawn` are the deploy
+loop. The shape of the fix is the one this project already uses and already calls its best
+idea: M2 put a `Probe` trait in the core and the TCP implementation in `adapters`, and a
+`ps`-based backend behind the same [`Listing`](crate::process::Listing) would be the same
+move. What it needs is a `ps` parser with the care the `tasklist` one has -- the two
+notices, the capped listing against the uncapped one, the guard on the agent's own pid --
+and it is not a flag on the existing code.
 
-**And the honest smaller step is smaller than that.** The first thing to do is not a
-trait: it is to stop hardcoding `cmd` in two files and pick the shell at run time.
-That alone turns the 11 failing `linklet-agent` tests green on Linux, and it is a
-handful of lines.
+**The two bugs `processes.rs` records are the specification for that work**: a cap on what
+is reported must not be a cap on what is acted on, and a name match that was deliberately
+not killed leaves the report incomplete. Neither is a Windows fact.
 
 ### What it does not do, and what this does not claim
 
-- **No Linux agent has been run.** The measurement is a build, a test suite, and a
-  Windows target driven from a Linux host. Nothing here says a Linux *agent* works,
-  because the agent is exactly the part that does not.
-- **`kill` and `ps` on Linux are unimplemented**, not broken: `tasklist` and `taskkill`
-  have no Linux equivalent in this code, and the crates that use them would need a
-  second implementation rather than a flag.
-- **No Linux CI.** `.github/workflows/verify.yml` runs Windows, and adding a
-  `ubuntu-latest` job would make the 11 failures a red build -- which is the right
-  pressure, but it is a decision and not a free addition.
+- **The deploy loop does not run on Linux yet.** `exec`, the transfers, `ls`, `grep`,
+  `tail`, `check` and `probe` do, on a real Linux agent driven from Windows and the other
+  way round; `ps`, `kill` and `spawn` are `tasklist` and `taskkill` and stop there.
+- **No Linux CI.** `.github/workflows/verify.yml` runs Windows. Adding an `ubuntu-latest`
+  job would now leave exactly one suite red, which is a truer signal than none -- and it is
+  a decision rather than a free addition, because a job that is expected to fail teaches
+  people to ignore it.
 - **`discover` is the one capability that cannot be shared**, because it parses
   `ipconfig`. On Linux the answer is the routing table and `/proc`, which is a different
   program and a different parser, not a fix to this one.
+
+### What running the suite on Linux found, which is the useful part
+
+Six test files assumed Windows in ways that had nothing to do with the product, and every
+one of them would have passed forever on one machine:
+
+- `..\..\escaped.exe` is an escape on Windows and **an ordinary filename on Linux**, where
+  a backslash is not a separator -- so three path-escape tests were asserting a refusal that
+  a correct agent has no reason to give. The tests now build the path in the platform's own
+  syntax, and the finding is worth keeping: **the root defence itself was never
+  Windows-specific**, and it held on the first try.
+- `target/debug/linklet-agent.exe` is not the binary's name there, so nine test harnesses
+  could not find the thing they were testing.
+- "is not recognized" and "not found" are two shells' words for the same fact.
+- `ping -n 30` and `certutil` were the Windows way to say "runs for a while" and "prints a
+  lot".
+- **A closed loopback port in WSL times out instead of being refused**, measured with bare
+  Python sockets as well as with this tool, so `linklet` was reporting what the operating
+  system told it -- which is the design -- while a test asserted the word Windows produces.
+  `docs/machine.md` has it.
+
+And one real race: the completion line of the log is written *after* the reply is on the
+wire, deliberately, so a test that reads the log the moment it holds the reply can read it
+one line early. Windows timing hid it; the test now waits for the file to settle.
 
 ## Parked deliberately
 

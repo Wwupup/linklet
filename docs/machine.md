@@ -26,6 +26,17 @@ conclusion before it was found.
 - **The real-machine smoke test needs no administrator rights.** The seven claims in
   `docs/smoke.md`, made against a machine running `linklet-agent` with the port
   allowed. There is no script for it any more; the claims are the list.
+- **A closed loopback port in this WSL distribution times out instead of being refused.**
+  Measured directly, without this tool: bare Python sockets connecting to `127.0.0.1` on
+  ports 1, 9 and 54321 each raise `TimeoutError` after the full three seconds, where on
+  Windows the same connect is refused at once. So `linklet check 127.0.0.1:1` says
+  `no answer within 5 s` here and `refused` there, and **both are correct**: the probe
+  reports what the operating system said, and here the operating system said nothing. It
+  cost a test assertion (which claimed the word `refused`) and it will cost anyone who
+  reads "no answer" as a firewall. `docs/ROADMAP.md` M11 has the run.
+- **WSL2 forwards loopback**, so a Linux agent listening on `0.0.0.0:8792` inside the
+  distribution is reachable from Windows as `127.0.0.1:8792` as well as on the
+  distribution's own address. Verified both ways in M11.
 - **The harness sandbox can fail before any command runs, and it looks like a broken
   toolchain.** Under `workspace-write`, every shell call failed with
   `SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\projects\linklet)` -- that mode

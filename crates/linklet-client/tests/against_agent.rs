@@ -42,7 +42,10 @@ fn agent_binary() -> PathBuf {
     // would have handled a release profile. This one does not try: a release
     // build of the tests is not a thing anyone does here, and guessing would
     // trade a clear failure for a confusing one.
-    let path = target.join("debug/linklet-agent.exe");
+    let path = target.join(format!(
+        "debug/linklet-agent{}",
+        std::env::consts::EXE_SUFFIX
+    ));
     assert!(
         path.is_file(),
         "the agent binary is not at {}; run `cargo build --workspace` first",
@@ -210,7 +213,7 @@ fn a_killed_command_says_which_failure_it_was() {
     let outcome = run(
         &agent.address,
         &RunRequest {
-            command: "ping -n 30 127.0.0.1".to_string(),
+            command: a_long_command().to_string(),
             timeout_seconds: 1,
         },
     )
@@ -277,10 +280,7 @@ fn output_too_large_to_return_is_refused_by_name_and_not_a_dropped_connection() 
     let result = run(
         &agent.address,
         &RunRequest {
-            command: format!(
-                "cd /d {} && certutil -encode zeros.bin zeros.b64 && type zeros.b64",
-                workspace.display()
-            ),
+            command: base64_of_zeroes(&workspace),
             timeout_seconds: 60,
         },
     );
@@ -375,7 +375,7 @@ fn the_client_gives_up_later_than_the_command_deadline() {
     let outcome = run(
         &agent.address,
         &RunRequest {
-            command: "ping -n 30 127.0.0.1".to_string(),
+            command: a_long_command().to_string(),
             timeout_seconds: 1,
         },
     )
@@ -484,6 +484,70 @@ fn a_pushed_file_lands_under_the_agents_root() {
     );
 }
 
+/// A command that runs long enough to be killed, on whichever shell this is.
+///
+/// The claim -- that a command past its deadline is killed and the caller is told which
+/// failure it was -- is about this client and this agent, not about `ping`. Supplying
+/// whichever program the platform has keeps the claim tested on both rather than skipped
+/// off Windows.
+fn a_long_command() -> &'static str {
+    if cfg!(windows) {
+        "ping -n 30 127.0.0.1"
+    } else {
+        "sleep 30"
+    }
+}
+
+/// A command that prints more than a frame can carry, from a file of zeroes.
+///
+/// **No command below carries a quote, and that is not fastidiousness.** The Windows form
+/// goes through `cmd` and the alternative was measured on a real machine: a quoted
+/// PowerShell one-liner comes back as the command's own text. `certutil` and `type` are
+/// builtins and need none. On Unix the same reasoning gives `base64`, which writes to
+/// standard output and needs no path argument beyond the file.
+fn base64_of_zeroes(workspace: &std::path::Path) -> String {
+    if cfg!(windows) {
+        format!(
+            "cd /d {} && certutil -encode zeros.bin zeros.b64 && type zeros.b64",
+            workspace.display()
+        )
+    } else {
+        format!("cd {} && base64 zeros.bin", workspace.display())
+    }
+}
+
+/// A path inside the root whose parent directory does not exist, in this platform's syntax.
+///
+/// Same reasoning as [`escaping_path`]: the claim is that the agent refuses a destination it
+/// cannot write and names it, and on Linux the Windows form is one filename rather than
+/// three components, so the parent *does* exist and nothing is refused.
+fn missing_directory_path(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"no\such\directory\{name}")
+    } else {
+        format!("no/such/directory/{name}")
+    }
+}
+
+/// Where a refused transfer would have left its temporary file.
+fn part_of(path: &str) -> String {
+    format!("{path}.part")
+}
+
+/// A path that tries to leave the agent's transfer root, in this platform's syntax.
+///
+/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
+/// `..\..\escaped.exe` walks up out of the root, and on Linux a backslash is an ordinary
+/// character in a filename -- so the same string names a safe file *inside* the root and a
+/// test using it would pass while proving nothing.
+fn escaping_path(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"..\..\{name}")
+    } else {
+        format!("../../{name}")
+    }
+}
+
 #[test]
 fn a_push_that_escapes_the_agents_root_is_refused_by_the_agent() {
     // T1, end to end, over a real socket: the most severe item in the transfer
@@ -492,7 +556,7 @@ fn a_push_that_escapes_the_agents_root_is_refused_by_the_agent() {
     let agent = Agent::start();
     let source = agent.local("source.bin", b"payload");
 
-    let error = push(&agent.address, &source, r"..\..\escaped.exe")
+    let error = push(&agent.address, &source, &escaping_path("escaped.exe"))
         .expect_err("a path outside the root must be refused");
 
     assert!(matches!(error, CallError::Refused(_)), "{error:?}");
@@ -701,12 +765,18 @@ fn a_push_that_the_agent_refuses_says_so_and_is_not_a_transport_failure() {
     // those bytes unread -- reset the connection and destroyed the refusal. See T14 in
     // `docs/transfer.md` and `tests/manifest_refusal.rs`, which reproduces it
     // deterministically.
-    let error = push(&agent.address, &source, r"no\such\directory\build.exe")
-        .expect_err("the directory does not exist");
+    let error = push(
+        &agent.address,
+        &source,
+        &missing_directory_path("build.exe"),
+    )
+    .expect_err("the directory does not exist");
     match &error {
         CallError::Refused(reason) => {
             assert!(
-                reason.contains("no\\such\\directory") || reason.contains("cannot find"),
+                reason.contains("no\\such\\directory")
+                    || reason.contains("no/such/directory")
+                    || reason.contains("cannot find"),
                 "the refusal should name the path the agent could not write: {reason}"
             );
         }
@@ -715,7 +785,7 @@ fn a_push_that_the_agent_refuses_says_so_and_is_not_a_transport_failure() {
     assert!(
         !agent
             .root
-            .join(r"no\such\directory\build.exe.part")
+            .join(part_of(&missing_directory_path("build.exe")))
             .exists(),
         "a refused transfer must not leave a temporary behind"
     );

@@ -68,6 +68,16 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
+- **The agent runs on Linux.** `crates/linklet-agent/src/shell.rs` is now the only module in
+  the project that knows which operating system it is on: it picks `cmd /C` or `sh -c`, and
+  `taskkill /T /F` or a process-group `kill -9`, so `exec` and `spawn` and the deadline that
+  stops them work on both. It was two files each hardcoding `cmd`, and it turned the whole
+  `linklet-agent` suite green on Linux -- 36 tests that had never run there.
+  **A Windows host driving a Linux agent, and a Linux host driving a Windows one, are both
+  verified between real machines**; so are both transfer directions, digests included. What
+  is still Windows-only is `ps`, `kill` and `spawn`, which are `tasklist` and `taskkill` in
+  `linklet-adapters`; `docs/ROADMAP.md` M11 is what the rest of it would take, and what
+  running the suite on Linux found.
 - **`linklet-agent --no-log`**, for an operator who wants no record written. It is the
   opt-out the default above made necessary, and what it costs is stated where it is
   offered: a request that never finishes then leaves no evidence behind.
