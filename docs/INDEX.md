@@ -25,6 +25,7 @@ the change that made it wrong.
 | What went wrong on the way here? | `docs/retrospective.md` |
 | How do I test against a real machine? | `docs/smoke.md` |
 | What is the state of the code? | below |
+| Can this run on Linux, and what would it take? | `docs/ROADMAP.md` M11 -- measured, not planned |
 
 ## What kind of document is it
 

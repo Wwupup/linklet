@@ -654,6 +654,99 @@ Parked. The token authenticates the channel and says nothing about *which* calle
 is, so there is no per-caller revocation and no audit trail. There is also one curve,
 one cipher and one derivation, chosen at build time. Neither is needed to use this on
 a network you control, and both are needed before it is used on one you do not.
+
+## M11 -- Linux, and how far it already goes
+
+**Not a plan. A measurement, taken because the question was asked and the answer was
+not known.** It is written down here because the answer changes what "Windows tool"
+means about this project, and the next person to ask should not have to build it twice.
+
+The question: **can this run on Linux?** The answer, in three parts, all measured on
+2026-10-05 rather than reasoned about.
+
+**1. It compiles.** `cargo check --workspace --target x86_64-unknown-linux-gnu` from
+Windows, and `cargo build --workspace` natively in WSL (Ubuntu 24.04, rustc 1.95.0 --
+the same toolchain `rust-toolchain.toml` pins). **No source change was needed for
+either.** Both binaries link.
+
+**2. Most of it already passes there.** `cargo test --workspace` on Linux:
+
+| crate | result |
+|---|---|
+| `linklet-core` | all pass -- it is pure, so this was never in question |
+| `linklet-adapters` | all pass, including the transfer and handshake suites |
+| `linklet-client` | all pass |
+| `linklet-agent` | **11 of 34 fail**, every one with `cannot spawn: No such file or directory` |
+
+The failures are one cause: the agent runs a command by starting **`cmd`**, and `cmd`
+does not exist on Linux. It is not the protocol, the frames, the cipher or the
+transfer -- those passed on a machine they were never written on.
+
+**3. The host side works across platforms today, unmodified.** A `linklet` built on
+Linux drove the Windows bench agent at `192.168.100.2:8790`:
+
+```text
+=== check (reachability, no token needed) ===
+live 192.168.100.2:8790 connected
+=== probe (a full handshake with the Windows agent) ===
+answered 192.168.100.2:8790: linklet-agent
+=== exec: a command run ON Windows, requested FROM Linux ===
+exit 0 / stdout: WinDev2407Eval
+=== ps: the Windows process list, read from Linux ===
+6392 linklet-agent.exe   1 of 189 match, filter name=linklet-agent
+=== ls: a Windows directory, listed from Linux ===
+7 of 7 entries in .
+=== push: a Linux file to the Windows target ===
+from-linux.txt: 34 bytes, sha256 88d4e8eb... == the digest of the local file
+=== pull: the same file back from Windows ===
+down.txt: 34 bytes, sha256 88d4e8eb... == byte-identical
+```
+
+So the sealed channel, the protocol, every read-only operation and both transfer
+directions are **already cross-platform**, and the cross-platform half is the half that
+was hardest to get right.
+
+### What is actually Windows-only, and what it would cost
+
+It is a short list, and every item is in one crate except the last two -- which is what
+the layer rule bought:
+
+| where | what it assumes | used by |
+|---|---|---|
+| `linklet-agent/src/execute.rs` | `cmd /C` runs a command | `exec` |
+| `linklet-agent/src/spawn.rs` | `cmd /C` starts a program | `spawn` |
+| `linklet-adapters/src/processes.rs` | `tasklist`, `taskkill`, `wmic` | `ps`, `kill` |
+| `linklet-adapters/src/system.rs` | `tasklist` | `testbed` |
+| `linklet-adapters/src/discovery.rs` | `ipconfig`, `route print -4` | `discover` |
+| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 |
+
+**The shape of the fix is the one this project already uses and already calls its best
+idea.** M2 put a `Probe` trait in the core and the TCP implementation in `adapters`,
+because "the trait belongs to the core rather than to the adapter". A `Shell` trait
+(what command line runs a program, and how its tree is killed) and a `Processes` trait
+would be the same move for the same reason, and `tests/architecture.rs` would keep the
+implementation on the right side of the line.
+
+**And the honest smaller step is smaller than that.** The first thing to do is not a
+trait: it is to stop hardcoding `cmd` in two files and pick the shell at run time.
+That alone turns the 11 failing `linklet-agent` tests green on Linux, and it is a
+handful of lines.
+
+### What it does not do, and what this does not claim
+
+- **No Linux agent has been run.** The measurement is a build, a test suite, and a
+  Windows target driven from a Linux host. Nothing here says a Linux *agent* works,
+  because the agent is exactly the part that does not.
+- **`kill` and `ps` on Linux are unimplemented**, not broken: `tasklist` and `taskkill`
+  have no Linux equivalent in this code, and the crates that use them would need a
+  second implementation rather than a flag.
+- **No Linux CI.** `.github/workflows/verify.yml` runs Windows, and adding a
+  `ubuntu-latest` job would make the 11 failures a red build -- which is the right
+  pressure, but it is a decision and not a free addition.
+- **`discover` is the one capability that cannot be shared**, because it parses
+  `ipconfig`. On Linux the answer is the routing table and `/proc`, which is a different
+  program and a different parser, not a fix to this one.
+
 ## Parked deliberately
 
 Written down so they can be refused on purpose rather than discovered by
@@ -665,6 +758,10 @@ accident. None of these is planned:
   sibling project needed six states, output files, TTLs, cancellation and orphan adoption
   for it, and `spawn` plus a log file is the honest smaller step.
 - a configuration file (flags until there is a proven need for persistence)
+- **a cross-platform agent, parked -- and now with a measurement under it.** It is not
+  refused on principle the way the rest of this list is; it is parked because nothing has
+  needed it yet. M11 is what it would take, and the surprise there is how little of it is
+  the hard part: the protocol and both transfer directions already work on Linux today.
 - a daemon or service **on the host** -- still refused; the host is a client. The *target*
   side is a different question and is now M10: the agent died with its console on the first
   real target and was not brought back.

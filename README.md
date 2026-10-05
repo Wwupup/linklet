@@ -275,7 +275,10 @@ accident. This tool:
 - does not install an agent on a target by itself (the first copy has to be a file
   copy; there is nothing to talk to yet)
 - does not keep a database, a service, or a daemon on the host
-- does not run on anything but Windows targets, until someone needs otherwise
+- **drives Windows targets and is built for Windows**, and the host side is not the Windows
+  part: the tool compiles and its protocol works on Linux, measured -- see `docs/ROADMAP.md`
+  M11. What is Windows-only is the *agent's* idea of running a command, and that is one
+  abstraction away from being portable rather than a rewrite
 - does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
 - **has no service on the target either.** `tools/linklet-supervise.ps1` restarts an agent
