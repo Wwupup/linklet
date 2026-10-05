@@ -59,6 +59,21 @@ to answer one question: **what can I do now that I could not do before?**
 - **`linklet-agent --no-log`**, for an operator who wants no record written. It is the
   opt-out the default below made necessary, and what it costs is stated where it is
   offered: a request that never finishes then leaves no evidence behind.
+- **A file that is not UTF-8 can be searched on Linux, by a rule that is total and named.**
+  The Windows path asks the machine for its code page, which is right there because the machine
+  has one and that is what wrote the file. A Linux machine's default encoding is UTF-8, so those
+  bytes are precisely the ones it has no rule for; what applies instead is **ISO-8859-1**, which
+  maps every byte to one character -- nothing replaced, nothing dropped, and the label says
+  which rule produced the text. The bytes are decoded in memory over what was already read, so a
+  non-UTF-8 file there is also subject to the byte ceiling and the end-of-file window, which the
+  Windows path bypasses by handing a *path* to another program.
+- **A label on the wire for that: `latin-1`**, rather than widening `oem`. An older host reading
+  `latin-1` refuses the reply **by name**, where reading `oem` for a decode that was not one
+  would have it print "the machine's OEM code page" and be wrong while believing it understood
+  -- the line `docs/VERSIONING.md` draws. So the protocol number does not move, for the same
+  reason adding an `op` does not move it. **What is still less than Windows, said plainly: the
+  characters are not recovered.** A GBK log read this way is legible in its ASCII parts and
+  mojibake in the rest.
 
 ### Fixed
 

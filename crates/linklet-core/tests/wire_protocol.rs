@@ -892,6 +892,37 @@ fn a_search() -> linklet_core::search::Search {
 }
 
 #[test]
+fn a_second_unnamed_encoding_is_a_new_tag_rather_than_a_wider_old_one() {
+    // **Why this is a separate test and not another assertion above.** A reply whose text was
+    // decoded by a rule that is not the machine's code page has to say so with a tag of its own,
+    // because the alternative -- reusing `oem` -- would have an older host print "the machine's
+    // OEM code page" for a decode that was not one. It would be wrong while believing it
+    // understood, which is the line `docs/VERSIONING.md` draws: an old peer may refuse what it
+    // does not know, and may not misread it.
+    //
+    // So this pins the two halves of that: the tag is written, it is not `oem`, and it decodes
+    // back. A host that does not know the word refuses the reply by name.
+    let mut search = a_search();
+    search.encoding = linklet_core::search::Encoding::Latin1;
+
+    let encoded = json::write(&wire::encode_search_reply(&search));
+    assert!(
+        encoded.contains("\"latin-1\""),
+        "the tag has to be on the wire: {encoded}"
+    );
+    assert!(
+        !encoded.contains("\"oem\""),
+        "and it must not be the other, wider label: {encoded}"
+    );
+
+    let decoded = wire::search_from_reply(
+        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+    )
+    .expect("its own output should decode");
+    assert_eq!(decoded.encoding, linklet_core::search::Encoding::Latin1);
+}
+
+#[test]
 fn a_search_round_trips_with_everything_a_reader_needs_to_judge_it() {
     // **The fields that keep a failed search from reading as "no matches"**, and the one
     // that says what the text was assumed to be. Each is checked separately because each

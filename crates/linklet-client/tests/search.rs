@@ -229,22 +229,21 @@ fn a_path_that_leaves_the_transfer_root_is_refused_like_a_pull() {
 }
 
 #[test]
-fn a_file_that_is_not_utf8_is_either_decoded_by_a_named_rule_or_refused_by_name() {
+fn a_file_that_is_not_utf8_is_decoded_by_a_rule_that_is_named() {
     // **The second lesson, over a socket.** These four bytes are GBK for two CJK characters;
     // they are not UTF-8, and a reader handed them as mojibake without being told has a broken
     // answer that looks like a working one.
     //
-    // What is asserted is the label and the round trip, not the characters: the code page
-    // differs between machines, and pinning the text would pin the test to this one.
+    // What is asserted is the label and the round trip, not the characters: the rule differs
+    // between machines, and pinning the text would pin the test to this one.
     //
-    // **What the machine can do about these bytes differs, and both halves are the lesson.**
-    // Windows has a code page table and decodes them, and the answer says which rule it used.
-    // Linux has no such table -- its default encoding is UTF-8 and these bytes are precisely the
-    // ones that are not -- so its honest answer is that it cannot decode them, which is a
-    // *failure to search* and must never be reported as a file with no matches.
-    //
-    // Written as one test with the platform's answer inside it because the invariant is the
-    // same on both: **a reader is never handed text whose provenance is unstated.**
+    // **The two platforms apply different rules and both name theirs.** Windows asks the
+    // machine for its code page, which is right there because the machine has one and that is
+    // what wrote the file. A Linux machine's default encoding is UTF-8, so these bytes are
+    // precisely the ones it has no rule for; the rule applied is ISO-8859-1, which is total and
+    // reversible -- one character per byte, nothing dropped. The claim that holds on both is
+    // the one this test is named for: **the reader is told which rule produced the text, and no
+    // byte is lost.**
     let agent = Agent::start();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"first\r\n");
@@ -255,43 +254,31 @@ fn a_file_that_is_not_utf8_is_either_decoded_by_a_named_rule_or_refused_by_name(
     let search = grep(&agent.address, &grep_for("gbk.log", "", Direction::First))
         .expect("the agent should answer");
 
-    if cfg!(windows) {
-        assert!(search.searched, "{search:#?}");
-        assert_eq!(
-            search.encoding,
-            Encoding::Oem,
-            "these bytes are not UTF-8 and carry no mark, so the machine's code page is the rule"
-        );
+    assert!(search.searched, "the file was read: {search:#?}");
+    assert_eq!(
+        search.encoding,
+        if cfg!(windows) {
+            Encoding::Oem
+        } else {
+            Encoding::Latin1
+        },
+        "the label has to say which rule was applied, and it differs by platform: {search:#?}"
+    );
 
-        let text: String = search
-            .lines
-            .iter()
-            .map(|line| line.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            !text.contains('\u{fffd}'),
-            "a lossy decode rather than the machine's: {text:?}"
-        );
-        assert!(
-            text.contains("last"),
-            "and the ASCII around it is intact: {text:?}"
-        );
-    } else {
-        assert!(
-            !search.searched,
-            "this machine cannot name an encoding for these bytes: {search:#?}"
-        );
-        let problem = search.problem.as_deref().unwrap_or_default();
-        assert!(
-            problem.contains("not UTF-8"),
-            "the refusal has to say what it could not do, and said: {problem:?}"
-        );
-        assert!(
-            search.lines.is_empty(),
-            "and it must not report a partial answer as a complete one: {search:#?}"
-        );
-    }
+    let text: String = search
+        .lines
+        .iter()
+        .map(|line| line.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !text.contains('\u{fffd}'),
+        "no byte may be replaced by a mark that means 'this was lost': {text:?}"
+    );
+    assert!(
+        text.contains("last"),
+        "and the ASCII around it is intact: {text:?}"
+    );
 }
 
 #[test]

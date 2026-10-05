@@ -161,19 +161,22 @@ fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, S
 
     let encoding = sniff(&bytes);
 
-    // **Only UTF-8 is decoded here, and everything else is asked for.** `std` has no code
-    // page tables; the target's own shell does, so a file that is not UTF-8 is read a second
-    // time through it. That is slower and it is the honest version: the alternative is a
+    // **Only UTF-8 is decoded here, and everything else is asked for.** `std` has no code page
+    // tables; the target's own shell does, so a file that is not UTF-8 is read a second time
+    // through it. That is slower and it is the honest version: the alternative is a
     // hand-written table for one code page that would be wrong for every machine that uses
     // another.
-    let text = match encoding {
+    //
+    // The decode returns the label as well as the text, because on one of the two platforms
+    // the rule that was applied is **not** the one `sniff` named. See `decode_legacy`.
+    let (text, encoding) = match encoding {
         Encoding::Utf8 | Encoding::Utf8Bom => match String::from_utf8(bytes.clone()) {
-            Ok(text) => text,
+            Ok(text) => (text, encoding),
             // `sniff` said UTF-8 because every byte was valid, so this cannot fail; if it
             // ever does, the reading is refused rather than reported as text.
             Err(error) => return Err(format!("cannot decode {path}: {error}")),
         },
-        _ => decode_with_the_machine(target, path)?,
+        _ => decode_legacy(target, path, &bytes, encoding)?,
     };
 
     Ok(Read {
@@ -221,30 +224,51 @@ fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Ve
     Ok(bytes)
 }
 
-/// Decodes a file with the machine's own idea of its default encoding.
+/// Decodes a file that is not UTF-8 and carries no mark, **and says which rule did it**.
 ///
-/// On Windows, through PowerShell, which has the code page tables `std` does not and which is
-/// already on every Windows target this runs against. **The bytes are written out and read back
-/// rather than being decoded in place**, because what is wanted is the *text* of a file that may
-/// be any legacy code page, and asking the operating system for it beats guessing.
+/// Two platforms, two rules, and the label is not the same on both -- which is why this returns
+/// the encoding rather than letting the caller keep what `sniff` said. `sniff` can only say "not
+/// text I can name" ([`Encoding::Oem`], because that is the one thing observable from the
+/// bytes); which *rule* turns them into characters is a fact about the machine, and it is
+/// decided here.
 ///
-/// **On Linux there is no such table, and this says so rather than picking one.** A Linux
-/// machine's default encoding is UTF-8 and it has no notion of the "OEM code page" the label on
-/// this path names: the bytes that reach here are precisely the ones that are *not* valid
-/// UTF-8, so there is no rule this machine owns that turns them into text. The alternatives
-/// were both worse than a refusal -- decoding them lossily would hand a reader replacement
-/// characters while the label claimed a code page was used, and guessing a code page would be
-/// the same silent guess `docs/ROADMAP.md` M10 is about -- so this reports the gap and the
-/// caller is told which bytes could not be read.
+/// # Windows: the machine's code page
+///
+/// Through PowerShell, which has the code page tables `std` does not and which is already on
+/// every Windows target this runs against. **The bytes are written out and read back rather than
+/// being decoded in place**, because what is wanted is the *text* of a file that may be any
+/// legacy code page, and asking the operating system for it beats guessing. The label is
+/// [`Encoding::Oem`]: a rule was applied, and its name is a fact about the machine rather than a
+/// number this side can know.
+///
+/// # Everywhere else: one byte per character
+///
+/// **A Linux machine has no code page to ask for, and this is the honest answer to that rather
+/// than a refusal.** Its default encoding is UTF-8, so the bytes that reach here are precisely
+/// the ones that are not; there is no table the machine owns that turns them into characters.
+/// [`linklet_core::search::decode_latin1`] is the rule that always applies: total, reversible,
+/// and labelled [`Encoding::Latin1`] so a reader shown mojibake knows which rule produced it.
+///
+/// The decoding happens **in memory, over the bytes this already read**, so a non-UTF-8 file is
+/// read once and is subject to the same ceiling and the same end-of-file window as a UTF-8 one.
+/// The Windows path cannot say that: it hands the file's *path* to another program, which reads
+/// the whole thing regardless of the ceiling. That is a real difference between the two and it
+/// is named here rather than left to be discovered.
 ///
 /// # Errors
 ///
-/// A sentence when the shell is not there, the file could not be read, or -- on Linux -- the
-/// machine has no rule for these bytes. **A decoding this cannot do is a failure to search and
-/// not a file with no matches**, which is the distinction the whole module is arranged around.
-fn decode_with_the_machine(target: &Path, path: &str) -> Result<String, String> {
+/// A sentence when the rule could not be applied. **A decoding this cannot do is a failure to
+/// search and not a file with no matches**, which is the distinction this module is arranged
+/// around.
+fn decode_legacy(
+    target: &Path,
+    path: &str,
+    bytes: &[u8],
+    sniffed: Encoding,
+) -> Result<(String, Encoding), String> {
     #[cfg(windows)]
     {
+        let _ = bytes;
         // `-Encoding Default` is the machine's ANSI code page, which for console output on a
         // Chinese Windows is 936 and on an English one is 1252. **It is not the OEM code page**
         // -- `Get-Content` has no spelling for that -- and the difference is stated in the
@@ -268,17 +292,15 @@ fn decode_with_the_machine(target: &Path, path: &str) -> Result<String, String> 
             ));
         }
 
-        String::from_utf8(output.stdout)
-            .map_err(|error| format!("the machine's own text was not UTF-8: {error}"))
+        let text = String::from_utf8(output.stdout)
+            .map_err(|error| format!("the machine's own text was not UTF-8: {error}"))?;
+        Ok((text, sniffed))
     }
 
     #[cfg(not(windows))]
     {
         let _ = target;
-        Err(format!(
-            "cannot decode {path}: these bytes are not UTF-8, and this machine has no code \
-             page to fall back on -- the file is binary or in a legacy encoding this platform \
-             cannot name"
-        ))
+        let _ = sniffed;
+        Ok((linklet_core::search::decode_latin1(bytes), Encoding::Latin1))
     }
 }

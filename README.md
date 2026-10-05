@@ -118,8 +118,10 @@ $ echo $?
 
 Exit 1 means the answer is incomplete -- the search stopped early, the file was cut short at
 the byte ceiling, or it could not be read at all. 0 means the whole file was looked at. The
-encoding is in the summary too, so a reader shown mojibake knows it came from the machine's
-OEM code page rather than from UTF-8.
+encoding is in the summary too, so a reader shown mojibake knows which rule produced it: on
+Windows the machine's code page, and elsewhere ISO-8859-1, which is one character per byte
+and loses nothing. **A label is never a guess about the bytes** -- it names the rule that was
+applied, and the two machines apply different ones.
 
 **The pattern is a substring.** `ERROR|FATAL` does not work; `--pattern ERROR` does.
 `docs/ROADMAP.md` records that as a difference from the reference implementation rather

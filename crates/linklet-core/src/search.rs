@@ -53,6 +53,18 @@ pub enum Encoding {
     /// nonsense now knows the rule, which is the whole of what `docs/ROADMAP.md` M10 asks
     /// for here.
     Oem,
+    /// Not text this can name, on a machine with no code page to fall back on.
+    ///
+    /// **A second label rather than a wider [`Encoding::Oem`], and the difference belongs to
+    /// somebody else's reader.** The two rules are genuinely different -- a Windows code page is
+    /// a table of its own, and this is one byte per character -- and the label is the only thing
+    /// that tells a reader which one produced the text in front of them. An older host reading
+    /// `oem` for a decode that was not one would print "the machine's OEM code page" and be
+    /// wrong *while believing it understood*, which is the failure `docs/VERSIONING.md` draws
+    /// the line at; reading `latin-1` it refuses the reply **by name** instead. That is the same
+    /// shape as an agent refusing an `op` it does not know, which is the case that document says
+    /// does not raise the protocol number.
+    Latin1,
 }
 
 impl Encoding {
@@ -67,6 +79,7 @@ impl Encoding {
             Self::Utf16Le => "utf-16 little-endian",
             Self::Utf16Be => "utf-16 big-endian",
             Self::Oem => "the machine's OEM code page",
+            Self::Latin1 => "iso-8859-1, one byte per character",
         }
     }
 
@@ -81,6 +94,7 @@ impl Encoding {
             "utf-16le" => Some(Self::Utf16Le),
             "utf-16be" => Some(Self::Utf16Be),
             "oem" => Some(Self::Oem),
+            "latin-1" => Some(Self::Latin1),
             _ => None,
         }
     }
@@ -97,6 +111,7 @@ impl Encoding {
             Self::Utf16Le => "utf-16le",
             Self::Utf16Be => "utf-16be",
             Self::Oem => "oem",
+            Self::Latin1 => "latin-1",
         }
     }
 }
@@ -140,6 +155,34 @@ pub fn sniff(bytes: &[u8]) -> Encoding {
     }
 
     Encoding::Oem
+}
+
+/// Decodes bytes as ISO-8859-1: one byte, one character, for all 256 of them.
+///
+/// **This is not a guess, and that is the whole reason it is the fallback chosen here.** Every
+/// other single-byte encoding leaves some byte values undefined, so decoding with the wrong one
+/// either fails or replaces bytes with `U+FFFD` and loses them. ISO-8859-1 maps `0x00` to
+/// `U+0000` through `0xFF` to `U+00FF`, which makes the mapping **total and reversible**: every
+/// byte becomes exactly one character, nothing is dropped, and a reader who has the text can
+/// get the original bytes back. So the worst case is mojibake that is *labelled*
+/// [`Encoding::Latin1`] -- and a reader shown mojibake who knows the rule can decode it
+/// themselves, which is what `docs/ROADMAP.md` M10 asks for.
+///
+/// # Why a machine would need this
+///
+/// On Windows the fallback is the machine's code page, which is right, because the machine has
+/// one and that is what wrote the file. A Linux machine's default encoding is UTF-8 and it has
+/// no code page table at all: the bytes that reach here are precisely the ones that are *not*
+/// valid UTF-8, so there is no rule the machine owns that turns them into characters. This is
+/// what a total rule looks like when there is nothing to ask.
+///
+/// # What it does not do
+///
+/// It does not recover the characters the file's author meant, unless the file happens to be
+/// ISO-8859-1. A GBK log read this way is legible in its ASCII parts and mojibake in the rest,
+/// and the label says so.
+pub fn decode_latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| char::from(*byte)).collect()
 }
 
 /// Whether a run of bytes looks like UTF-16 that was written without a mark.
@@ -534,11 +577,70 @@ mod tests {
             Encoding::Utf16Le,
             Encoding::Utf16Be,
             Encoding::Oem,
+            Encoding::Latin1,
         ] {
             assert_eq!(Encoding::named(encoding.tag()), Some(encoding));
             assert!(!encoding.as_str().is_empty());
         }
         assert_eq!(Encoding::named("cp936"), None);
+    }
+
+    #[test]
+    fn the_two_unnamed_encodings_are_told_apart_by_their_labels() {
+        // **Two labels and not one**, because they are two different rules and the label is the
+        // only thing that tells a reader which one produced the text: a Windows code page is a
+        // table, and this is one byte per character. Collapsing them would make a host that
+        // understands only `oem` print "the machine's OEM code page" for a decode that was not
+        // one -- wrong while believing it understood.
+        assert_ne!(Encoding::Oem.tag(), Encoding::Latin1.tag());
+        assert_ne!(Encoding::Oem.as_str(), Encoding::Latin1.as_str());
+        assert!(Encoding::Latin1.as_str().contains("iso-8859-1"));
+        assert!(Encoding::Latin1.as_str().contains("one byte per character"));
+    }
+
+    // --- the total fallback --------------------------------------------------
+
+    #[test]
+    fn every_byte_becomes_exactly_one_character() {
+        // The property that makes this a rule rather than a guess: it is total and reversible.
+        // Every one of the 256 byte values is in the output, and the original bytes can be
+        // recovered from it -- so nothing is dropped, which is what a lossy decode would do.
+        let bytes: Vec<u8> = (0..=255u8).collect();
+        let text = decode_latin1(&bytes);
+
+        assert_eq!(text.chars().count(), 256, "one character per byte");
+        assert!(
+            !text.contains('\u{fffd}'),
+            "a replacement character would mean a byte was lost"
+        );
+
+        let recovered: Vec<u32> = text.chars().map(|character| character as u32).collect();
+        let expected: Vec<u32> = (0..=255u32).collect();
+        assert_eq!(recovered, expected, "and the mapping is the identity");
+    }
+
+    #[test]
+    fn ascii_survives_it_untouched() {
+        // The part that matters most in practice: a log's timestamps, levels and identifiers
+        // are ASCII, and a decode that mangled those would be worse than no decode at all.
+        let text = decode_latin1(b"2026-10-05 ERROR: failed\n");
+
+        assert_eq!(text, "2026-10-05 ERROR: failed\n");
+    }
+
+    #[test]
+    fn the_bytes_from_the_first_real_target_decode_without_losing_anything() {
+        // GBK for two CJK characters: not UTF-8, and not ISO-8859-1 either. Read this way they
+        // are four wrong characters rather than four replacement characters -- which is the
+        // difference between a labelled reading and a lost one, and all this function promises.
+        let text = decode_latin1(&[0xd6, 0xd0, 0xce, 0xc4]);
+
+        assert_eq!(text.chars().count(), 4);
+        assert!(!text.contains('\u{fffd}'));
+        assert_eq!(
+            text.chars().map(|c| c as u32).collect::<Vec<_>>(),
+            vec![0xd6, 0xd0, 0xce, 0xc4]
+        );
     }
 
     // --- finding a line ------------------------------------------------------

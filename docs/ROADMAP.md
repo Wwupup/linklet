@@ -775,7 +775,7 @@ Linux host -> Windows agent (192.168.100.2:8790)
 | `linklet-agent/src/shell.rs` | `cmd /C` or `sh -c`, and `taskkill /T` or `kill -9 -PGID` | `exec`, `spawn` | **done** |
 | `linklet-adapters/src/processes/` | `tasklist`/`wmic` or `/proc` | `ps`, `kill`, and `testbed`'s `no-process` | **done** |
 | `linklet-adapters/src/discovery/` | `ipconfig` and `route print -4`, or `ip` | `discover` | **done** |
-| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 | open |
+| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page, or ISO-8859-1 | `grep`, `tail` on non-UTF-8 | **done** |
 
 **`testbed` turned out to be the cheapest, and it was not a port at all.** The `no-process`
 requirement asked `tasklist` from beside the prober, so the fix was to move the question to the
@@ -793,12 +793,27 @@ does not translate its labels, which is why the parser beside it is short. The p
 is identical to the Windows one on this bench: same 1,530 addresses, same skips, same machine
 found.
 
-**`search` is the one that is a real gap in capability** rather than in coverage, and it is
-still open. A Linux machine's default encoding is UTF-8, so a file that is not UTF-8 has no
-rule there that turns it into text; the honest answer today is a refusal that names the
-problem. Closing it means the same thing it means on Windows -- a code page table -- which is a
-dependency and a decision rather than a fix. See below for the shape that is available without
-one.
+**`search` was the one that looked like a real gap in capability**, and it turned out to be a
+labelling problem. A Linux machine's default encoding is UTF-8, so the bytes that reach the
+fallback are precisely the ones it has no rule for -- there is no code page there to ask, which
+is why the honest first answer was a refusal that named the problem. What closes it is not a
+code page table: it is **ISO-8859-1, which is a total and reversible rule** -- one character per
+byte, for all 256 of them, so nothing is ever replaced or dropped. The bytes are decoded in
+memory over what was already read, which also means a non-UTF-8 file on Linux is subject to the
+byte ceiling and the end-of-file window that the Windows path bypasses by handing a *path* to
+another program.
+
+It is a **second label** (`latin-1`) rather than a wider `oem`, and that is the part with a
+consequence: an older host reading `latin-1` refuses the reply by name, where reusing `oem`
+would have it print "the machine's OEM code page" for a decode that was not one -- wrong while
+believing it understood, which is exactly the line `docs/VERSIONING.md` draws. So the protocol
+number does not move, for the same reason adding an `op` does not move it.
+
+What is genuinely still less than Windows here, and is named rather than implied: **the
+characters are not recovered**. A GBK log read this way is legible in its ASCII parts and
+mojibake in the rest. Windows asks the machine and gets the right answer; Linux has nothing to
+ask, so it applies the rule that always applies and says so. A caller who needs the real
+characters has the bytes and the label.
 
 ### What it does not do, and what this does not claim
 
@@ -872,12 +887,12 @@ accident. None of these is planned:
   sibling project needed six states, output files, TTLs, cancellation and orphan adoption
   for it, and `spawn` plus a log file is the honest smaller step.
 - a configuration file (flags until there is a proven need for persistence)
-- **a cross-platform agent, parked -- and no longer parked in the interesting part.** It is
-  not refused on principle the way the rest of this list is. `ps`, `kill` and `spawn` landed in
-  M11, so the deploy loop runs on Linux and the same 45 suites pass on both platforms; what
-  remains there is `testbed`, `discover` and a code page for a non-UTF-8 file, plus the POSIX
-  path policy that transfers need before the two platforms can be said to be equally
-  specified.
+- **a cross-platform agent, parked, and now done apart from one thing.** It is not refused on
+  principle the way the rest of this list is. `ps`, `kill`, `spawn`, `testbed` and `discover`
+  landed in M11, so the deploy loop, the testbed checks and the scan all run on Linux and the
+  same 46 suites pass on both platforms. What remains is the POSIX path policy transfers need
+  before the two platforms can be said to be equally specified, and the fact that a non-UTF-8
+  file on Linux is read by a total rule rather than by the machine's own code page.
 - a daemon or service **on the host** -- still refused; the host is a client. The *target*
   side is a different question and is now M10: the agent died with its console on the first
   real target and was not brought back.
