@@ -99,19 +99,29 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    `git` does not hold build output and must not -- `docs/rationale.md` says why. The tag is the
    source, and the archive is a function of it.
 
-   **The release is one archive**, `linklet-<version>.zip`, holding:
+   **The release is one archive**, `linklet-<version>.zip`, holding **both platforms** -- one
+   directory per target triple, because a `bin/` flat enough to hold one `linklet-agent` cannot
+   hold two:
 
    | in the archive | what it is |
    |---|---|
-   | `bin/linklet.exe` | the host tool, and the MCP server |
-   | `bin/linklet-agent.exe` | goes on each machine being driven |
+   | `bin/x86_64-pc-windows-msvc/linklet.exe` | the host tool, and the MCP server, for Windows |
+   | `bin/x86_64-pc-windows-msvc/linklet-agent.exe` | goes on each Windows machine being driven |
+   | `bin/x86_64-unknown-linux-gnu/linklet` | the same tool, built on Linux |
+   | `bin/x86_64-unknown-linux-gnu/linklet-agent` | the agent for a Linux machine |
    | `integrations/` | the client entry, the skill, and how to install both |
-   | `README.md`, `CHANGELOG.md`, `LICENSE`, `docs/` | the three documents an operator needs |
+   | `README.md`, `CHANGELOG.md`, `LICENSE`, `docs/` | the documents an operator needs |
 
    **One archive because a release is one thing to download.** The binaries are self-contained,
    so an archive is not needed to make them *run*; it is needed to make a release *coherent*.
    Four loose assets asked the reader to work out which went where, and the executables and the
    skill that explains how to use them are two halves of one product.
+
+   **Both platforms because the tool runs on both, and a release that carries one of them makes
+   the other a clone-and-build.** Each binary is built by the platform it runs on: cross-compiling
+   would mean shipping something never run on the operating system it is for. The archive is
+   assembled on Linux, and the reason is in `docs/VERIFYING.md` -- a zip records the Unix mode, and
+   the Windows archiver does not write it.
 
    Everything except `bin/` is a file from the tag, and the workflow **refuses to publish if any
    file in its list is not in the tag** -- a package that quietly lost the skill would publish
@@ -126,15 +136,16 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    come from the same commit. Measured at 0.2.0: the same source produced
    `d526ce1125bad617...` locally and `0cdf8924905de699...` on the runner.
 
-   That matters because of what step 2 claims. `CHANGELOG.md` for 0.2.0 says the version was
-   driven on a real machine "with these exact binaries" -- which is only true if somebody
-   downloads the published archive and runs it, and it was made true that way:
+   That matters because of what step 2 claims. A release note that says the version was driven on
+   a real machine is only true if somebody downloads the published archive and runs it:
 
    ```powershell
-   gh release download v0.2.0 --dir $env:TEMP\check
-   Expand-Archive "$env:TEMP\check\linklet-0.2.0.zip" -DestinationPath "$env:TEMP\check"
-   # then the seven claims of docs/smoke.md, and the deploy loop, against the target,
-   # with $env:TEMP\check\linklet-0.2.0\bin\linklet.exe
+   gh release download v0.3.0 --dir $env:TEMP\check
+   Expand-Archive "$env:TEMP\check\linklet-0.3.0.zip" -DestinationPath "$env:TEMP\check"
+   # then the seven claims of docs/smoke.md, and the deploy loop, against the target, with
+   # $env:TEMP\check\linklet-0.3.0\bin\x86_64-pc-windows-msvc\linklet.exe -- and the same
+   # claims made from a Linux host with the other directory, which is what the second
+   # platform in the archive is for.
    ```
 
    **The rest of the archive is not part of that claim, and this is the place to say so.**
@@ -147,6 +158,9 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    the one kind of wrong this document exists to prevent.
 
 ## The workflows, and what can be checked before pushing
+
+**What each workflow is, and why it is shaped the way it is, is `docs/VERIFYING.md`.** This
+section is the narrow part: what can be checked *here*, before a push, and what cannot.
 
 `tools/verify.ps1` runs `actionlint` when it is on `PATH` and **says so when it is not**: it is
 not a Rust tool, and nobody should have to install it to build this. To get it:

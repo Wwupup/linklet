@@ -23,14 +23,22 @@ it anywhere and the paths below are relative to the folder it creates:
 
 ```
 linklet-<version>/
-  bin/linklet.exe          the host tool, and the MCP server a client is pointed at
-  bin/linklet-agent.exe    goes on each machine being driven
-  integrations/            this file, the client entry, and the skill
+  bin/x86_64-pc-windows-msvc/linklet.exe          the host tool, and the MCP server a client is pointed at
+  bin/x86_64-pc-windows-msvc/linklet-agent.exe    goes on each Windows machine being driven
+  bin/x86_64-unknown-linux-gnu/linklet            the same tool for a Linux host
+  bin/x86_64-unknown-linux-gnu/linklet-agent      the agent for a Linux machine
+  integrations/                                   this file, the client entry, and the skill
   README.md, CHANGELOG.md, LICENSE, docs/
 ```
 
-The two executables are self-contained -- no runtime, no installer -- so `bin/` can be
-copied to a target or put on `PATH` on its own. Everything else is documentation and
+**Both platforms are in the one archive**, one directory per target triple, so `bin/` is not
+ambiguous and a host and the agent it drives do not have to come from different downloads. **A
+build is used on the platform it was built for and on the other one it is not**: the two are
+different executables, and neither runs on the other's system.
+
+The executables are self-contained -- no runtime, no installer -- so the directory for one
+platform can be copied to a target or put on `PATH` on its own. On Linux the two files are
+already executable, which the archive records. Everything else is documentation and
 configuration, and none of it needs to travel to the machines being driven.
 
 ## Install the skill

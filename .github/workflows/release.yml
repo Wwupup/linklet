@@ -1,11 +1,26 @@
-# Attach the release to a GitHub release, from a tag: one archive holding the binaries and
-# everything that goes with them, and one SHA256SUMS to verify it with.
+# Attach the release to a GitHub release, from a tag: **one archive holding both platforms**, one
+# SHA256SUMS to verify it with, and the notes that say what is inside.
 #
 # `docs/VERSIONING.md` is the policy this implements. Its step 7 is the part that belongs here:
 # *"build and keep the binaries... `git` does not hold build output and must not. The tag is the
-# source, and the binaries are a function of it."* A workflow that builds on a tag is that
-# sentence done by a machine instead of by hand. Everything else in the archive is the same
-# sentence about a different subject: it is not built at all, it is copied out of the tag.
+# source, and the binaries are a function of it."* A workflow that builds on a tag is that sentence
+# done by a machine instead of by hand. Everything else in the archive is the same sentence about a
+# different subject: it is not built at all, it is copied out of the tag.
+#
+# # Two build jobs and one archive, which is three jobs' worth of shape for one file
+#
+# A Windows-built archive cannot contain a Linux binary: each binary is built by the platform it
+# runs on, and cross-compiling one from the other would mean shipping something that was never run
+# on the operating system it is for. So the binaries are built where they run, uploaded as
+# artifacts, and **assembled into the archive by a third job** -- which is the only job that writes
+# the file a user downloads.
+#
+# **That job runs on Linux, and the reason is not symmetry.** A zip carries the Unix mode of every
+# entry, and `Compress-Archive` writes `external_attr = 0`: measured, it puts a Linux binary on disk
+# at mode 600 -- not executable. Info-ZIP `zip` writes the mode, so the archive is assembled where
+# that tool is, and `tools/make_release.sh` extracts its own output and checks the bit rather than
+# trusting it. That script is to this job what `tools/verify.ps1` is to the gate job: the logic in
+# one file, runnable by a person against a checkout, called by CI rather than restated.
 #
 # # What this deliberately does not do
 #
@@ -14,16 +29,16 @@
 # the claims in `docs/smoke.md` need a target on a network, and a runner has none. So this job
 # starts from the premise that the tag was pushed on purpose, after somebody did that.
 #
-# **It does not install anything.** The archive is files: two executables, a client entry and a
-# skill. Putting an agent on a target is still a file copy a person makes once, and
+# **It does not install anything.** The archive is files: two executables per platform, a client
+# entry and a skill. Putting an agent on a target is still a file copy a person makes once, and
 # `integrations/README.md` says so where somebody about to try it will read it.
 #
-# **It does not renumber anything.** The version in `Cargo.toml` and the tag have to agree, and
-# the job refuses if they do not -- rather than releasing a binary whose `--version` disagrees
-# with the tag it is attached to. That failure has already happened once by hand: a workspace
-# version was bumped while five crates kept their own, so the binary reported 0.1.0 after the
-# release was called 0.2.0. `crates/linklet-core/tests/architecture.rs` now fails on the cause;
-# this is the check on the symptom, at the one moment it would reach a user.
+# **It does not renumber anything.** The version in `Cargo.toml` and the tag have to agree, and the
+# build refuses if they do not -- rather than releasing a binary whose `--version` disagrees with
+# the tag it is attached to. That failure has already happened once by hand: a workspace version was
+# bumped while five crates kept their own, so the binary reported 0.1.0 after the release was called
+# 0.2.0. `crates/linklet-core/tests/architecture.rs` now fails on the cause; this is the check on
+# the symptom, at the one moment it would reach a user.
 
 name: release
 
@@ -46,9 +61,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: build and attach
-    runs-on: windows-latest
+  build:
+    name: build (${{ matrix.triple }})
+
+    # **One job definition over both platforms, not two jobs with the same steps.** The gates are
+    # written down once, in `tools/verify.ps1`, and the build is one command; two job bodies would
+    # copy both per platform. What does differ per platform is a name and an extension, which is
+    # what the matrix carries.
+    #
+    # `fail-fast: false` because the two legs fail for different reasons and the answer about the
+    # other platform is worth having: a release where Windows built and Linux did not is a fact
+    # somebody can act on, and cancelling the second leg destroys it.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            suffix: .exe
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+            suffix: ""
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
     steps:
@@ -85,9 +119,11 @@ jobs:
             exit 1
           }
 
-      # The gates, again, on the exact commit being released. Not redundant with the branch run:
-      # a tag can be pushed on a commit whose branch run was cancelled, and a release is the worst
-      # place to find that out.
+      # The gates, again, on the exact commit being released -- and now on both platforms, which is
+      # the same argument as `verify.yml`: the adapter layer has a backend per platform and neither
+      # half is visible from the other. It is not redundant with the branch run: a tag can be
+      # pushed on a commit whose branch run was cancelled, and a release is the worst place to find
+      # that out.
       - name: Verify
         shell: pwsh
         run: ./tools/verify.ps1
@@ -99,136 +135,55 @@ jobs:
         shell: pwsh
         run: cargo build --workspace --release --locked
 
-      # **One archive, because a release is one thing to download.** The binaries are
-      # self-contained -- no runtime, no dependencies -- so an archive is not needed to make
-      # them run; it is needed to make a release *coherent*. Four loose assets asked the
-      # person downloading to work out which of them went where, and the executables and the
-      # skill that explains how to use them are two halves of the same product.
-      #
-      # The item list is explicit rather than "everything except .git", which is
-      # `make_release.ps1`'s rule in the sibling project and the right one here: a file
-      # nobody listed is simply not shipped, so a new working file cannot reach a release by
-      # existing. **Every item is checked before anything is archived**, because a package
-      # that quietly lost the skill would still publish and would only be missed by whoever
-      # tried to follow it.
-      #
-      # `bin/` and not the archive root, so that the executables can go on a target or into a
-      # directory on `PATH` without dragging the documentation with them.
-      - name: Stage the release
-        shell: pwsh
+      # **The handover format is the directory name.** The artifact is named for the target triple
+      # and holds the two executables at its root, so `actions/download-artifact` gives the
+      # assembling job a directory per platform with exactly the names `tools/make_release.sh`
+      # expects. `if-no-files-found: error` because an artifact that is empty because a path was
+      # misspelled is the failure this release exists to not have.
+      - name: Upload the two binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.triple }}
+          if-no-files-found: error
+          path: |
+            target/release/linklet${{ matrix.suffix }}
+            target/release/linklet-agent${{ matrix.suffix }}
+
+  publish:
+    name: assemble and attach
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # On a tag push this checks out the tag, which is where the payload files come from: nothing
+      # in the archive except `bin/` is built, and a file that is not in the tag cannot be in the
+      # release.
+      - uses: actions/checkout@v5
+
+      # Default behaviour, which is what is wanted: one directory per artifact, named for it, so
+      # the triples arrive as the directory names the enclosing script reads.
+      - name: Download both platforms' binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: dist/binaries
+
+      # `bash` rather than `./`: this repository is developed on Windows, where git does not record
+      # the executable bit, so a checkout there does not have it and calling the script by name
+      # would fail for a reason that has nothing to do with the release.
+      - name: Assemble the archive, the digest and the notes
+        shell: bash
         run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          $root = "linklet-$version"
-          $stage = "dist/$root"
-          Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path "$stage/bin" | Out-Null
-
-          # The things that are built, and the only files here that are not in the tag.
-          foreach ($name in 'linklet.exe', 'linklet-agent.exe') {
-            $from = "target/release/$name"
-            if (-not (Test-Path $from)) { Write-Error "$from was not built"; exit 1 }
-            Copy-Item $from "$stage/bin/$name"
-          }
-
-          # Everything else is a file from the tag. No `tools/`: the scripts that used to
-          # be shipped here kept an agent alive and drove a real machine, and both are
-          # gone -- the first because a script is not a service and the second because a
-          # tool an agent drives does not need a script to drive it.
-          $payload = @(
-            'README.md'
-            'CHANGELOG.md'
-            'LICENSE'
-            'docs/MCP.md'
-            'docs/machine.md'
-            'docs/smoke.md'
-            'integrations'
-          )
-
-          foreach ($item in $payload) {
-            if (-not (Test-Path $item)) { Write-Error "the release needs $item, which is not in the tag"; exit 1 }
-            if (Test-Path $item -PathType Container) {
-              Copy-Item $item $stage -Recurse -Force
-            } else {
-              New-Item -ItemType Directory -Force -Path (Split-Path (Join-Path $stage $item)) | Out-Null
-              Copy-Item $item (Join-Path $stage $item) -Force
-            }
-          }
-
-          # One top-level folder, so that unzipping into a shared directory does not scatter
-          # a dozen entries among whatever else is there.
-          Compress-Archive -Path $stage -DestinationPath "dist/$root.zip" -Force
-
-          $prefix = (Resolve-Path $stage).Path + '\'
-          Write-Host "dist/$root.zip:"
-          Get-ChildItem -Recurse -File $stage |
-            ForEach-Object { Write-Host "  $root/$($_.FullName.Replace($prefix, ''))" }
-
-      # A digest beside the archive, because the transfer this tool performs is
-      # digest-verified and it would be incoherent to hand out its own binaries without one.
-      # `docs/transfer.md` T2 is the argument for the tool; this is the same courtesy to
-      # whoever downloads it.
-      #
-      # **It stays outside the archive**, which is the one file here that is not in it: a
-      # digest inside the thing it verifies cannot be used to verify it, and the archive is
-      # what a download can corrupt.
-      - name: Digest the archive
-        shell: pwsh
-        run: |
-          $version = "${{ github.ref_name }}" -replace '^v', ''
-          $name = "linklet-$version.zip"
-          $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Set-Content dist/SHA256SUMS -Encoding ascii
-          Get-Content dist/SHA256SUMS
-
-      # The body is a pointer and not a copy. `CHANGELOG.md` is the one place the answer to "what
-      # can I do now that I could not do before" is written, and a release body that repeated it
-      # would be a second copy to keep in step.
-      #
-      # Built by concatenation rather than as a here-string: a `@"` block in a YAML `run:` is
-      # parsed as code by the shell before the here-string is recognised, and the first version
-      # of this failed to parse with "use `{ instead of { in variable names". The PowerShell
-      # inside these files is checked with the parser before it is committed -- see the note in
-      # the commit that added it.
-      - name: Write the release notes
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
-          $blob = "${{ github.server_url }}/${{ github.repository }}/blob/$tag"
-
-          $notes = @(
-            "linklet ``$version``, built from the tag on Windows. **One archive, and one file",
-            "to verify it with.**",
-            "",
-            "``linklet-$version.zip`` holds ``bin/`` (``linklet.exe``, the host tool and MCP",
-            "server, and ``linklet-agent.exe``, which goes on each machine being driven) and the",
-            "rest of a deployment: the client entry to install the MCP server, the skill that",
-            "carries the order the calls go in, and the two scripts that keep an agent alive on a",
-            "target. **Unzip it on the host** -- nothing here installs an agent on a target, and",
-            "that first copy is a file copy, once, by hand.",
-            "",
-            "**What changed** is in [``CHANGELOG.md``]($blob/CHANGELOG.md), under ``[$version]``.",
-            "**What a version number means here**, which changes raise it, and the upgrade order",
-            "are in [``docs/VERSIONING.md``]($blob/docs/VERSIONING.md).",
-            "",
-            "The agent and the tool should come from the same release. **The agent may be ahead",
-            "of the tool and not behind it** -- see that document for why.",
-            "",
-            "Verify the archive against ``SHA256SUMS`` before you unpack it."
-          ) -join "`n"
-
-          $notes | Set-Content dist/notes.md -Encoding utf8
-          Get-Content dist/notes.md
+          bash tools/make_release.sh "${GITHUB_REF_NAME#v}" dist/binaries dist "$GITHUB_REPOSITORY"
 
       # `gh` rather than a third-party action: it is already on the runner, it is GitHub's own, and
       # a release job is not the place to add a dependency nobody reviews.
       - name: Attach to the release
-        shell: pwsh
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
           # `--verify-tag` so this cannot invent a tag that was not pushed.
-          gh release create $tag --verify-tag --title $tag --notes-file dist/notes.md `
-            "dist/linklet-$version.zip" dist/SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes-file dist/notes.md \
+            "dist/linklet-${GITHUB_REF_NAME#v}.zip" dist/SHA256SUMS

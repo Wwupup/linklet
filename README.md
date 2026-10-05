@@ -262,9 +262,10 @@ agent agree.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
 and the two places a caller goes wrong. `integrations/` is in this repository, and a
-release is one archive -- `linklet-<version>.zip`, with the executables under `bin/`
-and this installation material beside them -- so an installation does not need a
-clone.
+release is one archive -- `linklet-<version>.zip`, with the Windows and Linux
+executables under `bin/<target-triple>/` and this installation material beside them --
+so an installation does not need a clone and does not need a build for either system.
+`docs/VERIFYING.md` says what builds it and what the archive can be trusted to be.
 
 ## The problem
 
