@@ -107,10 +107,17 @@ out what a deployment actually consists of. On the target, once:
 
 ```powershell
 mkdir C:\linklet\transfers
-linklet-agent.exe --port 8787 --root C:\linklet\transfers --log C:\linklet\agent.log
+linklet-agent.exe --port 8787 --root C:\linklet\transfers --log C:\linklet\agent.log `
+    --token-file C:\linklet\token.txt
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 ```
+
+**An agent with no secret at all refuses to start and says so**, which is the cheapest
+place to find out -- the alternative is a port that accepts connections and refuses
+every caller. `--root` is checked the same way, and the firewall rule is the one step
+nothing here can do for you: an agent cannot open a port on a machine it has not been
+installed on yet.
 
 Then make it survive the console: `docs/smoke.md` has the `schtasks` recipe and
 `tools/linklet-supervise.ps1`, which restarts an agent that died **and** one that

@@ -16,10 +16,10 @@ only way a tool names a machine, and there is no tool that finds one (see below)
 
 ## Before anything else
 
-1. **Know the address.** The MCP surface has no discovery tool, deliberately: a scan
-   plus a remembered list is state a client should not hold silently. The addresses
-   come from the conversation, or from `linklet discover --port <port> --targets` run
-   in a shell, which prints the `host:port` list every tool takes.
+1. **Know the address.** The MCP surface has no discovery tool -- `discover` is a
+   command and not a tool -- so the addresses come from the conversation, or from
+   `linklet discover --port <port> --targets` run in a shell, which prints the
+   `host:port` list every tool takes.
 2. **`check` answers reachability, not health.** It opens a connection and closes it,
    so a wedged agent keeps its listening socket and reads as `live` while every real
    call times out. `linklet probe --agent <addr>` completes a handshake and reads a
@@ -29,8 +29,9 @@ only way a tool names a machine, and there is no tool that finds one (see below)
    has the measurement where `check` said `live` and `probe` said exit 4.
 3. **`testbed` is the one tool that is not about a target.** It checks the machine the
    server runs on against a specification file; its `target` argument is a label in
-   the output, not an address to check. Every other tool's description says "on a
-   remote agent's machine" and this one does not, which is the signal.
+   the output, not an address to check. Each tool that does act on a target says "on a
+   remote agent's machine" in its description and this one does not, which is the
+   signal to read before handing it an address.
 4. **A refusal is not an empty answer.** `the token is missing or wrong` is about the
    secret, and the server's own stderr names the file it could not read or the two
    sources it was given -- it is a configuration problem on this side, and no amount
@@ -69,12 +70,13 @@ only way a tool names a machine, and there is no tool that finds one (see below)
   different words on the two tools, and using one to find what the other will stop is
   how a helper process survives a deploy. `kill` also takes `candidates_cmdline` to
   narrow an exact-name match to the worker you mean.
-- **An empty list is only readable next to its summary.** `ps` answers with
-  `0 of 271 match, filter name=...`; a listing the machine could not finish exits 1
-  and says which field it could not read. `ls` is the same shape, and there an empty
-  directory and a directory that is not there are **the same list and opposite
-  facts**. Never read `killed: []` or `0 of N` as "it was already gone" without the
-  number it was measured against.
+- **An empty list is only readable next to its summary.** `ps` answers `0 of 271
+  match`, `ls` answers `0 of 0 entries in <path>`, and `kill` answers `killed 0 of 1`
+  with anything it could not stop listed under `failed`. A listing the machine could
+  not finish exits 1 and names the field it could not read. **An empty directory and a
+  directory that is not there are the same list and opposite facts**, and a match that
+  was not killed is not a clean result: read the denominator, and the `failed` line,
+  before concluding that anything is gone.
 - **`grep`'s `pattern` is a substring, not a pattern.** `ERROR|FATAL` finds nothing
   here. An **empty string matches every line**, which is a valid call and almost
   never the intended one -- `3 matches` for a search meant to narrow is a wrong answer
@@ -118,10 +120,13 @@ only way a tool names a machine, and there is no tool that finds one (see below)
 
 ## Run it from the command line when the surface does not have it
 
-Three operations exist on the host binary and not as tools, and all three are on the
-path above: `linklet discover --targets` (find machines), `linklet probe --agent`
-(is this agent working, or only listening), and `linklet testbed check <spec> <label>`
-(is the host set up). `linklet --help` lists the rest of the command line.
+Three operations exist on the host binary and not as tools, and two of them are on the
+path above: `linklet discover --port <port> --targets` (which machines are there, as
+the `host:port` list every tool takes) and `linklet probe --agent <addr>` (is this
+agent working, or only listening). The third is `linklet exec --agents a:1,b:2
+<command>`, which runs one command across several machines and reports each one in the
+order given -- the MCP `exec` takes a single `agent`. `linklet --help` lists the rest
+of the command line.
 
 ## Reference
 
