@@ -841,14 +841,17 @@ characters has the bytes and the label.
   the seam the bug lived in: half of that decision was this project's and half was `std`'s.
 - **Linux CI: done, and it was the last item on this list.** `.github/workflows/verify.yml` ran
   Windows only. It is now one job over two runners, both calling `tools/verify.ps1`, so the gates
-  are run on both platforms by a machine on every push instead of by hand from a checkout.
+  are run on both platforms by a machine on every push instead of by hand from a checkout. **Both
+  legs were green on the first push that carried the job.**
 
-  **The first Linux run found something immediately**, which is the argument for having it rather
-  than a prediction of one: `cargo clippy --workspace --all-targets -- -D warnings` failed, on a
-  Windows-only `use std::process::Command` and a parameter only Windows reads in
+  **What decided it was running, by hand, what the job would run -- and one gate had never been
+  applied on Linux at all.** `cargo clippy --workspace --all-targets -- -D warnings` failed there,
+  on a Windows-only `use std::process::Command` and a parameter only Windows reads, in
   `crates/linklet-adapters/src/search.rs`. `cargo test` had been green on Linux for the whole
-  milestone, so the platform was exercised for `fmt`, `test` and `doc` and never for `clippy` --
-  and a gate applied on one platform is a gate that is not applied.
+  milestone and it does not look at warnings, so the platform was covered for `fmt`, `test` and
+  `doc` and never for `clippy` -- and a gate applied on one platform is a gate that is not applied.
+  The fix is the commit before the CI job, so the job starts from a tree that passes rather than
+  arriving red and being read as proof.
 
 ### What running the suite on Linux found, which is the useful part
 

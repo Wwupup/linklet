@@ -78,11 +78,14 @@ to answer one question: **what can I do now that I could not do before?**
   `.github/workflows/verify.yml` ran Windows only, so the four gates in `tools/verify.ps1` were
   run by a machine there and everywhere else by hand -- which means the Linux half of the tool was
   last checked whenever somebody happened to run it. It is now one job over two runners, both
-  calling the same script, so a pushed change is verified on both. **The first Linux run failed**,
-  and on the gate that had never been applied there: `cargo clippy -- -D warnings`, on a
-  Windows-only import and a parameter that only Windows reads, in the search module. `cargo test`
-  does not look at warnings, so a module can be green on Linux for a whole milestone with `clippy`
-  red on it.
+  calling the same script, so a pushed change is verified on both; **both legs were green on the
+  first push that carried the job**.
+
+  **What found the one thing in the way was running, by hand, what the job would run.**
+  `cargo clippy -- -D warnings` had never been applied on Linux -- `cargo test` had, and it does
+  not look at warnings -- so it failed there on a Windows-only import and a parameter that only
+  Windows reads, in the search module. That is the fix in the commit before this one, which is why
+  the job's first run did not have to go red to prove anything.
 
 ### Added
 
