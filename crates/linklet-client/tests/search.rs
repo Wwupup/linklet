@@ -265,19 +265,28 @@ fn a_file_that_is_not_utf8_is_decoded_by_a_rule_that_is_named() {
         "the label has to say which rule was applied, and it differs by platform: {search:#?}"
     );
 
-    let text: String = search
-        .lines
-        .iter()
-        .map(|line| line.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    // **The lines, exactly, and not just "last is in there".** This file ends with a newline
+    // and has three lines; a reading that produced four would mean an empty line was invented,
+    // which is how the Windows code-page path behaved -- and a count taken from that is a
+    // count of something that is not in the file.
+    let lines: Vec<&str> = search.lines.iter().map(|line| line.text.as_str()).collect();
+    assert_eq!(
+        lines.len(),
+        3,
+        "three lines in, three lines out: {lines:#?}"
+    );
+    assert_eq!(lines[0], "first", "{lines:#?}");
+    assert_eq!(lines[2], "last", "{lines:#?}");
+
+    // The middle line is the bytes, read by a rule that may not recover the characters. What
+    // it must not do is throw them away, which is what a replacement character would mean.
     assert!(
-        !text.contains('\u{fffd}'),
-        "no byte may be replaced by a mark that means 'this was lost': {text:?}"
+        !lines[1].contains('\u{fffd}'),
+        "no byte may be replaced by a mark that means 'this was lost': {lines:#?}"
     );
     assert!(
-        text.contains("last"),
-        "and the ASCII around it is intact: {text:?}"
+        !lines[1].is_empty(),
+        "and the non-ASCII line is still a line: {lines:#?}"
     );
 }
 

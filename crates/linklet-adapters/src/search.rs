@@ -294,6 +294,23 @@ fn decode_legacy(
 
         let text = String::from_utf8(output.stdout)
             .map_err(|error| format!("the machine's own text was not UTF-8: {error}"))?;
+
+        // **One line terminator comes off, because it is the transport's and not the file's.**
+        // `Get-Content -Raw` hands back the file's bytes and PowerShell then writes that string
+        // to stdout with a newline of its own, so the text arriving here is the file plus one
+        // terminator. Left on, it is a line the file does not have: a search reports one more
+        // match than there are lines, and the last one is empty. Measured rather than reasoned
+        // about -- the same GBK file gave three lines on Linux and four on Windows, and the
+        // fourth was PowerShell's.
+        //
+        // Exactly one, and neither a trim nor a loop: a file that genuinely ends with two
+        // newlines has a blank last line and must keep it.
+        let text = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .unwrap_or(&text)
+            .to_string();
+
         Ok((text, sniffed))
     }
 
