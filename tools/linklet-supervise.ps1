@@ -26,6 +26,27 @@
 #   * **It backs off.** An agent that dies instantly on startup -- a port already taken, a root
 #     that does not exist -- would otherwise be started thousands of times a minute.
 #
+# # What it writes, and why that changed
+#
+# **A healthy probe is not an event.** The first version logged every probe, and a probe runs
+# every five seconds, so an agent that was working perfectly produced one identical line after
+# another for as long as the machine was up. Measured on the bench after four days: **18,786 of
+# the 18,815 lines were that one line** (99.85%), which is 1.6 MB of a sentence that says
+# "still fine", and the same text went to the console of whoever was watching that machine.
+#
+# It was worse than noise in its own log. The agent keeps a request log whose design is the pair
+# -- `-> #000012 identity` and `<- #000012 identity ok 0 ms` -- so that a request that never
+# finishes is *findable*. The same five-second probe had put 37,596 lines of `identity` into
+# 37,781: **the four days of actual work were 0.5% of the evidence**, which is the opposite of
+# what that log is for. Neither number is a bug in the agent -- the probe is a request and the
+# agent logs requests. It is this script deciding that every request it made was worth writing
+# down twice.
+#
+# So a cycle is written when it is **news**: a different outcome from the one last written, or
+# the same outcome standing for longer than the reminder interval. A reader still sees every
+# death, every recovery, every kill and every start, in order, with their times. What they no
+# longer see is the machine saying nothing, five thousand times.
+#
 # ASCII only, and no quotes anywhere a target's `cmd` might rewrite them: see docs/machine.md
 # for what a command sent to a target does to quote characters.
 
@@ -53,6 +74,15 @@ $PROBE_EVERY_SECONDS = 5
 $MIN_BACKOFF_SECONDS = 2
 $MAX_BACKOFF_SECONDS = 60
 
+# How long the same outcome may stand before it is written down again.
+#
+# This is the number that bounds the log. Five minutes means a healthy agent costs 288 lines a
+# day at the very worst, against 17,280 before -- and in practice one line, at startup, until
+# something happens. It is not zero because "the supervisor died" and "nothing has gone wrong
+# for a week" have to be different things to a reader who arrives afterwards, and the only
+# evidence that separates them is a line that says the watch is still running.
+$REMINDER_SECONDS = 300
+
 function Write-Log {
     param([string] $Message)
 
@@ -63,17 +93,20 @@ function Write-Log {
     }
 }
 
-# Runs the probe and returns its exit code, with what it said going to this supervisor's log.
+# Runs the probe and returns its exit code, keeping what it said for the caller to write down.
+#
+# **It does not log, and that is the whole correction.** This function used to write a line on
+# every probe, which is what made the log a heartbeat rather than a record: the caller is the
+# only thing that knows whether this outcome is news, because the previous outcome is the
+# caller's state. So the words are left in $script:ProbeText and the decision is in the loop.
 function Get-ProbeCode {
     param([string] $Agent, [string] $Linklet)
 
-    # `2>&1` so a refusal that went to stderr is logged too -- the point of the log is to be
-    # able to read afterwards what the probe saw, and half of what it says is on stderr.
+    # `2>&1` so a refusal that went to stderr is kept too -- the point of the log is to be able
+    # to read afterwards what the probe saw, and half of what it says is on stderr.
     $output = & $Linklet probe --agent $Agent 2>&1
     $code = $LASTEXITCODE
-    if ($output) {
-        Write-Log ('probe {0} -> {1}: {2}' -f $code, $Agent, ($output -join ' '))
-    }
+    $script:ProbeText = if ($output) { ($output -join ' ').Trim() } else { '' }
     return $code
 }
 
@@ -197,8 +230,32 @@ Write-Log ('watching {0}, probing every {1}s' -f $agent, $PROBE_EVERY_SECONDS)
 $backoff = $MIN_BACKOFF_SECONDS
 $child = $null
 
+# The outcome written last, and when. Together they are the whole of "is this cycle news", which
+# is why they live here and not inside Get-ProbeCode: that function can see one cycle, and news is
+# a comparison with the cycle before it.
+$lastOutcome = $null
+$lastOutcomeAt = Get-Date
+
 while ($true) {
     $code = Get-ProbeCode -Agent $agent -Linklet $linklet
+    $now = Get-Date
+
+    if ($code -ne $lastOutcome) {
+        # A different answer from last time: the agent died, came back, wedged, or was replaced.
+        # This is the line the log exists for, written at once however recent the previous one was.
+        Write-Log ('probe {0} -> {1}: {2}' -f $code, $agent, $script:ProbeText)
+        $lastOutcome = $code
+        $lastOutcomeAt = $now
+    }
+    elseif (($now - $lastOutcomeAt).TotalSeconds -ge $REMINDER_SECONDS) {
+        # The same answer, standing long enough to be worth saying again. Without this the log
+        # could not tell a supervisor that has watched a healthy agent for a week from one that
+        # died on Tuesday -- and with the old every-probe rule it could not tell much else either,
+        # because these lines were 99.85% of it.
+        Write-Log ('probe {0} -> {1}: {2} (unchanged for {3} minutes)' -f `
+            $code, $agent, $script:ProbeText, [int] (($now - $lastOutcomeAt).TotalMinutes))
+        $lastOutcomeAt = $now
+    }
 
     switch ($code) {
         $ANSWERED {

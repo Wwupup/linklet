@@ -223,9 +223,43 @@ nothing watches *it*. If the supervisor dies, the agent it started keeps running
 restarts the supervisor. That is one level less bad than the gap M10 opened with -- a dead
 agent no longer goes unnoticed -- and it is named here rather than implied.
 
+### What the supervisor writes down, and what it stopped writing down
+
+**A healthy probe is not an event, and the log now treats it that way.** The first version
+wrote a line on every probe, and a probe runs every five seconds, so an agent that was working
+perfectly produced the same sentence forever -- on the console of whoever was watching that
+machine, and in its log.
+
+The measurement, from this project's own bench after four days of running:
+
+| log | size | lines | the healthy-probe line | everything else |
+|---|---|---|---|---|
+| `C:\linklet\supervisor.log` | 1.6 MB | 18,815 | 18,786 (**99.85%**) | 29 |
+| `C:\linklet\agent.log` | 907 KB | 37,781 | 37,596 `identity` (**99.5%**) | 185, which is all the work |
+
+It was worse than noise in the agent's log, which is the one that matters. That log's design is
+the **pair** -- `-> #000012 identity` and `<- #000012 identity ok 0 ms` -- so that a request
+which never finishes is findable by its missing second line. Four days of real work were 0.5%
+of the evidence, and the request that had wedged would have had to be found among eighteen
+thousand lines of the agent reporting that it was fine.
+
+**So a cycle is now written when it is news**: a different outcome from the one last written,
+or the same outcome standing for longer than five minutes. Every death, recovery, kill and
+start still appears, in order, with its time; the machine saying "still fine" five thousand
+times does not. The five-minute reminder is not zero on purpose -- *the supervisor died on
+Tuesday* and *nothing has gone wrong for a week* have to be different things to someone
+reading the log afterwards, and the only evidence separating them is a line that says the
+watch is still running.
+
+The agent's half of that table is **unchanged and deliberately so**: `identity` is a request, the
+agent records requests, and `crates/linklet-agent/tests/agent_server.rs` pins that a request
+which asks for nothing and succeeds is still two lines. What the supervisor controls is how
+often it asks.
+
 **Both recoveries were verified on the real bench** (`192.168.100.2`, agent on 8790, the
 supervisor started by `schtasks`). The supervisor's own log is the evidence, and its times are
-the machine's:
+the machine's. These excerpts are all *transitions*, which is why the every-probe version of
+the script produced them too -- the difference is in the lines between them:
 
 *Death.* The agent was killed outright from this side with the supervisor untouched:
 

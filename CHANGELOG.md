@@ -35,6 +35,17 @@ to answer one question: **what can I do now that I could not do before?**
   happened to hold -- a parameter silently losing to an ambient variable, which is the
   shape of failure this tool exists to refuse.
 
+### Fixed
+
+- **The supervisor wrote a line every five seconds for as long as the machine was up**, on the
+  console of whoever was watching the target and in its own log. Measured on this project's
+  bench after four days: **18,786 of the 18,815 lines were one sentence** saying the agent was
+  fine, and the same probe had put 37,596 `identity` lines into the agent's own 37,781 -- so
+  the request log whose whole design is that a *missing* second line names a wedged request had
+  0.5% of its content left for the work. A cycle is now written when it changes, or when it has
+  stood for five minutes. Nothing is hidden: every death, recovery, kill and start is still
+  there. `docs/smoke.md` has the table and the reasoning.
+
 What a release looks like, and what a version number means here, is in
 `docs/VERSIONING.md`.
 
