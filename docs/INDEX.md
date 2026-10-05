@@ -15,6 +15,7 @@ the change that made it wrong.
 | How does the wire format work? | `docs/framing.md` |
 | What does a version number mean, and what is a release? | `docs/VERSIONING.md` |
 | Why did this command fail in a way that looks like a bug? | `docs/machine.md` |
+| What runs on GitHub, and what can it not claim? | `docs/VERIFYING.md` |
 | How does a file transfer work? | `docs/transfer.md` |
 | What do I build next? | `docs/ROADMAP.md` |
 | How do I do a task? | `docs/LEARNING.md` |
@@ -75,6 +76,7 @@ message, or nothing.
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |
 | `docs/retrospective.md` | decision | the failures, ranked, and what the gates could not catch |
 | `docs/smoke.md` | rule | the real-machine layer: what it claims, and what it needs |
+| `docs/VERIFYING.md` | current | the two workflows: what runs on GitHub, and what no workflow can claim |
 | `docs/machine.md` | current | what this machine does to commands, and what it cost to find out |
 
 ## The experiments
@@ -162,6 +164,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/tests/ci_workflow.rs` | the CI workflow calls the one gate script, on both platforms, instead of restating it |
 | `crates/linklet-core/tests/ascii_only.rs` | rule 7, checked instead of remembered |
 | `tools/verify.ps1` | the one gate script: fmt, clippy, test, rustdoc, actionlint, inventory |
+| `tools/make_release.sh` | the one release script: both platforms into one archive, the digest, the notes |
 | `integrations/README.md` | the two pieces an agent installs: the server entry per client, and the token |
 | `integrations/dsh/mcp-entry.yml` | the DSH server entry, with the reason for each of its four fields |
 | `integrations/skills/linklet/SKILL.md` | the procedure: the order the calls go in, and the rules that bite when ignored |

@@ -22,6 +22,7 @@ you are about to change a rule, not before.
 | `docs/smoke.md` | before claiming anything works on a real machine |
 | `docs/VERSIONING.md` | before changing the wire, or cutting a release |
 | `docs/machine.md` | when a command fails in a way that looks like the code is wrong |
+| `docs/VERIFYING.md` | before changing a workflow, or when a run does something you did not expect |
 | `docs/INDEX.md` | the map of this project, for keeping it current |
 
 ## 1. Dependency direction

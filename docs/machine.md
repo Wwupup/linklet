@@ -96,3 +96,16 @@ conclusion before it was found.
   fallback is the one M11 used, and it is what the Linux leg was checked with: **the four commands
   run directly in WSL, in the same order**, which is every gate the script runs there except
   `actionlint`.
+- **`Compress-Archive` writes no Unix mode, so it cannot build this project's release.** Measured
+  on both sides of the same archive: an entry written by `Compress-Archive` comes out of `unzip`
+  at mode **600** -- not executable, and not readable by anyone else -- where the same file written
+  by Info-ZIP `zip` (3.0, the version on the Ubuntu runner image) comes back **755**, with plain
+  files at 644. That is why `release.yml` assembles the archive on Linux, and why
+  `tools/make_release.sh` extracts what it wrote and checks the bit instead of trusting the
+  staging. It is also the reason this was found rather than shipped: the first archive holding a
+  Linux binary would have been made by the Windows archiver.
+- **A checkout here has no executable bit on a shell script**, because `git` on Windows does not
+  record one -- `git ls-files --eol` reports the mode and `tools/make_release.sh` is mode 100644
+  here and 100755 on a Linux clone. CI therefore calls it as `bash tools/make_release.sh`, not
+  `./tools/make_release.sh`: calling it by name works on the runner and fails on the machine the
+  file was written on.
