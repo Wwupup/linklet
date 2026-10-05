@@ -817,16 +817,28 @@ characters has the bytes and the label.
 
 ### What it does not do, and what this does not claim
 
-- **The Linux path policy for transfers is sound but unspecified.** `Destination::resolve`
-  applies the Windows rules unconditionally, and three of them are decided by `std` questions
-  that are platform-dependent -- whether a path is absolute, and what a separator is. So on
-  Linux `..\..\etc\hosts` is an ordinary filename rather than a climb out of the root: **it is
-  not refused, and it cannot escape either**, which is verified rather than assumed
-  (`crates/linklet-core/tests/transfer_paths.rs` has the test). That is a weaker guarantee than
-  Windows gives -- a caller is not told its path was odd -- and it should not be relied on by
-  accident. The fix is a POSIX path policy beside the Windows one, and it was deliberately not
-  rushed: T1 is described in `docs/transfer.md` as more severe than anything in the framing
-  list, *"because a framing bug is a refusal and this is a write"*.
+- **The POSIX path policy is done, and it was a live escape rather than a tidiness problem.**
+  `Destination::resolve` applied the Windows rules unconditionally, and one of them was not
+  merely over-strict: the comparison that decides "inside the root" was **case-insensitive**, so
+  on Linux it accepted `/LINKLET/build.exe` for the root `/linklet` -- a different directory, and
+  therefore a write outside the root reached by nothing more than a capital letter. It was found
+  by asking what each Windows rule does on the other platform, which is the question this
+  milestone exists to make routine.
+
+  The fix is that the rules are a **value** (`linklet_core::transfer::Rules`) rather than a `cfg`
+  inside the checks, so both sets are exercised on both platforms: the Windows rules are a
+  property of Windows paths and the POSIX rules of POSIX paths, and only the *default*
+  (`Rules::here()`) is a fact about the machine. Verified on real agents in both directions --
+  the capital-letter write refused with the other directory untouched, and a Windows agent still
+  refusing a stream, a device, and a trailing dot.
+
+  **Where the boundary is, since it is not the whole of path handling.** The rules decide which
+  checks run; how a string splits into components, and what `join` does with a relative path, is
+  `std::path`'s reading and is the platform's. On a Linux build `a\b` is one component whichever
+  rules are named, so three Windows checks that inspect components can only be exercised where
+  that parsing exists. **In production it never bites** -- an agent applies its own platform's
+  rules, so its parsing and its rules agree -- and `docs/transfer.md` T1 records it, because it is
+  the seam the bug lived in: half of that decision was this project's and half was `std`'s.
 - **No Linux CI.** `.github/workflows/verify.yml` runs Windows. An `ubuntu-latest` job would
   now be green, which is the argument for adding it -- and it is a decision rather than a free
   addition, because this suite has only ever been run on Linux by hand, from a checkout.
@@ -887,12 +899,12 @@ accident. None of these is planned:
   sibling project needed six states, output files, TTLs, cancellation and orphan adoption
   for it, and `spawn` plus a log file is the honest smaller step.
 - a configuration file (flags until there is a proven need for persistence)
-- **a cross-platform agent, parked, and now done apart from one thing.** It is not refused on
-  principle the way the rest of this list is. `ps`, `kill`, `spawn`, `testbed` and `discover`
-  landed in M11, so the deploy loop, the testbed checks and the scan all run on Linux and the
-  same 46 suites pass on both platforms. What remains is the POSIX path policy transfers need
-  before the two platforms can be said to be equally specified, and the fact that a non-UTF-8
-  file on Linux is read by a total rule rather than by the machine's own code page.
+- **a cross-platform agent, parked, and the interesting part is done.** It is not refused on
+  principle the way the rest of this list is. `ps`, `kill`, `spawn`, `testbed`, `discover` and
+  the POSIX path policy landed in M11, so the deploy loop, the testbed checks, the scan and the
+  transfer rules all work on Linux, and the same 46 suites pass on both platforms. What remains
+  is that a non-UTF-8 file on Linux is read by a total rule rather than by the machine's own code
+  page, and that no CI job runs the suite on Linux.
 - a daemon or service **on the host** -- still refused; the host is a client. The *target*
   side is a different question and is now M10: the agent died with its console on the first
   real target and was not brought back.

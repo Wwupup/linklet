@@ -165,6 +165,35 @@ it.** *Stopped by validating the path against a configured root*: refuse any
 component equal to `..`, refuse an absolute path outside the root, refuse a root
 that is not itself absolute. The check is on the resolved path, not the string.
 
+**And the rules are per filesystem, which this paragraph did not say and a live hole
+proved it had to.** A path rule is a fact about a filesystem, and the two this tool runs
+on disagree about what a path even is:
+
+| | rule | why |
+|---|---|---|
+| **both** | empty, a NUL byte, a `..` component, an absolute path outside the root | these are about where the write lands, and both filesystems answer the same way |
+| **Windows** | a colon, a leading `\\`, a trailing dot or space, a reserved device name | each is something the Windows filesystem resolves to a *different file* than the name suggests |
+| **POSIX** | a backslash, and case-sensitive comparison | the converse: a backslash is not a separator there, and two names differing in case are two files |
+
+**The case row was a real escape, and it was found by asking the question this table is
+about.** The comparison that decides "inside the root" was case-insensitive everywhere --
+correct on Windows, and on Linux it accepted `/LINKLET/build.exe` for the root `/linklet`,
+which is *a different directory*. That is T1 itself: a write outside the root, reached by
+nothing more than a capital letter, live on every Linux agent. It is fixed, and the shape of
+the fix is what the table says: the rules are a value, both sets are tested on both
+platforms, and `crates/linklet-core/tests/transfer_paths.rs` runs every rule of both.
+
+**Where the asked-of-the-filesystem part stops, stated rather than implied.** The rules
+decide which *checks* run; **how a string splits into components, and what `join` does with a
+relative path, is `std::path`'s reading and therefore the platform's.** On a Linux build
+`a\b` is one component whatever rules are named, so three of the Windows checks (a
+drive-relative prefix, a trailing dot on a component, a reserved name in a subdirectory) can
+only be exercised where that parsing exists. **In production this never bites**: an agent
+applies the rules of the machine it is running on, so its parsing and its rules belong to the
+same platform. It is written down because it is the seam the bug lived in -- half the decision
+was this module's and half was `std`'s, and the half that was `std`'s was the half nobody
+questioned.
+
 **T2. The destination is a symlink pointing elsewhere.** Writing to a path that is a
 link writes somewhere the operator did not intend, and the rename would replace the
 link rather than follow it. *Stopped by refusing a destination that exists and is

@@ -75,8 +75,35 @@ to answer one question: **what can I do now that I could not do before?**
   characters are not recovered.** A GBK log read this way is legible in its ASCII parts and
   mojibake in the rest.
 
+### Added
+
+- **`linklet_core::transfer::Rules`**, which is how the path fix below is possible: which rules
+  apply is now a *value* rather than a `cfg` inside the checks, so both rule sets are exercised on
+  both platforms and only the default (`Rules::here()`) is a fact about the machine. The rules
+  that read whole strings are tested everywhere; the three that inspect path *components* can only
+  be asked where that platform's parsing exists, which `docs/transfer.md` T1 records as the
+  boundary it is -- half of that decision was this module's and half was `std`'s.
+
 ### Fixed
 
+- **A transfer could write outside its root on Linux, reached by a capital letter.**
+  `Destination::resolve` compared the requested path against the root **case-insensitively**,
+  which is what Windows needs and what a POSIX filesystem makes false: on Linux `/LINKLET/x` is a
+  different directory from `/linklet/x`, so an absolute path was accepted as "inside the root" and
+  handed back to be written. That is `docs/transfer.md` T1 -- the most severe item in the document
+  -- and it was live on every Linux agent. Found by asking what each Windows-only rule does on the
+  other platform, which is the question this release made routine.
+- **A path that names a different file on Windows is now refused only there**, and the rules no
+  longer pretend otherwise. The Windows checks -- a colon, a leading `\\`, a trailing dot or
+  space, a reserved device name -- are facts about *that* filesystem, so they are applied to it;
+  `NUL`, `a:stream` and `build.exe.` are ordinary names on Linux and are accepted there. That
+  reversed two over-refusals and, more importantly, is what made the case rule above fixable.
+- **A backslash is refused on a POSIX target.** Nothing escapes -- a backslash is an ordinary
+  character there, so `..\..\etc\hosts` names one file inside the root -- and it is refused
+  because the same string means two different paths on the two machines: an escape on Windows and
+  a strange filename here. Accepting it wrote a file whose name is a path fragment and gave the
+  caller no way to tell that its path had been read as something else. `/` is the separator on
+  both platforms, so there is always a portable spelling.
 - **A kill refused to act on a machine it could not see.** A kill needs the process list twice
   -- to find the process a name refers to, and to check the request against the pids that must
   not be stopped -- and it used to be handed an empty one when the machine could not be read.

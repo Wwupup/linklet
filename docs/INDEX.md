@@ -111,6 +111,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/outcome.rs` | the output format and the exit codes: the contract |
 | `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
+| `crates/linklet-core/src/transfer.rs` | T1: whether a path may be written, and the two filesystems' rules for deciding -- including the case rule that was a live escape on Linux |
 | `crates/linklet-core/src/auth.rs` | the token, where it may come from, and the constant-time comparison that is the point of it |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |

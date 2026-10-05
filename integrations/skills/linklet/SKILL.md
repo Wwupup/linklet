@@ -91,6 +91,13 @@ tool names a machine, and there is no tool that finds one (see below).
 - **Every path the agent resolves goes through its transfer root** -- `push`'s `to`,
   `pull`'s `from`, and `spawn`'s `output` included. An absolute path or a `..` is
   refused by name rather than resolved, and the refusal names the argument.
+- **Use `/` as the separator in a transfer path, and expect the target's own rules for
+  everything else.** `/` means the same on both platforms; a backslash is a separator on
+  Windows and an ordinary character on Linux, so on a Linux target it is refused rather than
+  written as part of a filename. Names Windows cannot hold are ordinary on Linux and accepted
+  there (`NUL`, `a:stream`, a trailing dot); the ones Windows would resolve to a *different*
+  file -- a stream, a device, a name whose trailing dot it strips -- are refused there. The
+  refusal says which rule it was, so a wrong path is one edit rather than a guess.
 - **`kill` refuses to stop the agent itself**, and the refusal comes from the target
   rather than being filtered here: a request that named it is a request that must be
   decided again, not a request that silently succeeded on everything else.

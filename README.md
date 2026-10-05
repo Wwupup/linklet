@@ -54,6 +54,15 @@ A transfer goes to the directory the agent was started in, or the one it was giv
 receiving side computed, so a caller can check it against the file it sent or the file
 it now has.
 
+**A path that would leave that directory is refused by name, and what counts as leaving it
+is a fact about the target's filesystem.** Use `/` as the separator: it is the one that means
+the same on both platforms, where a backslash is a separator on Windows and an ordinary
+character elsewhere -- so on a Linux target a backslash is refused rather than quietly
+written as part of a filename. Names Windows cannot hold are ordinary on Linux (`NUL`,
+`a:stream`, a trailing dot) and are accepted there; the ones Windows would resolve to a
+*different file* -- a stream, a device, a name whose trailing dot it strips -- are refused
+there. `docs/transfer.md` T1 has the table and the reason each rule exists.
+
 `ps` prints one line per process, `pid name`, then a summary. **The summary is the
 point**: `0 of 214 match, filter name=app.exe` cannot be read as a clean machine, and an
 agent that treats an empty list as one will deploy over a running binary. For the same
@@ -285,8 +294,7 @@ accident. This tool:
   it is gone). **The one real difference is the quality of one answer**: a file that is not
   UTF-8 is read on Windows with the machine's code page, which recovers the characters, and
   elsewhere with ISO-8859-1, which is total and lossless but does not -- so the mojibake there
-  is labelled rather than decoded. `docs/ROADMAP.md` M11 says why
-- does not guess: when it cannot determine something, it returns `unknown` with
+  is labelled rather than decoded. `docs/ROADMAP.md` M11 says why- does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
 - **has no service on the target, and no supervisor either.** An agent that dies stays
   dead, and one that has wedged is not noticed, until somebody asks: `linklet probe`

@@ -17,22 +17,29 @@
 //! `linklet-adapters`' business and are tested against a real filesystem.
 
 use linklet_core::transfer::{
-    Destination, MAX_TRANSFER_BYTES, Manifest, ManifestError, PathError, Receiving, Sending,
+    Destination, MAX_TRANSFER_BYTES, Manifest, ManifestError, PathError, Receiving, Rules, Sending,
     TransferError, verify_digest,
 };
 
 /// A root these tests can use, absolute on whichever platform they run on.
 ///
-/// The rules below are mostly Windows path rules and they are applied unconditionally by
-/// `Destination::resolve` -- refusing a colon, a leading `\\`, a reserved device name and a
-/// trailing dot is over-strict on Linux and harmless there, where those are ordinary
-/// characters. **What is not inert is the root itself**: on Linux `C:\linklet` is a *relative*
-/// path, so every test in this file failed at the fixture rather than at the rule, which is how
-/// a suite can look like it covers a platform it has never run on.
+/// **What is checked is now a parameter** -- see [`Rules`] -- so this file exercises *both* rule
+/// sets on whichever platform it runs on, and only the default is a property of the machine.
+/// That is the fix for the failure this fixture used to hide: the Windows rules were applied
+/// unconditionally, the tests for them only ever ran on Windows, and the Windows
+/// case-insensitive comparison was therefore never asked what it does on Linux -- where it
+/// accepted an absolute path a capital letter outside the root.
 #[cfg(windows)]
 const ROOT: &str = r"C:\linklet";
 #[cfg(not(windows))]
 const ROOT: &str = "/linklet";
+
+/// The same root spelled for the Windows rules, used by every test that names one of them.
+///
+/// A literal rather than `ROOT`, because the Windows rule set has to be exercised *with a
+/// Windows root*: `C:\linklet` is not an absolute path on Linux, so the Windows tests built on
+/// the platform's own root would fail at the fixture instead of at the rule.
+const WINDOWS_ROOT: &str = r"C:\linklet";
 
 /// The platform's own separator, for building a path that is more than one component.
 ///
@@ -80,11 +87,22 @@ fn sibling_of_the_root() -> String {
         .into_owned()
 }
 
+/// A destination under the rules of the machine this is running on.
 fn destination() -> Destination {
     Destination::new(ROOT).expect("an absolute root")
 }
 
-/// Asserts that a request is refused, and returns the reason for a closer look.
+/// A destination under the Windows rules, on any machine.
+fn windows() -> Destination {
+    Destination::with_rules(WINDOWS_ROOT, Rules::Windows).expect("an absolute Windows root")
+}
+
+/// A destination under the POSIX rules, on any machine.
+fn posix() -> Destination {
+    Destination::with_rules("/linklet", Rules::Posix).expect("an absolute POSIX root")
+}
+
+/// Asserts that a request is refused by the platform's own rules.
 fn refused(requested: &str) -> PathError {
     destination()
         .resolve(requested)
@@ -127,13 +145,190 @@ fn an_absolute_path_inside_the_root_is_allowed() {
 }
 
 #[test]
-fn the_root_itself_is_case_insensitive() {
-    // Windows paths are, so a comparison that is not would refuse a path the
-    // operating system would have accepted -- and, worse, the mirror image of that
-    // mistake is accepting `C:\linkletevil` for the root `C:\linklet`.
-    destination()
+fn the_root_under_the_windows_rules_is_case_insensitive() {
+    // Windows paths are, so a comparison that is not would refuse a path the operating system
+    // would have accepted -- and, worse, the mirror image of that mistake is accepting
+    // `C:\linkletevil` for the root `C:\linklet`.
+    //
+    // Under the *named* rules rather than the platform's, so that this claim about Windows is
+    // tested on Linux too. The pair of tests below is the whole point of `Rules`: the same
+    // comparison has to ignore case on one filesystem and not on the other, and only one of
+    // those two answers was ever checked.
+    windows()
         .resolve(r"c:\LINKLET\build.exe")
         .expect("the same directory in another case");
+}
+
+// --- the case rule, which is not the same rule on the two platforms ----------
+
+#[test]
+fn the_posix_root_is_case_sensitive_because_the_filesystem_is() {
+    // **A live escape on Linux, found by asking what the case-insensitive comparison does
+    // there.** `/root` and `/ROOT` are two directories on a POSIX filesystem, so a comparison
+    // that treats them as one accepts an absolute path that is *outside* the configured root
+    // and hands it back to be written. The Windows rule is correct on Windows and is a hole
+    // anywhere else; the difference is the filesystem, not the taste.
+    let error = posix()
+        .resolve("/LINKLET/build.exe")
+        .expect_err("a different directory on a case-sensitive filesystem");
+
+    assert!(
+        matches!(error, PathError::OutsideRoot { .. }),
+        "expected an outside-root refusal, got {error:?}"
+    );
+}
+
+#[test]
+fn the_case_rule_is_about_the_filesystem_and_not_about_ascii() {
+    // The same property one character further out, so that a fix which lowercased both sides
+    // rather than comparing exactly cannot pass: on a POSIX filesystem the bytes have to match.
+    for requested in [
+        "/LINKLET/build.exe",
+        "/Linklet/build.exe",
+        "/linkleT/build.exe",
+    ] {
+        assert!(
+            posix().resolve(requested).is_err(),
+            "{requested:?} is a different directory, and was accepted"
+        );
+    }
+
+    // And the root's own spelling still works, which is the half that must not break.
+    posix()
+        .resolve("/linklet/build.exe")
+        .expect("the root as it was configured");
+}
+
+#[test]
+fn a_sibling_whose_name_only_differs_in_case_is_not_inside_the_root() {
+    // The `C:\linkletevil` mistake, in the case dimension: the string-prefix trap has a
+    // case-shaped twin, and it is the one the comparison actually hits. Decidable anywhere,
+    // because a `/`-separated path splits the same way on either platform.
+    assert!(
+        posix().resolve("/linkletEvil/build.exe").is_err(),
+        "a sibling directory is not inside the root"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_windows_sibling_of_the_root_is_not_inside_it() {
+    // The other dimension of the same mistake -- a sibling that differs by more than case --
+    // **gated for the parsing**: on a Linux build `C:\linkletevil\build.exe` is one component
+    // containing a colon, so there is no sibling to compare against. The case dimension above
+    // carries the cross-platform half of the claim.
+    assert!(
+        windows().resolve(r"C:\linkletevil\build.exe").is_err(),
+        "a sibling directory is not inside the root"
+    );
+}
+
+// --- what POSIX allows that Windows does not --------------------------------
+
+#[test]
+fn names_that_are_ordinary_on_posix_are_not_refused() {
+    // **The Windows rules are facts about the Windows filesystem, and no others.** A colon is
+    // an alternate data stream there and an ordinary character here; `NUL` is a device there and
+    // a file here; a trailing dot is stripped there and preserved here. Refusing them on Linux
+    // would not protect anything -- it would refuse names this filesystem handles correctly --
+    // and a rule kept past the point where its reason applies is the failure this project has
+    // already written down twice.
+    for requested in ["build.exe:stream", "NUL", "aux.txt", "build.exe.", "a b."] {
+        posix().resolve(requested).unwrap_or_else(|error| {
+            panic!("{requested:?} is an ordinary POSIX name, got {error:?}")
+        });
+        // And the other half of the same statement: the Windows rules *do* refuse each of these.
+        // Without this the test would pass for a rule set that refuses nothing at all.
+        assert!(
+            windows().resolve(requested).is_err(),
+            "{requested:?} is refused under the Windows rules"
+        );
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_drive_relative_name_is_a_colon_and_a_filename_on_posix() {
+    // `C:build.exe` is drive-relative on Windows -- the same file only if the process happened
+    // to start in the same directory on drive C -- and a filename here, because a colon is an
+    // ordinary character. What matters is the same thing that matters for every other name: it
+    // lands under the root.
+    //
+    // **`cfg(not(windows))` on a test about the POSIX rules, which needs explaining.**
+    // [`Rules`] governs the *checks*; which characters separate components is `std::path`'s
+    // reading and is the platform's. On a Windows build `C:build.exe` parses as a drive prefix
+    // and a name no matter which rules are named, so the question this test asks -- is a colon
+    // ordinary? -- cannot be asked there. The colon is still covered on every platform by
+    // `names_that_are_ordinary_on_posix_are_not_refused`, whose members parse the same way
+    // everywhere.
+    let resolved = posix()
+        .resolve("C:build.exe")
+        .expect("one filename, with a colon in it");
+
+    assert!(
+        resolved.starts_with(std::path::Path::new("/linklet")),
+        "it has to be inside the root: {}",
+        resolved.display()
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn a_backslash_is_refused_because_it_means_two_different_things() {
+    // **The one rule POSIX needs that Windows does not, and it is about the `..` that is not
+    // one.** A backslash is the Windows separator and an ordinary character here, so
+    // `..\..\etc\hosts` names a single file *inside* the root on this machine and an escape on
+    // the other. Accepting it writes a file whose name is a path fragment -- never what the
+    // caller meant -- and refusing it is the only answer that is the same on both platforms.
+    //
+    // It is **not** a security rule: nothing escapes. It is the rule against a plausible wrong
+    // answer, which is what this protocol spends most of its refusals on. `/` is the separator
+    // on both platforms, so there is always a portable spelling.
+    //
+    // **Gated, and inherently so.** The rule exists because the same string means two things on
+    // the two platforms, and on a Windows build there is only ever one reading: a backslash
+    // separates components there, so `..\..\etc\hosts` is a climb and is refused as one before
+    // this rule is reached. A test that demanded `Backslash` from a Windows build would be
+    // demanding that the platform parse a path the way the other one does.
+    let error = posix()
+        .resolve(r"..\..\etc\hosts")
+        .expect_err("a Windows-shaped path, under the POSIX rules");
+
+    assert!(
+        matches!(error, PathError::Backslash { .. }),
+        "expected a refusal about the separator, got {error:?}"
+    );
+    let text = error.to_string();
+    assert!(text.contains("backslash"), "{text}");
+    assert!(
+        text.contains("Windows"),
+        "the refusal should say why it is not a name here: {text}"
+    );
+}
+
+#[test]
+fn the_backslash_rule_does_not_reach_a_path_that_is_otherwise_refused() {
+    // The order of the rules is visible in which one names the problem. A path that climbs out
+    // of the root with this platform's own separator must be reported as the escape it is, not
+    // as a separator problem, because that would send the reader to the wrong fact about their
+    // path.
+    let error = posix()
+        .resolve("../../etc/hosts")
+        .expect_err("a real parent component");
+
+    assert!(
+        matches!(error, PathError::Parent { .. }),
+        "a real parent component is a real escape, got {error:?}"
+    );
+
+    // And a path that is both -- a real climb and a backslash -- is still the climb.
+    let error = posix()
+        .resolve(r"../a\b")
+        .expect_err("a real parent component as well");
+    assert!(
+        matches!(error, PathError::Parent { .. }),
+        "the escape is the more serious fact, got {error:?}"
+    );
 }
 
 // --- T1: the obvious escape --------------------------------------------------
@@ -191,7 +386,33 @@ fn a_root_that_is_a_prefix_of_another_directory_is_not_enough() {
     );
 }
 
-// --- T1: the Windows rules a `..` check does not cover ------------------------
+// --- the Windows rules, exercised on every platform ---------------------------
+//
+// **These run everywhere now.** They used to be either unconditionally applied (so on Linux they
+// tested the wiring rather than the rule) or gated behind `#[cfg(windows)]` (so on Linux they ran
+// nowhere). Naming the rule set makes each of them a statement about the Windows *rules*, tested
+// on whichever machine the suite happens to be running on -- which is what would have caught the
+// case-insensitive comparison being wrong on the other one.
+//
+// **Where the boundary is.** `Rules` decides which *checks* run. How a string splits into
+// components, and what `join` does with a relative path, is `std::path`'s business and is
+// therefore the platform's: `Path::new(r"a\b").components()` yields two parts on a Windows build
+// and one `Normal("a\\b")` on a Linux one, whichever rules are named. So the rules that read
+// whole strings are asked on both platforms here, and the three that inspect *components* carry a
+// `cfg` -- see the comment above each.
+//
+// That boundary is worth being precise about, because it is the seam the original bug lived in:
+// the module's decisions were a mix of its own checks and `std`'s platform-dependent reading, and
+// the half that was `std`'s was the half nobody thought to question. **In production it never
+// bites** -- an agent applies `Rules::here()`, so its parsing and its rules belong to the same
+// platform -- but it is why one of these tests is gated and the next is not.
+
+/// Asserts that the Windows rules refuse a request, and returns the reason.
+fn refused_by_windows(requested: &str) -> PathError {
+    windows()
+        .resolve(requested)
+        .expect_err(&format!("{requested:?} should have been refused"))
+}
 
 #[test]
 fn an_alternate_data_stream_is_refused() {
@@ -199,7 +420,7 @@ fn an_alternate_data_stream_is_refused() {
     // build.exe: it holds bytes that no directory listing shows and no ordinary
     // tool will read, which makes it a way to write something the operator cannot
     // see and cannot easily remove.
-    let error = refused(r"build.exe:evil");
+    let error = refused_by_windows(r"build.exe:evil");
     assert!(
         matches!(error, PathError::Colon { .. }),
         "expected a colon refusal, got {error:?}"
@@ -208,7 +429,7 @@ fn an_alternate_data_stream_is_refused() {
 
 #[test]
 fn a_stream_on_an_absolute_path_is_refused_too() {
-    refused(r"C:\linklet\build.exe:evil");
+    refused_by_windows(r"C:\linklet\build.exe:evil");
 }
 
 #[cfg(windows)]
@@ -219,9 +440,11 @@ fn a_drive_relative_path_is_refused() {
     // how the process was started, which is exactly the kind of thing a root is
     // supposed to remove.
     //
-    // **Windows only**: on Linux a colon is an ordinary character in a filename, so this is a
-    // legal name and refusing it would be a rule with no reason behind it. See M11.
-    let error = refused("C:build.exe");
+    // **Gated, and it is the parsing and not the rule.** The check asks whether the first
+    // component is a drive prefix, and on a Linux build `C:build.exe` is one `Normal` component
+    // with a colon in it -- a character that is ordinary there. A Windows build is the only place
+    // this string *is* drive-relative.
+    let error = refused_by_windows("C:build.exe");
     assert!(
         matches!(error, PathError::Colon { .. }),
         "expected a colon refusal, got {error:?}"
@@ -233,7 +456,7 @@ fn a_network_share_is_refused() {
     // A UNC path writes to another machine entirely, outside any root this process
     // configured.
     for requested in [r"\\server\share\build.exe", r"\\?\C:\linklet\build.exe"] {
-        let error = refused(requested);
+        let error = refused_by_windows(requested);
         assert!(
             matches!(error, PathError::Network { .. }),
             "{requested:?} gave {error:?}"
@@ -248,14 +471,12 @@ fn a_component_ending_in_a_dot_or_a_space_is_refused() {
     // file. A check that compared the names literally would pass a name that
     // becomes a different one on disk -- which is how a name-based rule is evaded.
     //
-    // **Windows only, and the rule is inert rather than absent on Linux** where a trailing dot
-    // or space is an ordinary character in a filename. `Destination::resolve` refuses them
-    // there too, because the checks are not platform-conditional -- so this is over-strict on
-    // Linux rather than broken, and `docs/ROADMAP.md` M11 records the POSIX policy that would
-    // replace it. What is *not* acceptable is the reverse: a test that asserted the refusal on
-    // a platform where the name is legal would be asserting a rule nobody wrote.
+    // **Gated for the parsing**: the check is per component, and `a.\b` is two components only
+    // where a backslash separates. The single-component forms (`build.exe.`, `build.exe `) are
+    // decided by the same rule anywhere, and `names_that_are_ordinary_on_posix_are_not_refused`
+    // asserts the other side of it on both platforms.
     for requested in [r"build.exe.", r"build.exe ", r"a.\b", r"a \b"] {
-        let error = refused(requested);
+        let error = refused_by_windows(requested);
         assert!(
             matches!(error, PathError::TrailingDotOrSpace { .. }),
             "{requested:?} gave {error:?}"
@@ -274,7 +495,7 @@ fn every_reserved_device_name_is_refused_with_and_without_an_extension() {
     ];
 
     for name in names {
-        let error = refused(name);
+        let error = refused_by_windows(name);
         assert!(
             matches!(error, PathError::Reserved { .. }),
             "{name:?} gave {error:?}"
@@ -285,44 +506,56 @@ fn every_reserved_device_name_is_refused_with_and_without_an_extension() {
 #[cfg(windows)]
 #[test]
 fn a_reserved_name_in_a_subdirectory_is_refused_too() {
-    // The check is per component, not on the whole path. Windows-only for the same reason as
-    // the two above: `NUL` is a device there and a file here.
-    refused(r"logs\NUL");
+    // The check is per component, not on the whole path. **Gated for the parsing**, like the two
+    // above: on a Linux build `logs\NUL` is one component whose stem is the whole string, so
+    // there is no subdirectory to be in. `NUL` on its own is refused on every platform, in
+    // `every_reserved_device_name_is_refused_with_and_without_an_extension`.
+    refused_by_windows(r"logs\NUL");
 }
 
 #[test]
 fn an_ordinary_name_that_merely_starts_like_a_device_is_allowed() {
     // `console.log` is a file. The rule is the *stem*, and a rule that matched on
-    // prefixes would refuse names people actually use.
-    destination()
-        .resolve("console.log")
-        .expect("an ordinary name");
-    destination().resolve("com10.txt").expect("not a device");
-    destination().resolve("nullify").expect("not a device");
+    // prefixes would refuse names people actually use. Under both rule sets: neither
+    // filesystem reserves these.
+    for rules in [windows(), posix()] {
+        for name in ["console.log", "com10.txt", "nullify"] {
+            rules
+                .resolve(name)
+                .unwrap_or_else(|error| panic!("{name:?} is an ordinary name, got {error:?}"));
+        }
+    }
 }
 
-// --- what Linux does with the Windows forms ----------------------------------
+// --- the Windows root, which has the same rules -------------------------------
 
-/// The Windows path forms are **not refused on Linux, and cannot escape either**, and this is
-/// the test that says so.
-///
-/// The rules above were written for a Windows filesystem and they are applied unconditionally
-/// -- but three of them are decided by `std` questions that are platform-dependent: whether a
-/// path is absolute, and what counts as a separator. On Linux `..\..\etc\hosts` is therefore a
-/// single name containing backslashes rather than a climb out of the root, and `C:\Windows\x`
-/// is a relative name rather than an absolute path.
-///
-/// **So the refusal does not happen, and the property that matters still does.** T1 is about
-/// writes leaving the directory the operator configured, and nothing here leaves it: every one
-/// of these resolves to a path *inside* the root, because a name that is not absolute and has
-/// no parent component can only be joined under it. That is a weaker guarantee than the
-/// Windows side gives -- a caller is not told its path was odd -- and it is not something to
-/// rely on by accident either, which is why `docs/ROADMAP.md` M11 records the POSIX policy that
-/// would make these refusals explicit rather than incidental.
-#[cfg(not(windows))]
 #[test]
-fn a_windows_path_form_cannot_leave_the_root_on_linux() {
-    let root = std::path::Path::new(ROOT);
+fn a_windows_root_is_refused_when_it_is_a_share_or_carries_a_stream() {
+    // The root's own validation, which is the same rules seen from the other side: a root the
+    // Windows filesystem would not resolve the way it looks is not a root.
+    for root in [r"\\server\share", r"C:\linklet:stream"] {
+        let error =
+            Destination::with_rules(root, Rules::Windows).expect_err("not a root this can use");
+        assert!(
+            matches!(error, PathError::BadRoot { .. } | PathError::Network { .. }),
+            "{root:?} gave {error:?}"
+        );
+    }
+}
+
+// --- the property that has to hold whatever the rules say --------------------
+
+/// Every Windows path form is refused under the POSIX rules, and **nothing ever resolves outside
+/// the root** whichever way the decision went.
+///
+/// This started life as the observation that these forms were *not* refused on Linux and could
+/// not escape either -- true, and not good enough: a caller was given no way to tell that its
+/// path had been read as one strange filename. The POSIX rules refuse them now, by name, and this
+/// keeps both halves honest: the refusals happen, and the invariant that made the old behaviour
+/// safe is still checked on the paths that are accepted.
+#[test]
+fn no_path_form_escapes_the_posix_root_and_the_windows_shapes_are_refused_by_name() {
+    let root = std::path::Path::new("/linklet");
 
     for requested in [
         r"..\..\Windows\System32\drivers\etc\hosts",
@@ -331,19 +564,50 @@ fn a_windows_path_form_cannot_leave_the_root_on_linux() {
         r"C:\Windows\System32\drivers\etc\hosts",
         r"\\server\share\build.exe",
         r"logs\NUL",
-        r"build.exe.",
+        // **Not `build.exe.`**, which was in this list and had to come out: it is an ordinary
+        // POSIX name -- the trailing dot is a Windows rule and Windows is not here -- so it is
+        // *correctly* accepted, and `names_that_are_ordinary_on_posix_are_not_refused` asserts
+        // that. What every member of this list has in common is a backslash, which is the one
+        // thing that means two different paths on the two platforms.
     ] {
-        match destination().resolve(requested) {
-            // Refused: the checks that do not depend on the platform caught it.
-            Err(_) => {}
-            // Not refused, and then it has to be inside the root -- which is the whole of T1.
-            Ok(resolved) => assert!(
-                resolved.starts_with(root),
-                "{requested:?} resolved to {}, which is outside {}",
-                resolved.display(),
-                root.display()
+        // **Refused, by a named rule, and never accepted.** Which rule depends on how the
+        // platform reads the string -- `..\hosts` is a climb on Windows and one filename on
+        // Linux -- so the reason is asserted by the tests above, in the shape each platform can
+        // produce, and what is asserted here is the invariant that holds either way.
+        match posix().resolve(requested) {
+            Err(PathError::Backslash { .. } | PathError::Parent { .. }) => {}
+            Err(other) => panic!("{requested:?} was refused as {other:?}, which is unexpected"),
+            Ok(resolved) => panic!(
+                "{requested:?} was accepted as {}, which is a file nobody meant to name",
+                resolved.display()
             ),
         }
+    }
+
+    // And the invariant itself, over the paths that *are* accepted: whatever the rules decide,
+    // a resolved path is inside the root. This is T1 in one assertion.
+    //
+    // `C:build.exe` is deliberately not in this list: on a Windows build it carries a drive
+    // prefix, and `join` *replaces* the base with a prefixed path rather than appending to it --
+    // so under the POSIX rules on Windows it resolves to itself and is legitimately outside a
+    // root it was never joined to. That is `std::path`'s reading rather than a rule, and it is
+    // the same boundary the three gated tests above sit on. On Linux the form is one filename
+    // and is covered by `a_drive_relative_name_is_a_colon_and_a_filename_on_posix`.
+    for requested in [
+        "build.exe",
+        "artifacts/latest/build.exe",
+        "/linklet/build.exe",
+        "./build.exe",
+    ] {
+        let resolved = posix()
+            .resolve(requested)
+            .unwrap_or_else(|error| panic!("{requested:?} should be accepted, got {error:?}"));
+        assert!(
+            resolved.starts_with(root),
+            "{requested:?} resolved to {}, which is outside {}",
+            resolved.display(),
+            root.display()
+        );
     }
 }
 
@@ -379,29 +643,68 @@ fn a_root_that_is_relative_is_refused_at_construction() {
 
 #[test]
 fn an_unusable_root_is_refused_at_construction() {
-    for root in [
-        "",
-        "   ",
-        r"\\server\share",
-        "C:\\linklet\\build.exe:stream",
-    ] {
+    // The platform-independent shapes, on any rules.
+    for root in ["", "   "] {
         assert!(
             Destination::new(root).is_err(),
             "{root:?} should not be a usable root"
         );
     }
+
+    // And the two Windows-only ones, under the rules that own them.
+    for root in [r"\\server\share", r"C:\linklet\build.exe:stream"] {
+        assert!(
+            Destination::with_rules(root, Rules::Windows).is_err(),
+            "{root:?} should not be a usable Windows root"
+        );
+    }
+}
+
+#[test]
+fn the_rules_of_this_machine_are_the_rules_of_its_filesystem() {
+    // The one place a platform is asked anything, and the only assertion in this file that is
+    // about the machine rather than about a rule. `Rules::here` decides which set
+    // `Destination::new` applies, and getting it backwards is the bug this whole arrangement
+    // exists to prevent -- so it is pinned rather than assumed.
+    let expected = if cfg!(windows) {
+        Rules::Windows
+    } else {
+        Rules::Posix
+    };
+
+    assert_eq!(Rules::here(), expected);
+    assert_eq!(
+        destination().rules(),
+        expected,
+        "a destination built without naming its rules takes the machine's own"
+    );
 }
 
 #[test]
 fn every_refusal_quotes_what_caused_it() {
     // A caller reading one of these is a person looking at a path that did not
     // work. "invalid path" would leave them comparing it against a manual.
+    //
+    // Each case names the rule set it belongs to, because the refusals are different refusals on
+    // the two platforms now -- and a test that asked the machine's own rules for all five would
+    // be asserting a different thing depending on where it ran. The one POSIX case that needs a
+    // POSIX *reading* of the string is the separator rule, which is why it is not in this list:
+    // see `a_backslash_is_refused_because_it_means_two_different_things`.
     let cases: [(PathError, &str); 5] = [
-        (refused(&escaping()), ".."),
-        (refused("nul"), "device"),
-        (refused(r"\\server\share"), "share"),
-        (refused("build.exe:evil"), "colon"),
-        (refused(""), "empty"),
+        (
+            posix().resolve("../../etc/hosts").expect_err("a climb"),
+            "..",
+        ),
+        (windows().resolve("nul").expect_err("a device"), "device"),
+        (
+            windows().resolve(r"\\server\share").expect_err("a share"),
+            "share",
+        ),
+        (
+            windows().resolve("build.exe:evil").expect_err("a stream"),
+            "colon",
+        ),
+        (destination().resolve("").expect_err("nothing"), "empty"),
     ];
 
     for (error, expected) in cases {

@@ -258,6 +258,14 @@ same way. What does not work there is a `grep` of a file that is not UTF-8: a Li
 no code page for those bytes, and `docs/ROADMAP.md` M11 says what that costs and what closing
 it would take.
 
+**A transfer path is judged by the target's own filesystem rules**, so one of the claims above
+is worth making in both dialects: a path that would leave the root must be refused *by name*,
+and the shape of the escape differs. On Windows `..\..\Windows\hosts` is a climb; on Linux the
+same string is refused as a Windows-shaped path, and `../../etc/hosts` is the climb. **A
+capital letter is the case worth trying on Linux**: `/LINKLET/x` for a root of `/linklet` is a
+different directory there, and accepting it was a real escape until this release.
+`docs/transfer.md` T1 has both rule sets.
+
 **The claims are made against a Linux target the same way** -- one line and one exit code
 each -- and the deploy loop is the one worth doing by hand, because it is the sequence a
 person actually performs: `ps` to see the old build, `spawn` the new one, `ps` again to
