@@ -217,6 +217,41 @@ The distinction between 1 and 3 is the one an agent needs: "the machines are dow
 and "the tool could not start" send it to different places, and collapsing them
 into one non-zero code loses exactly the information it came for.
 
+## Calling it from an agent
+
+`linklet mcp` speaks the Model Context Protocol on stdin and stdout, so an agent can
+call this tool directly. No port and no configuration to keep in step: the client
+starts the process and talks to it.
+
+```json
+{
+  "command": "C:\\linklet\\linklet.exe",
+  "args": ["mcp"],
+  "env": { "LINKLET_TOKEN_FILE": "C:\\linklet\\token.txt" }
+}
+```
+
+Those three fields are the whole installation, and which file they go in is the
+client's business -- `integrations/` carries a ready entry for the two clients this
+was set up with. **`command` names the executable and not a shell command**: an MCP
+client spawns it without a shell, which is one thing a native `.exe` does not need a
+wrapper for.
+
+Eleven tools, one per intent: `check`, `testbed`, `exec`, `ps`, `kill`, `spawn`,
+`grep`, `tail`, `ls`, `push` and `pull`. They are the operations the commands above
+perform, so a reader who knows one knows the other.
+
+**The token comes from the environment, or from the file that variable names, and
+never from a tool argument** -- an argument would put the secret in the
+conversation. `LINKLET_TOKEN_FILE` is the field to prefer here, because
+`LINKLET_TOKEN` in the same place writes the secret into a file that gets copied,
+shared and committed. `linklet probe --agent <host:port>` is the check to run before
+wiring a client up: it completes a handshake, so it answers whether the token and the
+agent agree.
+
+`docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
+and the two places a caller goes wrong.
+
 ## The problem
 
 Driving a remote machine during debugging means a long chain of small,

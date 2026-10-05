@@ -3,14 +3,57 @@
 `linklet mcp` speaks the Model Context Protocol on stdin and stdout, so an AI agent can call
 this tool directly. No configuration and no port: the client starts the process and talks to it.
 
-```json
-{ "command": "path/to/linklet", "args": ["mcp"] }
-```
-
 **What an agent reads is the descriptions and schemas in `crates/linklet-core/src/tool.rs`,
 not this file.** This is the maintainer's document: what is on the surface, why each tool is
 separate, and where a caller can go wrong. `crates/linklet-core/tests/tool_surface.rs` enforces
 the rules; this explains them.
+
+## Installing it
+
+Three fields, and they are the same in every client -- only the file they go in differs:
+
+```json
+{
+  "command": "C:\\linklet\\linklet.exe",
+  "args": ["mcp"],
+  "env": { "LINKLET_TOKEN_FILE": "C:\\linklet\\token.txt" }
+}
+```
+
+**`command` names the executable, not a shell command.** An MCP client spawns it without a
+shell, so a native `.exe` needs no wrapper -- which is the one thing here that a `.cmd` or a
+script cannot do. It is the release's `linklet.exe`; `linklet-agent.exe` is not a client and
+belongs on the machines being driven, where no release can put it for you.
+
+Which file the entry goes in is the client's business. `integrations/README.md` has it written
+out for the two clients this was set up with, together with the skill that carries **the order
+the calls go in**. That order is the half a tool description cannot hold -- see "What has been
+measured, and what has not" at the end of this file for the experiment that found the boundary.
+
+## The token, and where it may come from
+
+**The token is read from the environment, or from the file that variable names, and never from
+a tool argument** -- an argument would put the secret in the conversation, which is the one
+place it outlives the session. In a client configuration, prefer `LINKLET_TOKEN_FILE` over
+`LINKLET_TOKEN`: the second writes the secret into a file that gets copied, shared and
+committed, and the first writes a path.
+
+The file's first line is the secret, and a byte-order mark and the line ending are not part of
+it, so a file written by `Set-Content -Encoding utf8` holds exactly what was typed into it. **A
+secret is named once**: a token file and a token together are refused rather than ordered,
+because the two are two answers to one question and whichever lost would be the one the
+operator believed was in force.
+
+**A wrong token looks like a wrong token**, and a wrong *file* looks like it too: every tool
+that needs the secret answers "the token is missing or wrong", and the server's own stderr
+names the file it could not read or the two sources it was given. On the host that is reported
+rather than fatal, deliberately -- `check` and `testbed` need no secret, and a mistake in the
+token must not take away a capability that never used it.
+
+Run `linklet probe --agent <host:port>` before wiring a client up. It completes a handshake and
+reads a reply, so it answers whether the token and the agent agree (exit 0) rather than whether
+something is listening. `docs/smoke.md` says what the four codes mean and why the difference
+from `check` matters.
 
 ## The surface
 
