@@ -38,6 +38,29 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- **The agent's log recorded a never-ending liveness check.** `identity` is the one
+  request that asks for nothing, and it is what a monitor calls; writing it down turned
+  the record into a heartbeat. On this project's own bench, four days of a five-second
+  probe put **37,596 `identity` lines into a 37,781-line file** -- 99.5%, leaving 0.5%
+  for the work. The cost was not the disk: the log is read by finding a `->` line with no
+  `<-`, and that is not findable in a file that is mostly the agent saying it is fine.
+  A liveness check is no longer written down.
+- **The log is bounded, and it has a home.** It appends and never truncates, on purpose --
+  restarting an agent must not destroy the record of what it was asked before it died --
+  and it had no other limit, so a machine left serving for months filled its disk. It now
+  rolls over at a mebibyte and keeps three older files, **never between a request and its
+  answer**, because a pair split across two files reports a finished request as one that
+  never finished. It is also kept **without being asked for**: `logs/agent.log` beside the
+  executable, not the working directory, because a scheduled task starts its program with
+  the scheduler's directory and the default would have landed in `System32\logs` on
+  exactly the unattended machines this exists for. `--log` still chooses a path and
+  `--no-log` turns it off.
+
+### Added
+
+- **`linklet-agent --no-log`**, for an operator who wants no record written. It is the
+  opt-out the default above made necessary, and what it costs is stated where it is
+  offered: a request that never finishes then leaves no evidence behind.
 - **The supervisor wrote a line every five seconds for as long as the machine was up**, on the
   console of whoever was watching the target and in its own log. Measured on this project's
   bench after four days: **18,786 of the 18,815 lines were one sentence** saying the agent was

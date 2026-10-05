@@ -118,7 +118,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/listing.rs` | what is in a directory, and why an empty one is not one that is not there |
 | `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, and what it leaves out |
 | `crates/linklet-core/src/fanout.rs` | one operation across several machines: the order, the fates, and the panics that do not take the report with them |
-| `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, and the pair that names a request that never finished |
+| `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, the pair that names a request that never finished, and when the file rolls over |
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |

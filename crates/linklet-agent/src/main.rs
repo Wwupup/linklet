@@ -42,9 +42,10 @@ mod server;
 mod spawn;
 
 use std::net::TcpListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use linklet_core::auth::{Token, secret_in_file};
+use linklet_core::log::Rotation;
 use linklet_core::transfer::Destination;
 
 /// The port the agent listens on when it is not told.
@@ -53,11 +54,27 @@ use linklet_core::transfer::Destination;
 /// than two that were typed the same way once.
 pub const DEFAULT_PORT: u16 = 8787;
 
+/// Where the log goes when nobody says.
+///
+/// `logs/agent.log` beside the agent's own executable -- see the comment where it is
+/// used for why this is not the working directory, which is what `--root` defaults to.
+///
+/// Falls back to the working directory only if the executable's own path cannot be read,
+/// which is the one case where there is nothing better to say, and it is not worth
+/// failing a start over because the open below reports a real failure anyway.
+fn default_log_path() -> PathBuf {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    beside.join("logs").join("agent.log")
+}
+
 const USAGE: &str = "\
 linklet-agent -- run a command on this machine when a host asks
 
 usage:
-  linklet-agent [--port <port>] [--root <directory>] [--log <file>]
+  linklet-agent [--port <port>] [--root <directory>] [--log <file> | --no-log]
 
 options:
   --port <port>   the port to listen on (default 8787)
@@ -68,9 +85,11 @@ options:
                       two are two answers to one question
   --root <directory>  the only directory a transfer may write in or read from, and it
                       must exist (default: the directory the agent was started in)
-  --log <file>    append one line per request to this file (or LINKLET_LOG). Without
-                  it the agent keeps no log, and a request that never finishes leaves
-                  no evidence behind
+  --log <file>    where the request log goes (or LINKLET_LOG). Default: logs/agent.log
+                  in the directory the agent's own executable is in, rolled over when
+                  it reaches a mebibyte with three older files kept
+  --no-log        keep no log. A request that never finishes then leaves no evidence
+                  behind, which is the one thing the log exists to answer
   -h, --help      print this
 ";
 
@@ -82,6 +101,7 @@ fn main() {
     let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
     let mut token_file: Option<String> = std::env::var("LINKLET_TOKEN_FILE").ok();
     let mut log_path: Option<String> = std::env::var("LINKLET_LOG").ok();
+    let mut no_log = false;
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
         match argument.as_str() {
@@ -109,6 +129,7 @@ fn main() {
                     std::process::exit(2);
                 }
             },
+            "--no-log" => no_log = true,
             "--root" => match iterator.next() {
                 Some(value) => root = Some(value.clone()),
                 None => {
@@ -228,16 +249,55 @@ fn main() {
     // The log, opened before the port is bound for the same reason as the token and the
     // root: an operator who asked for a log and silently did not get one has a machine
     // whose evidence they believe exists and does not. That is the mistake this feature
-    // is a reaction to, so a failure here is a refusal to start rather than a warning.
-    let request_log = match &log_path {
-        Some(path) => match log::RequestLog::open(&PathBuf::from(path)) {
-            Ok(log) => log,
-            Err(reason) => {
-                eprintln!("linklet-agent: --log: {reason}");
-                std::process::exit(2);
+    // is a reaction to.
+    //
+    // **Where it goes by default, and why that is not the working directory.** The
+    // default is `logs/agent.log` beside the executable. A working directory would match
+    // `--root`'s default and would be easier to test, and it is wrong for the deployment
+    // this exists for: a scheduled task starts its program with the scheduler's working
+    // directory, not the operator's, so the default would land in `System32\logs` or
+    // somewhere equally useless on exactly the machines that run unattended.
+    //
+    // **A failure to open means two different things, and they are treated differently.**
+    // An explicit `--log`, or `LINKLET_LOG`, is a request: if it cannot be honoured the
+    // agent refuses to start, because evidence the operator believes exists and does not
+    // is the failure this whole feature answers. The *default* location is a convenience
+    // nobody asked for, so failing to create it is a warning and the agent serves on --
+    // refusing to start because a housekeeping directory was not writable would trade a
+    // working machine for a convenience.
+    let (request_log, log_path) = if no_log {
+        if log_path.is_some() {
+            eprintln!("linklet-agent: --log and --no-log were both given; name one of them");
+            std::process::exit(2);
+        }
+        (log::RequestLog::none(), None)
+    } else {
+        match &log_path {
+            Some(path) => match log::RequestLog::open(Path::new(path), Rotation::DEFAULT) {
+                Ok(log) => (log, Some(path.clone())),
+                Err(reason) => {
+                    eprintln!("linklet-agent: --log: {reason}");
+                    std::process::exit(2);
+                }
+            },
+            None => {
+                let path = default_log_path();
+                match log::RequestLog::open(&path, Rotation::DEFAULT) {
+                    Ok(log) => (log, Some(path.to_string_lossy().into_owned())),
+                    Err(reason) => {
+                        eprintln!(
+                            "linklet-agent: cannot keep a log at {}: {reason}",
+                            path.display()
+                        );
+                        eprintln!(
+                            "linklet-agent: serving without one. Pass --log <file> to choose \
+                             where it goes, or --no-log to say this is intended."
+                        );
+                        (log::RequestLog::none(), None)
+                    }
+                }
             }
-        },
-        None => log::RequestLog::none(),
+        }
     };
 
     // Bound before the banner is printed, so that "listening on" is only said

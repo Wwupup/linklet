@@ -523,9 +523,13 @@ fn a_request_this_version_cannot_read_is_still_recorded() {
 }
 
 #[test]
-fn the_log_says_which_agent_it_is_for_a_request_that_worked() {
-    // `identity` is the other operation on the surface, and this is the baseline: a
-    // request that asks for nothing and succeeds is still two lines.
+fn the_liveness_check_leaves_the_log_empty() {
+    // **The correction this test used to assert the opposite of.** It said that
+    // `identity` -- a request that asks for nothing and succeeds -- is two lines, and it
+    // is, and that is exactly what made the log useless: a monitor calling it every five
+    // seconds put 37,596 `identity` lines into a 37,781-line file on this project's own
+    // bench. The pair is only findable in a log that is mostly not this, so the liveness
+    // check is not recorded at all.
     let log_path = std::env::temp_dir().join(format!(
         "linklet-agent-log-identity-{}.txt",
         std::process::id()
@@ -533,28 +537,86 @@ fn the_log_says_which_agent_it_is_for_a_request_that_worked() {
     let _ = std::fs::remove_file(&log_path);
 
     let agent = Agent::start_with(&["--log", &log_path.to_string_lossy()]);
-    let _ = agent.sealed().ask(&Request::Identity);
+    for _ in 0..20 {
+        let reply = agent.sealed().ask(&Request::Identity);
+        assert!(matches!(reply, Reply::Result(_)), "{reply:?}");
+    }
+
+    let lines = logged(&log_path);
+    let _ = std::fs::remove_file(&log_path);
+    assert!(
+        lines.is_empty(),
+        "twenty liveness checks should leave twenty answers and no lines: {lines:#?}"
+    );
+}
+
+#[test]
+fn a_request_that_does_something_is_still_recorded_after_the_check_was_silenced() {
+    // The guard on the test above: silencing `identity` must not have silenced the log.
+    // One working request, and the pair is there and numbered from one -- the liveness
+    // checks before it did not consume numbers either.
+    let log_path = std::env::temp_dir().join(format!(
+        "linklet-agent-log-still-{}.txt",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&log_path);
+
+    let agent = Agent::start_with(&["--log", &log_path.to_string_lossy()]);
+    for _ in 0..5 {
+        let _ = agent.sealed().ask(&Request::Identity);
+    }
+    let outcome = run(&agent, "echo recorded");
+    assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
 
     let lines = logged(&log_path);
     let _ = std::fs::remove_file(&log_path);
 
     assert_eq!(lines.len(), 2, "{lines:#?}");
-    assert!(lines[0].ends_with(" identity"), "{lines:#?}");
-    assert!(lines[1].contains(" identity ok "), "{lines:#?}");
+    assert_eq!(lines[0], "-> #000001 run", "{lines:#?}");
+    assert!(lines[1].starts_with("<- #000001 run ok "), "{lines:#?}");
 }
 
 #[test]
-fn an_agent_without_a_log_writes_no_log() {
-    // The default, and it is not a stub: an agent that was not asked to keep a log keeps
-    // none. Without this the log could be created by accident and a reader would have to
-    // find out which way round the option works.
+fn the_default_log_lands_in_a_logs_directory_beside_the_agent() {
+    // **The default is a log, and it is not the working directory.** It used to be the
+    // other way round -- no log unless asked -- and the machine that needed one most was
+    // the one where nobody had asked. A working directory would match `--root` and would
+    // land in the scheduler's directory on exactly the unattended machines this is for,
+    // so the default is `logs/agent.log` beside the executable.
     let agent = Agent::start();
+    let outcome = run(&agent, "echo logged-by-default");
+    assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
+
+    let beside = std::path::Path::new(env!("CARGO_BIN_EXE_linklet-agent"))
+        .parent()
+        .expect("the test binary has a directory")
+        .join("logs")
+        .join("agent.log");
+    assert!(
+        beside.is_file(),
+        "no log at {} after a working request",
+        beside.display()
+    );
+
+    let text = std::fs::read_to_string(&beside).expect("the default log is readable");
+    assert!(
+        text.contains("run"),
+        "the default log should have the request in it: {text:?}"
+    );
+}
+
+#[test]
+fn an_agent_told_not_to_log_writes_no_log() {
+    // The opt-out, and it is not a stub: an agent started with `--no-log` keeps none.
+    // What it costs is stated in `USAGE` rather than discovered: a request that never
+    // finishes then leaves no evidence behind.
+    let agent = Agent::start_with(&["--no-log"]);
     let outcome = run(&agent, "echo unlogged");
 
     assert_eq!(outcome.exit_code, Some(0), "{outcome:#?}");
     assert!(
         !agent.root.join("linklet-agent.log").exists(),
-        "an agent with no --log wrote something anyway"
+        "an agent told not to log wrote something anyway"
     );
 }
 

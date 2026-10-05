@@ -59,9 +59,16 @@ or wrong" at the first call. **One source, never two**: a token file and a token
 together are refused at startup, because the two are two answers to one question and
 whichever lost would be the one the operator believed was in force.
 
-### The agent's own log, and why `--log` exists
+### The agent's own log, and where it goes
 
-`--log <file>` appends one line per request to that file, and the format is a pair:
+**The agent keeps a log by default**, at `logs/agent.log` in the directory its own
+executable is in. `--log <file>` (or `LINKLET_LOG`) puts it somewhere else, and
+`--no-log` turns it off. The default is not the working directory, which is what `--root`
+defaults to: a scheduled task starts its program with the *scheduler's* working
+directory, so a default that followed it would land in `System32\logs` on exactly the
+unattended machines this is for.
+
+The format is a pair, one line per request:
 
 ```
 -> #000001 run
@@ -76,6 +83,19 @@ one line per request could not do that -- a request that never finished would wr
 nothing, and would look exactly like a request that never arrived. That is what the
 first real target left: an agent that had answered calls all afternoon and not one
 record of what it had been asked.
+
+**A liveness check is not written down.** `identity` is the one request that asks for
+nothing and changes nothing, and it is what a monitor calls to ask *are you alive*;
+recording it turns the record into a heartbeat. That is not a theory -- see the table
+below for the four days when it was. So the log holds requests that *do* something, which
+is what makes the missing second line findable.
+
+**The file is bounded.** It appends and never truncates -- restarting an agent must not
+destroy the record of what it was asked before it died -- so it rolls over instead: at a
+mebibyte it becomes `agent.log.1`, the older files shift up, and the fourth is removed.
+At most four mebibytes, whatever the machine does. **A roll-over never splits a pair**:
+it happens before a `->` line and only when nothing is in flight, because two halves in
+different files would report a finished request as one that never finished.
 
 The command line and the file paths are **not** in the log. A log on someone else's
 machine outlives the reason it was written, and a command line is where a secret gets
@@ -251,10 +271,11 @@ Tuesday* and *nothing has gone wrong for a week* have to be different things to 
 reading the log afterwards, and the only evidence separating them is a line that says the
 watch is still running.
 
-The agent's half of that table is **unchanged and deliberately so**: `identity` is a request, the
-agent records requests, and `crates/linklet-agent/tests/agent_server.rs` pins that a request
-which asks for nothing and succeeds is still two lines. What the supervisor controls is how
-often it asks.
+The agent's half of that table is **answered by the same decision in the same place**: the
+liveness check that `probe` calls is no longer written to the agent's log at all, so a monitor
+can ask as often as it likes. `crates/linklet-agent/src/log.rs` and
+`crates/linklet-core/src/log.rs` carry the policy and its tests; `docs/smoke.md` above says
+what the log holds instead.
 
 **Both recoveries were verified on the real bench** (`192.168.100.2`, agent on 8790, the
 supervisor started by `schtasks`). The supervisor's own log is the evidence, and its times are

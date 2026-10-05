@@ -110,11 +110,15 @@ only way a tool names a machine, and there is no tool that finds one (see below)
    Connection refused means the process is gone; a connect that succeeds and then
    times out means the agent is alive and stuck, and something outside it has to clear
    the port.
-2. **Read the agent's own log.** With `--log`, the agent appends a pair of lines per
-   request -- `-> #000001 run` when it is taken, `<- #000001 run ok 2411 ms` when it is
-   answered, with the reason quoted on a refusal. **A `->` with no `<-` is the request
-   that wedged it**, and it is the only evidence that names it. If the log is under
-   the agent's transfer root, `grep`/`tail` it, or `pull` it.
+2. **Read the agent's own log.** It is at `logs/agent.log` in the directory the agent's
+   executable is in, unless it was started with `--log`. The agent appends a pair of
+   lines per request -- `-> #000001 run` when it is taken, `<- #000001 run ok 2411 ms`
+   when it is answered, with the reason quoted on a refusal. **A `->` with no `<-` is
+   the request that wedged it**, and it is the only evidence that names it. A liveness
+   check is not written down at all, so the missing half is never a monitor's ping. The
+   file rolls over at a mebibyte and keeps three older ones, so `agent.log.1` is
+   yesterday's if you need it. If the log is under the agent's transfer root, `grep`/
+   `tail` it, or `pull` it.
 3. **Report what you observed, not what you conclude.** The raw reply, the summary
    line and the log tail are the useful part; "it failed" is not.
 

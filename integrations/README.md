@@ -125,11 +125,15 @@ out what a deployment actually consists of. On the target, once:
 
 ```powershell
 mkdir C:\linklet\transfers
-linklet-agent.exe --port 8787 --root C:\linklet\transfers --log C:\linklet\agent.log `
-    --token-file C:\linklet\token.txt
+linklet-agent.exe --port 8787 --root C:\linklet\transfers --token-file C:\linklet\token.txt
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 ```
+
+**The log is kept for you**, at `logs/agent.log` beside `linklet-agent.exe`, and it
+rolls over at a mebibyte keeping three older files. Nothing has to be passed for that;
+`--log <file>` moves it and `--no-log` turns it off, and the log is where the request
+that never finished is named -- see `docs/smoke.md`.
 
 **An agent with no secret at all refuses to start and says so**, which is the cheapest
 place to find out -- the alternative is a port that accepts connections and refuses

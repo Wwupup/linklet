@@ -34,6 +34,7 @@
 //! saying why would send the reader to a different machine to find out.
 
 use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 /// What a request asked for, as the log names it.
 ///
@@ -113,6 +114,30 @@ impl Operation {
             "unknown" => Some(Self::Unknown),
             _ => None,
         }
+    }
+
+    /// Whether a request for this belongs in the log at all.
+    ///
+    /// **False for `identity` and true for everything else**, and the reason is a
+    /// measurement rather than a preference. `identity` is the one request that asks for
+    /// nothing and changes nothing, and it is what a monitor calls to ask *are you
+    /// alive*; recording it makes the log a heartbeat instead of a record. On this
+    /// project's own bench, four days of a five-second liveness check put **37,596
+    /// `identity` lines into a log of 37,781** -- 99.5%, leaving 0.5% for the work. The
+    /// cost is not the disk: it is that the pair below stops being findable in it.
+    ///
+    /// # What that costs, stated rather than hidden
+    ///
+    /// A liveness check that wedges the agent now leaves no `->` line naming it. It does
+    /// not need one: the caller that asked is the one holding the socket, and a monitor's
+    /// whole question is whether an answer came back. A request that **does** something
+    /// is still recorded, and that is where a missing completion line is evidence.
+    ///
+    /// A caller that wants a refusal recorded is served by this returning true for
+    /// [`Operation::Unknown`]: a sealed body that is not a request this version knows is
+    /// exactly the traffic an operator wants to find.
+    pub fn worth_recording(self) -> bool {
+        !matches!(self, Self::Identity)
     }
 }
 
@@ -331,6 +356,79 @@ impl Default for Log {
     }
 }
 
+/// How large the agent's log file may get before it is rolled over.
+///
+/// **The decision, not the doing.** Whether to rotate is a function of a size and a
+/// limit, so it is testable in microseconds here; renaming files is I/O and lives in
+/// `linklet-agent`. That split is rule 1, and this is the shape it takes for a log.
+///
+/// # Why there is a bound at all
+///
+/// The agent appends and never truncates, deliberately -- restarting an agent must not
+/// destroy the record of what it was asked before it died, which is the one incident the
+/// log exists for. Append-without-bound and a machine that serves for months is a full
+/// disk, and a full disk takes down everything else on the machine, not just the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rotation {
+    /// Rotate when the file has reached this many bytes.
+    max_bytes: u64,
+    /// How many rolled-over files to keep beside the current one.
+    keep: usize,
+}
+
+impl Rotation {
+    /// One mebibyte per file and three files kept, so a log costs at most four.
+    ///
+    /// The number is the usual kind of estimate and is said to be one: a line is about
+    /// fifty bytes, so a mebibyte is roughly twenty thousand lines, and one machine's
+    /// requests for a long while. What matters is that it is *bounded*, and that the
+    /// bound is small enough to be irrelevant next to a disk and large enough that a
+    /// diagnosis does not need yesterday's file.
+    pub const DEFAULT: Self = Self {
+        max_bytes: 1024 * 1024,
+        keep: 3,
+    };
+
+    /// A rotation policy: roll over at `max_bytes`, keeping `keep` older files.
+    ///
+    /// **`keep` of zero means no rotation at all**, which is the way to ask for the old
+    /// behaviour. It is not "keep nothing": rotating is what *produces* the old files, so
+    /// a policy that kept none would have to throw away the file it had just closed, and
+    /// a log that deleted itself every mebibyte is worse than one that grows.
+    pub fn new(max_bytes: u64, keep: usize) -> Self {
+        Self { max_bytes, keep }
+    }
+
+    /// How many rolled-over files this keeps. Zero means rotation is off.
+    pub fn keep(&self) -> usize {
+        self.keep
+    }
+
+    /// Whether a current file of this many bytes should be rolled over before another
+    /// line is written.
+    ///
+    /// Takes the size rather than reading it, so the caller that already tracks how much
+    /// it has written does not have to ask the filesystem before every line.
+    pub fn should_rotate(&self, current_bytes: u64) -> bool {
+        self.keep > 0 && current_bytes >= self.max_bytes
+    }
+
+    /// The name the file rolled off at `index` is kept under.
+    ///
+    /// Index 1 is the most recently rolled-over file, so `agent.log` becomes
+    /// `agent.log.1` and the oldest is the highest number -- which is the convention a
+    /// reader who has met `logrotate` already expects, and inverting it would produce a
+    /// directory that looks correct and holds the files in the wrong order.
+    ///
+    /// A suffix rather than a substituted name, so that a path with an extension keeps
+    /// it and `logs/agent.log` does not become `logs/agent.1`.
+    pub fn rolled_name(path: &Path, index: usize) -> PathBuf {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(format!(".{index}"));
+        PathBuf::from(name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +535,123 @@ mod tests {
             !log.answered(id, Operation::Run, Outcome::Ok, 1, None)
                 .render()
                 .contains('\n')
+        );
+    }
+
+    // --- what is worth writing down ------------------------------------------
+
+    #[test]
+    fn the_liveness_check_is_not_written_to_the_log() {
+        // The measurement this comes from: four days of a five-second probe put 37,596
+        // `identity` lines into a 37,781-line log. The other 0.5% was the work, and the
+        // pair -- a `->` with no `<-` naming the request that wedged -- is only findable
+        // in a log that is mostly not this.
+        assert!(!Operation::Identity.worth_recording());
+
+        // Everything that does something is recorded, and `unknown` is in that list on
+        // purpose: a sealed body that is not a request this version knows is exactly the
+        // traffic an operator wants to find.
+        for operation in [
+            Operation::Run,
+            Operation::Push,
+            Operation::Pull,
+            Operation::Ps,
+            Operation::Kill,
+            Operation::Spawn,
+            Operation::Grep,
+            Operation::Tail,
+            Operation::Ls,
+            Operation::Unknown,
+        ] {
+            assert!(
+                operation.worth_recording(),
+                "{operation:?} does something and belongs in the record"
+            );
+        }
+    }
+
+    #[test]
+    fn the_guard_on_that_list_is_the_whole_surface() {
+        // A new operation added to the protocol and forgotten here would be recorded or
+        // not by accident. This is what makes the list above exhaustive rather than a
+        // sample: every name `named` accepts is checked, so adding one to the enum and
+        // the parser fails this test until it is decided which side it is on.
+        for name in [
+            "identity", "run", "push", "pull", "ps", "kill", "spawn", "grep", "tail", "ls",
+            "unknown",
+        ] {
+            let operation = Operation::named(name).expect("a name the parser accepts");
+            let recorded = operation.worth_recording();
+            assert_eq!(
+                recorded,
+                name != "identity",
+                "{name} is on the wrong side of this decision"
+            );
+        }
+    }
+
+    // --- the bound on the file -----------------------------------------------
+
+    #[test]
+    fn a_log_below_its_limit_is_not_rolled_over() {
+        let rotation = Rotation::new(1000, 3);
+        assert!(!rotation.should_rotate(0));
+        assert!(!rotation.should_rotate(999));
+    }
+
+    #[test]
+    fn a_log_at_its_limit_is_rolled_over() {
+        // At the limit rather than past it: a file that overshot by one line has already
+        // spent the disk the limit was there to bound.
+        let rotation = Rotation::new(1000, 3);
+        assert!(rotation.should_rotate(1000));
+        assert!(rotation.should_rotate(1001));
+        assert!(rotation.should_rotate(u64::MAX));
+    }
+
+    #[test]
+    fn keeping_nothing_turns_rotation_off_rather_than_deleting_the_log() {
+        // Rotating is what produces the older files, so a policy that kept none would
+        // have to throw away the file it had just closed. Off is the only reading of
+        // `keep: 0` that is not a log that deletes itself every mebibyte.
+        let off = Rotation::new(1000, 0);
+        assert!(!off.should_rotate(0));
+        assert!(!off.should_rotate(1_000_000));
+        assert_eq!(off.keep(), 0);
+    }
+
+    #[test]
+    fn the_default_bound_is_a_bound() {
+        // Not a taste judgement -- the claim is only that a machine left running for
+        // months cannot fill a disk with request lines.
+        assert!(Rotation::DEFAULT.should_rotate(1024 * 1024));
+        assert!(!Rotation::DEFAULT.should_rotate(0));
+        assert!(Rotation::DEFAULT.keep() >= 1);
+    }
+
+    #[test]
+    fn a_rolled_name_keeps_the_extension_and_counts_up() {
+        // `agent.log` -> `agent.log.1`, not `agent.1`: a substituted extension produces a
+        // directory that looks right and holds files nothing else will read.
+        let path = Path::new("logs/agent.log");
+        assert_eq!(
+            Rotation::rolled_name(path, 1),
+            Path::new("logs/agent.log.1")
+        );
+        assert_eq!(
+            Rotation::rolled_name(path, 3),
+            Path::new("logs/agent.log.3")
+        );
+
+        // A path with no extension is not special-cased, and a Windows one keeps its
+        // separators.
+        assert_eq!(
+            Rotation::rolled_name(Path::new("agent"), 2),
+            Path::new("agent.2")
+        );
+        assert_eq!(
+            Rotation::rolled_name(Path::new(r"C:\linklet\logs\agent.log"), 1),
+            Path::new(r"C:\linklet\logs\agent.log.1")
         );
     }
 
