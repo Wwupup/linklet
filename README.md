@@ -231,11 +231,11 @@ starts the process and talks to it.
 }
 ```
 
-Those three fields are the whole installation, and which file they go in is the
-client's business -- `integrations/` carries a ready entry for the two clients this
-was set up with. **`command` names the executable and not a shell command**: an MCP
-client spawns it without a shell, which is one thing a native `.exe` does not need a
-wrapper for.
+Those three fields are the whole installation, and which file the entry goes in is the
+client's business: `integrations/` has the entry to paste for DSH and the same three
+fields for ZCode, with the skill that goes beside them. **`command` names the
+executable and not a shell command**: an MCP client spawns it without a shell, which is
+one thing a native `.exe` does not need a wrapper for.
 
 Eleven tools, one per intent: `check`, `testbed`, `exec`, `ps`, `kill`, `spawn`,
 `grep`, `tail`, `ls`, `push` and `pull`. They are the operations the commands above
@@ -250,7 +250,9 @@ wiring a client up: it completes a handshake, so it answers whether the token an
 agent agree.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
-and the two places a caller goes wrong.
+and the two places a caller goes wrong. `integrations/` is in this repository and is
+attached to every release as `linklet-<version>-setup.zip`, so an installation does not
+need a clone.
 
 ## The problem
 
@@ -361,4 +363,5 @@ Read `AGENTS.md` before your first commit -- it is the rules only, one screen lo
 | `crates/linklet-agent/` | the target side: one binary, binds a port, runs commands |
 | `crates/linklet-client/` | the host side of the protocol |
 | `crates/linklet-cli/` | argv in, text out, exit code |
+| `integrations/` | installing the MCP server in a client, and the skill an agent drives a machine by |
 | `docs/` | see `docs/INDEX.md`, which says what kind of document each one is |
