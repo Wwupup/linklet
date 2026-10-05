@@ -20,6 +20,7 @@ the change that made it wrong.
 | How do I do a task? | `docs/LEARNING.md` |
 | What kind of test does this get? | `docs/testing.md` |
 | How do I call this from an agent? | `docs/MCP.md` |
+| How do I install it as an MCP server, and what tells an agent the routine? | `integrations/README.md` |
 | How will my work be judged? | `docs/review-m1.md` |
 | What went wrong on the way here? | `docs/retrospective.md` |
 | How do I test against a real machine? | `docs/smoke.md` |
@@ -153,6 +154,9 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/tests/ci_workflow.rs` | the CI workflow calls the one gate script instead of restating it |
 | `crates/linklet-core/tests/ascii_only.rs` | rule 7, checked instead of remembered |
 | `tools/linklet-supervise.ps1` | keeping an agent running: restart on death and on wedged, by port, with backoff |
+| `integrations/README.md` | the two pieces an agent installs: the server entry per client, and the token |
+| `integrations/dsh/mcp-entry.yml` | the DSH server entry, with the reason for each of its four fields |
+| `integrations/skills/linklet/SKILL.md` | the procedure: the order the calls go in, and the rules that bite when ignored |
 
 ## Keeping this true
 

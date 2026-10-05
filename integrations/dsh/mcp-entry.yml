@@ -1,0 +1,33 @@
+# The linklet MCP server, as a DSH profile patch entry.
+#
+# Paste this under the top-level array of a profile's `cordis.patch.yml` -- for
+# example `%USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml` -- and replace the
+# two paths. This is a list item rather than a whole file because that is what the
+# patch layer is: `insert` adds an entry, it does not replace one.
+#
+# Two things are easy to get wrong, and both are in the four lines below:
+#
+#   * **`command` is the executable, and `mcp` is an argument.** An MCP client spawns
+#     the command without a shell. A native `.exe` needs nothing for that; a `.cmd`
+#     or a script would need a `cmd.exe /c` wrapper, which is the whole reason this
+#     server is built into the binary rather than beside it.
+#   * **`LINKLET_TOKEN_FILE`, not `LINKLET_TOKEN`.** This file is copied, shared and
+#     sometimes committed, and naming a file keeps the secret out of all three.
+#     Name one of the two and not both: with both set, every tool that needs the
+#     secret reports that none was presented, which is deliberate -- an order
+#     between them would not be predictable from the file you are reading.
+#
+# The skill is the other piece and goes somewhere else: copy
+# `integrations/skills/linklet` to `%USERPROFILE%\.dsh\skills\linklet`. See
+# `integrations/README.md`.
+- insert:
+    - id: mcp-linklet
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: linklet
+        transport: stdio
+        command: 'C:\linklet\linklet.exe'
+        args:
+          - 'mcp'
+        env:
+          LINKLET_TOKEN_FILE: 'C:\linklet\token.txt'
