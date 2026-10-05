@@ -57,9 +57,10 @@ state that gets refused, with a sentence saying so.
 ## Cutting a release
 
 **CI runs `tools/verify.ps1` on every push, and that is all it can run.**
-`.github/workflows/verify.yml` calls `tools/verify.ps1` on Windows. What no workflow can do
-is step 2 below, because it needs a machine on a network -- so this list is still a list a
-person works through, with one step already done for them.
+`.github/workflows/verify.yml` calls `tools/verify.ps1` on Windows and on Linux -- one job,
+two runners -- so what a tag is released from is a commit whose gates were run on both. What
+no workflow can do is step 2 below, because it needs a machine on a network -- so this list is
+still a list a person works through, with one step already done for them.
 
 Tagging runs `.github/workflows/release.yml`, which builds the binaries, assembles the release
 archive around them, writes a `SHA256SUMS` for the archive, and attaches the two. **It refuses a

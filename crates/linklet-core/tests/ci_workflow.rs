@@ -1,4 +1,4 @@
-//! The CI workflows, checked against the two claims made about them.
+//! The CI workflows, checked against the claims made about them.
 //!
 //! This repository prefers a rule the compiler enforces to a rule a reviewer remembers, and the
 //! same habit applies to its own automation. `tools/verify.ps1` says in its header that *"CI: the
@@ -13,13 +13,23 @@
 //! with the CI copy being the one nobody tries locally. So the test is not "does CI run the
 //! gates", it is **"is the script still the only place they are written down"**.
 //!
+//! # The second claim is about platforms, and it is the one that was added late
+//!
+//! `docs/testing.md` and `README.md` both say the gates run on **Windows and Linux** -- the adapter
+//! layer has a backend per platform, and a job on one of them is a job that cannot see the other.
+//! That was not always true: the job was Windows-only while the adapter tests called `tasklist`
+//! and `ipconfig` unconditionally, and the reasoning in the workflow said so. It stopped being true
+//! at `docs/ROADMAP.md` M11, and nothing failed when the documentation moved ahead of the workflow
+//! -- which is what this test is for.
+//!
 //! # What it deliberately does not check
 //!
 //! Whether the workflow is *correct* -- whether the runner image exists, whether the action
 //! versions are current, whether the YAML is valid. Those need a YAML parser and a network, and a
 //! test that half-parses YAML would be the "looks at text instead of parsing it" failure
 //! `tests/architecture.rs` already records. What is checked here is the mechanical half: the files
-//! are present, they call the script, and they do not duplicate it.
+//! are present, they call the script, they do not duplicate it, and they run where the documents
+//! say they run.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,6 +67,32 @@ fn workflows() -> Vec<(String, String)> {
 
 /// A `run:` body that invokes the gate script.
 const INVOCATION: &str = "verify.ps1";
+
+/// The platforms the gates are claimed to run on, in the runner names the workflow uses.
+///
+/// Two, and not one: the adapter layer has two halves -- `tasklist`, `taskkill`, `ipconfig` and
+/// `route` on one side, `/proc` and `ip` on the other -- and a job on a single platform leaves
+/// the other half of it unexercised on every push. `docs/testing.md` and `README.md` both say
+/// the gates run on Windows and Linux, so this is a claim about the repository that the
+/// repository can check.
+const RUNNERS: [&str; 2] = ["windows-latest", "ubuntu-latest"];
+
+#[test]
+fn the_gates_run_on_every_platform_the_tool_supports() {
+    let (name, text) = workflows()
+        .into_iter()
+        .find(|(name, _)| name == "verify.yml")
+        .expect("verify.yml is the workflow every push runs the gates from");
+
+    for runner in RUNNERS {
+        assert!(
+            text.contains(runner),
+            "{name} never names {runner}, so the gates do not run there -- while \
+             docs/testing.md and README.md both say they do. A platform dropped from this \
+             list is half the adapter layer untested on every push, and nothing else says so."
+        );
+    }
+}
 
 #[test]
 fn every_workflow_that_runs_the_gates_calls_the_script() {

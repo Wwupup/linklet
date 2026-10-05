@@ -115,21 +115,41 @@ the tool now works on. **The claims are the durable thing and the program was no
 ## What runs it
 
 **`tools/verify.ps1` is the only definition of done, and CI calls that script rather than
-restating its four commands.** `.github/workflows/verify.yml` is the caller: one step, on
-Windows. Windows and not Linux because some tests exercise the *Windows implementations* of the
-adapters -- `tasklist`, `taskkill`, `ipconfig`, `route` -- and a job on the other operating
-system would fail for a reason that has nothing to do with the change. **The whole suite also
-passes on Linux**, run by hand from a checkout (`docs/ROADMAP.md` M11), which is what makes
-that job the right shape rather than the whole story.
+restating its four commands.** `.github/workflows/verify.yml` is the caller: one step, and one
+job definition over **two runners, `windows-latest` and `ubuntu-latest`**.
+
+**Both, because the adapter layer has two halves and neither one is visible from the other.** A
+Windows job exercises `tasklist`, `taskkill`, `ipconfig` and `route`; a Linux one exercises
+`/proc`, `ip` and `sh`. The job was Windows-only when it was added, and the reason was good at
+the time -- the adapter tests called those Windows programs unconditionally, so a Linux run would
+have failed for a reason that had nothing to do with the change. `docs/ROADMAP.md` M11 made that
+reason false by giving each module a backend per platform, and the suite has passed on both ever
+since.
+
+**What the second platform has already found is the argument for it, and it is not "it also
+compiles".** Two things, both invisible from Windows, both found by running this suite on Linux
+by hand: the comparison that decides a path is inside the transfer root was case-insensitive --
+correct on Windows, a live write outside the root on a POSIX filesystem -- and the search's
+Windows-only helper was an unused import elsewhere, which `cargo clippy -- -D warnings` refuses.
+The first is the most severe item in `docs/transfer.md`; the second is a gate that had never been
+applied on the platform it was failing on. Neither is a fact about Linux the *product* lacked a
+view of. Both are facts about Windows being the only place the gates were ever run.
 
 The script's own header names the failure this arrangement prevents: the four commands were
 documented in three files, a commit went in red anyway, and the rules were fine -- nothing
 ran them. A workflow that listed the four commands again would be that same mistake one level
-up, with two lists to keep in step and the CI copy being the one nobody tries locally.
+up, with two lists to keep in step and the CI copy being the one nobody tries locally. Two jobs
+with the same steps would be the same mistake a third time, which is why the platform is a matrix
+over one job rather than a second job.
 
-**CI does not change what a green run means.** It covers the same gates, on one
-machine, the same way a person does. The layer that needs a second machine is still missing,
-still open, and still named above.
+**The two platforms do not run different gates.** Same script, same four commands, same order,
+same `-D warnings` -- `pwsh` is on both runner images, so the script is the same script. What
+differs is only the machine underneath it, which is the point.
+
+**CI does not change what a green run means.** Each job covers the same gates, on one machine, the
+same way a person does -- and two runners are still two machines that never talk to each other. The
+layer that needs a second machine is still missing, still open, and still named above: **nothing
+here has ever been run against another machine.**
 
 ## Knowing a test is worth its place
 

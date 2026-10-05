@@ -839,9 +839,16 @@ characters has the bytes and the label.
   that parsing exists. **In production it never bites** -- an agent applies its own platform's
   rules, so its parsing and its rules agree -- and `docs/transfer.md` T1 records it, because it is
   the seam the bug lived in: half of that decision was this project's and half was `std`'s.
-- **No Linux CI.** `.github/workflows/verify.yml` runs Windows. An `ubuntu-latest` job would
-  now be green, which is the argument for adding it -- and it is a decision rather than a free
-  addition, because this suite has only ever been run on Linux by hand, from a checkout.
+- **Linux CI: done, and it was the last item on this list.** `.github/workflows/verify.yml` ran
+  Windows only. It is now one job over two runners, both calling `tools/verify.ps1`, so the gates
+  are run on both platforms by a machine on every push instead of by hand from a checkout.
+
+  **The first Linux run found something immediately**, which is the argument for having it rather
+  than a prediction of one: `cargo clippy --workspace --all-targets -- -D warnings` failed, on a
+  Windows-only `use std::process::Command` and a parameter only Windows reads in
+  `crates/linklet-adapters/src/search.rs`. `cargo test` had been green on Linux for the whole
+  milestone, so the platform was exercised for `fmt`, `test` and `doc` and never for `clippy` --
+  and a gate applied on one platform is a gate that is not applied.
 
 ### What running the suite on Linux found, which is the useful part
 
@@ -902,9 +909,9 @@ accident. None of these is planned:
 - **a cross-platform agent, parked, and the interesting part is done.** It is not refused on
   principle the way the rest of this list is. `ps`, `kill`, `spawn`, `testbed`, `discover` and
   the POSIX path policy landed in M11, so the deploy loop, the testbed checks, the scan and the
-  transfer rules all work on Linux, and the same 46 suites pass on both platforms. What remains
-  is that a non-UTF-8 file on Linux is read by a total rule rather than by the machine's own code
-  page, and that no CI job runs the suite on Linux.
+  transfer rules all work on Linux, and the same 46 suites pass on both platforms -- on every
+  push now, not by hand. What remains is one thing: a non-UTF-8 file on Linux is read by a total
+  rule rather than by the machine's own code page, so the characters are not recovered.
 - a daemon or service **on the host** -- still refused; the host is a client. The *target*
   side is a different question and is now M10: the agent died with its console on the first
   real target and was not brought back.

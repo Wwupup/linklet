@@ -6,13 +6,22 @@
 # workflow is the same mistake one level up: two lists that drift, with the CI copy being the one
 # nobody runs locally.
 #
-# # Why Windows and only Windows
+# # Why Windows and Linux
 #
-# `linklet` targets Windows and says so (`README.md`, "does not run on anything but Windows
-# targets, until someone needs otherwise"). Its tests spawn `tasklist`, `taskkill`, `ipconfig`
-# and `route`, and they bind loopback sockets. On a Linux runner the workspace would not compile
-# past the adapter layer, and a job there would be a red X that means "wrong operating system"
-# rather than anything about the change.
+# **Both, because the adapter layer has two halves and each one is the other's blind spot.**
+# `linklet` drove only Windows when this file was written, and it said so here: the tests spawned
+# `tasklist`, `taskkill`, `ipconfig` and `route` unconditionally, so a Linux job would have been a
+# red X meaning "wrong operating system" rather than anything about the change. `docs/ROADMAP.md`
+# M11 made that reasoning false -- the process, discovery and shell modules now have a backend per
+# platform, and `docs/testing.md` records the rest -- so the job that was refused for a good reason
+# is now the job that covers the half Windows cannot.
+#
+# **What the second platform buys is not "it also compiles".** It is the two defects M11 found by
+# running this suite there by hand: a case-insensitive root comparison that let an absolute path
+# out of the root on a POSIX filesystem, and a search whose Windows-only program was an unused
+# import everywhere else. The first was a live escape on every Linux agent; the second fails
+# `cargo clippy -- -D warnings` on Linux and had never been looked at there. Neither can be found
+# from Windows, and a job that runs on one platform is a job that will keep not finding them.
 #
 # # What passing this does not mean
 #
@@ -42,8 +51,19 @@ env:
 
 jobs:
   verify:
-    name: verify
-    runs-on: windows-latest
+    name: verify (${{ matrix.os }})
+    # **One job definition over two runners, not two jobs with the same steps.** The four gates
+    # are written down once, in `tools/verify.ps1`, and this file's whole reason for existing is
+    # that there is one place they are written down; two jobs would be that mistake a third time,
+    # with the steps copied per platform.
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+      # **A failure on one platform must not cancel the other.** The two fail for different
+      # reasons, and "is Linux still green" is the question this job was added to answer -- the
+      # default `fail-fast` would cancel the second leg and take the answer with it.
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
 
     # The suite builds the workspace and runs ~570 tests that each spawn a real agent process. It
     # takes about ten minutes locally; twenty is the point at which something is wrong rather than
@@ -78,16 +98,24 @@ jobs:
       # Keyed on `Cargo.lock`, which is committed on purpose: it is the only record of the exact
       # versions a build was verified against. `target/` is several GB and is a pure function of
       # the source, which is why it is ignored rather than stored.
+      #
+      # **The two platforms do not share this cache and do not evict each other.** `key` is added
+      # alongside the key the action builds itself, and that one carries the rustc host triple --
+      # `x86_64-pc-windows-msvc` on one leg, `x86_64-unknown-linux-gnu` on the other. The `key`
+      # below is for the same reason the release job has one of its own: a different profile
+      # sharing this key would have each build evict the other's artifacts.
       - name: Cache the build
         uses: Swatinem/rust-cache@v2
         with:
-          # The release job builds the same source with a different profile, and sharing the key
-          # would have each evict the other's artifacts.
           key: debug
 
       # One step, because the script is the definition of done. If a gate is added it is added
       # there, and this workflow picks it up without being edited -- which is the whole reason the
       # script exists.
+      #
+      # `pwsh` and not `bash`: the script is the same script on both runners, and PowerShell 7 is
+      # preinstalled on the Ubuntu image -- so the alternative, a second shell script for one
+      # platform, would be the two-lists mistake this arrangement exists to avoid.
       - name: Verify
         shell: pwsh
         run: ./tools/verify.ps1

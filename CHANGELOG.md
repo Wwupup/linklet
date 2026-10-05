@@ -74,6 +74,15 @@ to answer one question: **what can I do now that I could not do before?**
   reason adding an `op` does not move it. **What is still less than Windows, said plainly: the
   characters are not recovered.** A GBK log read this way is legible in its ASCII parts and
   mojibake in the rest.
+- **Both platforms' gates run on every push, not on one of them.**
+  `.github/workflows/verify.yml` ran Windows only, so the four gates in `tools/verify.ps1` were
+  run by a machine there and everywhere else by hand -- which means the Linux half of the tool was
+  last checked whenever somebody happened to run it. It is now one job over two runners, both
+  calling the same script, so a pushed change is verified on both. **The first Linux run failed**,
+  and on the gate that had never been applied there: `cargo clippy -- -D warnings`, on a
+  Windows-only import and a parameter that only Windows reads, in the search module. `cargo test`
+  does not look at warnings, so a module can be green on Linux for a whole milestone with `clippy`
+  red on it.
 
 ### Added
 

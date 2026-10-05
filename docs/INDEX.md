@@ -159,7 +159,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-client/tests/probe.rs` | whether an agent is working or only listening, against a socket that accepts and says nothing |
 | `crates/linklet-cli/tests/probe.rs` | the probe's exit codes as a supervisor reads them |
 | `crates/linklet-cli/tests/arguments.rs` | every command's flags, asserted as one contract rather than ten behaviours |
-| `crates/linklet-core/tests/ci_workflow.rs` | the CI workflow calls the one gate script instead of restating it |
+| `crates/linklet-core/tests/ci_workflow.rs` | the CI workflow calls the one gate script, on both platforms, instead of restating it |
 | `crates/linklet-core/tests/ascii_only.rs` | rule 7, checked instead of remembered |
 | `tools/verify.ps1` | the one gate script: fmt, clippy, test, rustdoc, actionlint, inventory |
 | `integrations/README.md` | the two pieces an agent installs: the server entry per client, and the token |

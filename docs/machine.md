@@ -88,3 +88,11 @@ conclusion before it was found.
   a workflow can be linted and its shell parsed here, and whether the runner accepts it is only
   known after a push. When a workflow fails, the message has to be brought back by hand --
   which is why `docs/VERSIONING.md` lists what to check *before* pushing instead.
+- **WSL has no `pwsh`, and getting one there is not practical from here.** `tools/verify.ps1` is
+  what CI runs on both platforms, so the obvious way to check the Linux leg locally is to run it
+  in the WSL distribution -- and Ubuntu 24.04 there has no PowerShell, `sudo` asks for a password,
+  and the released tarball is about 75 MB arriving at **10-20 KB/s, measured on both the WSL path
+  and the Windows one** (the proxy on `7890` above was not listening when this was tried). The
+  fallback is the one M11 used, and it is what the Linux leg was checked with: **the four commands
+  run directly in WSL, in the same order**, which is every gate the script runs there except
+  `actionlint`.
