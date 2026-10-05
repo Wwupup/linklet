@@ -157,6 +157,29 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    release note that says a specific artifact was verified, when a different artifact was, is
    the one kind of wrong this document exists to prevent.
 
+   **Done at 0.3.0, and recorded here because the tag cannot record it.** The published
+   `linklet-0.3.0.zip` was downloaded with `gh release download`, checked against the release's own
+   `SHA256SUMS` (`8d8df9f4ba9fdd68...`), unpacked, and the binaries **inside it** were driven
+   against a real machine at `192.168.100.2` -- the seven claims of `docs/smoke.md`, the deploy
+   loop, and both transfer directions, once from the Windows host in the archive and once from the
+   Linux one. The agent used was the archive's own `linklet-agent.exe`, on its own port and its own
+   transfer root, so the machine's existing deployment was not disturbed and was confirmed
+   untouched afterwards.
+
+   **Why this is a note here rather than a sentence in the tag's `CHANGELOG.md`.** The archive is
+   built *by* the tag, so no commit can contain a true statement about an artifact that did not
+   exist when it was written -- and 0.2.0 shipped a `CHANGELOG.md` saying its binaries had been
+   driven when a different build had. The release that does not have this problem is one whose
+   section says "built from this commit", and whose verification lives after the fact, where it
+   was actually learned.
+
+   The Linux half is worth naming separately, because it is new at 0.3.0 and it is the reason the
+   archive carries two platforms: the published `bin/x86_64-unknown-linux-gnu/linklet` extracted
+   with mode **755**, completed a handshake with the Windows agent, ran a command on it, listed its
+   processes, read a file on it, and moved a file each way with a byte-identical digest. A release
+   note that said the Linux binaries were untested would have been true of every release before
+   this one.
+
 ## The workflows, and what can be checked before pushing
 
 **What each workflow is, and why it is shaped the way it is, is `docs/VERIFYING.md`.** This
