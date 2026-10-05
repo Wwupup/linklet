@@ -11,6 +11,20 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.3.0] -- 2026-10-05
+
+**The version where the tool admits it runs on two operating systems.** It has since M11: the
+protocol, the sealed channel, both transfer directions and every command work on Windows and
+Linux, and that was driven between real machines. What was not true was anything *around* it --
+the tests ran on one platform in CI, and the release was a Windows-only archive. Both are now
+what the code already was.
+
+**Both platforms are in the one archive**, and the gates run on both in CI. Nothing in the wire
+protocol changed, so the protocol number does not move: an old host and a new agent still talk,
+which `docs/VERSIONING.md` explains the rule for.
+
 ### Added
 
 - **A secret can be read from a file**, so that a script or a client configuration
@@ -23,13 +37,33 @@ to answer one question: **what can I do now that I could not do before?**
   authenticate with a secret nobody named while telling the caller its token was
   wrong.
 
-- **The release is one archive**, `linklet-<version>.zip`, with the executables under `bin/`
-  and everything needed to install and operate them beside them: the MCP client entry, the
-  skill that carries the order the calls go in, and the three documents an operator reads.
-  Four loose assets had asked whoever downloaded to work out which of them went where.
-  `docs/VERSIONING.md` has the layout and `integrations/README.md` has what the material is.
-  **Nothing in it installs an agent on a target** -- that first copy is a file copy, once, by
-  hand.
+- **The release is one archive, `linklet-<version>.zip`, and it holds both platforms.** Four loose
+  assets had asked whoever downloaded to work out which of them went where; the answer was one
+  archive, and the answer to *which* archive is that a tool which runs on two operating systems
+  cannot ship one of them. So the archive carries the host tool and the agent **built on Windows**
+  and **built on Linux**, one directory per target triple
+  (`bin/x86_64-pc-windows-msvc/`, `bin/x86_64-unknown-linux-gnu/`), and a Linux user no longer has
+  to clone the repository and build before using it. Everything else is beside them: the MCP client
+  entry, the skill that carries the order the calls go in, and the documents an operator reads.
+  `docs/VERSIONING.md` has the layout, `docs/VERIFYING.md` has what builds it, and
+  `integrations/README.md` has what the material is. **Nothing in it installs an agent on a
+  target** -- that first copy is a file copy, once, by hand.
+
+  **Two things had to be true first, and neither was obvious.** A zip records the Unix mode of
+  every entry, and the archiver that made the old one does not write it -- measured,
+  `Compress-Archive` leaves a Linux binary on disk at mode **600**, so it is neither executable nor
+  readable by anyone else, while Info-ZIP `zip` restores **755**. The archive is therefore
+  assembled on Linux, and the script that does it extracts its own output and checks the bit
+  rather than trusting the step before it. And a `bin/` flat enough to hold one `linklet-agent`
+  cannot hold two, so the directories are named for the compiler's own target triple rather than
+  for a friendly alias somebody would have to invent and keep true.
+
+- **`tools/make_release.sh`**, the release in one script -- `tools/verify.ps1`'s counterpart for
+  the other half of the pipeline. It stages both platforms, copies the payload out of the tag,
+  writes the archive and `SHA256SUMS`, and generates the release notes. That logic used to be
+  PowerShell inside `.github/workflows/release.yml`, which meant a person could not run the thing
+  that produces a release without reading YAML and reconstructing it. `docs/VERIFYING.md` is new
+  beside it and is what the two workflows are, and what no workflow can claim.
 
 - **The tool runs on Linux, not only Windows.** Two pieces were in the way and both are done.
   The agent ran every command by starting `cmd`: that is now `crates/linklet-agent/src/shell.rs`,
@@ -86,8 +120,6 @@ to answer one question: **what can I do now that I could not do before?**
   not look at warnings -- so it failed there on a Windows-only import and a parameter that only
   Windows reads, in the search module. That is the fix in the commit before this one, which is why
   the job's first run did not have to go red to prove anything.
-
-### Added
 
 - **`linklet_core::transfer::Rules`**, which is how the path fix below is possible: which rules
   apply is now a *value* rather than a `cfg` inside the checks, so both rule sets are exercised on
