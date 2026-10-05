@@ -23,6 +23,12 @@
 //! text**, so a reader who sees nonsense knows which rule produced it.
 
 use std::path::Path;
+
+// **Windows only, because the program it starts exists only there.** Ungated, this import is an
+// unused one on the other platform, which `cargo clippy -- -D warnings` rejects -- so the gate
+// that turns a warning into a failure is what found it, on Linux, where `cargo test` had been
+// green for weeks.
+#[cfg(windows)]
 use std::process::Command;
 
 use linklet_core::search::{
@@ -316,7 +322,10 @@ fn decode_legacy(
 
     #[cfg(not(windows))]
     {
+        // Named and unused, as `target` and `sniffed` are: this platform decodes in memory and
+        // has no error to report, so `path` reaches the sentence above only on Windows.
         let _ = target;
+        let _ = path;
         let _ = sniffed;
         Ok((linklet_core::search::decode_latin1(bytes), Encoding::Latin1))
     }
