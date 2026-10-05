@@ -109,7 +109,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/outcome.rs` | the output format and the exit codes: the contract |
 | `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
-| `crates/linklet-core/src/auth.rs` | the token, and the constant-time comparison that is the point of it |
+| `crates/linklet-core/src/auth.rs` | the token, where it may come from, and the constant-time comparison that is the point of it |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |
 | `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, and why a failed search is not an empty one |
@@ -145,6 +145,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-client/tests/ps.rs` | the listing and the deploy loop over a socket: look, stop, and confirm |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 | `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
+| `crates/linklet-cli/tests/token_file.rs` | the secret as a file on both ends: the Windows bytes, the two refusals, and what each end does instead |
 | `crates/linklet-cli/tests/fanout.rs` | one command across several agents: the labels and the exit codes, and a refusal told apart from an unreachable machine |
 | `crates/linklet-client/tests/probe.rs` | whether an agent is working or only listening, against a socket that accepts and says nothing |
 | `crates/linklet-cli/tests/probe.rs` | the probe's exit codes as a supervisor reads them |

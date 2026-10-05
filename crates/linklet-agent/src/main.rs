@@ -44,7 +44,7 @@ mod spawn;
 use std::net::TcpListener;
 use std::path::PathBuf;
 
-use linklet_core::auth::Token;
+use linklet_core::auth::{Token, secret_in_file};
 use linklet_core::transfer::Destination;
 
 /// The port the agent listens on when it is not told.
@@ -62,6 +62,10 @@ usage:
 options:
   --port <port>   the port to listen on (default 8787)
   --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
+  --token-file <file>  read the secret from the first line of this file (or
+                      LINKLET_TOKEN_FILE). A byte-order mark and the line ending
+                      are not part of it. Name this or --token, not both -- the
+                      two are two answers to one question
   --root <directory>  the only directory a transfer may write in or read from, and it
                       must exist (default: the directory the agent was started in)
   --log <file>    append one line per request to this file (or LINKLET_LOG). Without
@@ -76,6 +80,7 @@ fn main() {
     let mut port = DEFAULT_PORT;
     let mut root: Option<String> = None;
     let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
+    let mut token_file: Option<String> = std::env::var("LINKLET_TOKEN_FILE").ok();
     let mut log_path: Option<String> = std::env::var("LINKLET_LOG").ok();
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
@@ -118,6 +123,13 @@ fn main() {
                     std::process::exit(2);
                 }
             },
+            "--token-file" => match iterator.next() {
+                Some(value) => token_file = Some(value.clone()),
+                None => {
+                    eprintln!("linklet-agent: --token-file needs a file");
+                    std::process::exit(2);
+                }
+            },
             other => {
                 eprintln!("linklet-agent: unexpected argument {other:?}");
                 eprintln!("{USAGE}");
@@ -126,12 +138,40 @@ fn main() {
         }
     }
 
+    // One secret, named once. Two sources are refused rather than ordered: the two
+    // are two answers to one question, and whichever lost would be the one the
+    // operator believed was in force -- so a caller would be told its token was
+    // wrong while the secret it presented was the right one for the file.
+    if token.is_some() && token_file.is_some() {
+        eprintln!(
+            "linklet-agent: a token and a token file were both given; the secret is one \
+             thing, so pass --token or --token-file, not both"
+        );
+        std::process::exit(2);
+    }
+
+    // Read here, with the token it stands in for and before the port is bound. A
+    // file that was named and cannot be read is refused rather than answered from
+    // the environment: falling back would authenticate with a secret nobody named,
+    // and the caller would be told its token is wrong.
+    let token = match token_file {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(contents) => Some(secret_in_file(&contents).to_string()),
+            Err(error) => {
+                eprintln!("linklet-agent: cannot read the token file {path}: {error}");
+                std::process::exit(2);
+            }
+        },
+        None => token,
+    };
+
     // Checked before the port is bound, so that a bad secret is a startup failure
     // rather than a surprise at the first caller. A configuration error should be
     // loud when it is made.
     let Some(token) = token else {
         eprintln!(
-            "linklet-agent: no token. Pass --token <secret> or set LINKLET_TOKEN.\\n\\
+            "linklet-agent: no token. Pass --token <secret>, name a --token-file, or set \
+             LINKLET_TOKEN.\\n\\
              Anyone who can reach this port will be able to run commands without one."
         );
         std::process::exit(2);

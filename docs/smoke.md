@@ -48,6 +48,17 @@ The firewall rule is the step that matters and the reason this layer exists. It 
 also the one step that `linklet` deliberately does not do for you: the agent cannot
 open a port on a machine it has not been installed on yet.
 
+**The secret may come from a file instead, and that is the shape to use when a
+script or a client configuration would otherwise hold the value.** On the agent:
+`--token-file C:\linklet\token.txt`, or `LINKLET_TOKEN_FILE` in the environment.
+The host reads the same variable, so one file named on both sides is the whole
+configuration. The file's first line is the secret, and a byte-order mark and the
+line ending are not part of it -- which matters because `Set-Content` adds both, and
+either one left in would derive a different key and arrive as "the token is missing
+or wrong" at the first call. **One source, never two**: a token file and a token
+together are refused at startup, because the two are two answers to one question and
+whichever lost would be the one the operator believed was in force.
+
 ### The agent's own log, and why `--log` exists
 
 `--log <file>` appends one line per request to that file, and the format is a pair:
@@ -189,7 +200,10 @@ Six things about that, five of them measured on a real machine:
 - **The supervisor must have the token in its environment**, because the probe completes a
   handshake and the handshake needs it. Without one every probe reports "a sealed call needs a
   token" and the supervisor restarts a perfectly healthy agent forever. Its own log shows this
-  within one cycle, which is why the log exists.
+  within one cycle, which is why the log exists. **`set LINKLET_TOKEN_FILE=C:\linklet\token.txt`
+  is the alternative when the secret must not be in the script at all** -- the probe reads the
+  file, so the script holds a path rather than a secret. That form is not what the runs below
+  used; the mechanism is the one `crates/linklet-cli/tests/token_file.rs` covers.
 - **It kills by port, not by name.** The first version killed `linklet-agent.exe` by name,
   which does nothing when the thing holding the port is not an agent -- it then looped forever
   reporting a wedged agent it could not clear. `Get-NetTCPConnection` finds the owner of the

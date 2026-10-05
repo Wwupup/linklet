@@ -71,6 +71,7 @@ impl Agent {
         let root = scratch_dir();
         let mut child = Command::new(agent_binary())
             .env("LINKLET_TOKEN", token)
+            .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
             .arg("--root")
@@ -114,6 +115,7 @@ impl Drop for Agent {
 fn exec_across(agents: &[&str], command: &str, token: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_linklet"))
         .env("LINKLET_TOKEN", token)
+        .env_remove("LINKLET_TOKEN_FILE")
         .arg("exec")
         .arg("--agents")
         .arg(agents.join(","))
@@ -260,6 +262,7 @@ fn one_agent_and_several_are_refused_when_both_are_given() {
     // somewhere the caller did not name.
     let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
         .env("LINKLET_TOKEN", TEST_TOKEN)
+        .env_remove("LINKLET_TOKEN_FILE")
         .args([
             "exec",
             "--agent",

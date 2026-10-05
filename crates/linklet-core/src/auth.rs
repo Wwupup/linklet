@@ -103,6 +103,32 @@ impl Token {
     }
 }
 
+/// The secret inside a token file, given the file's contents.
+///
+/// **The first line, with a UTF-8 byte-order mark and that line's ending removed.**
+/// Neither of those is something anyone decides to add: Windows PowerShell 5.1
+/// writes a BOM from `Set-Content -Encoding utf8`, and every editor on the platform
+/// ends the last line. Either one left in place makes the secret a byte or two
+/// longer than the one a person typed, and that does not fail where it is made --
+/// it derives a *different* key and comes back as "the token is missing or wrong",
+/// which sends the reader to examine the machine that was never wrong.
+///
+/// Only the mark and the line ending are removed. A space inside the file is part
+/// of the secret: a rule that trimmed whitespace would call two files the same
+/// secret when they are not, and the difference would surface as the same
+/// misleading refusal.
+///
+/// Nothing else is interpreted. An empty file, or one holding only a line ending,
+/// produces an empty candidate, which [`Token::new`] refuses -- the length rule
+/// lives in one place and this is not a second copy of it.
+pub fn secret_in_file(contents: &str) -> &str {
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
+    match contents.find(['\r', '\n']) {
+        Some(end) => &contents[..end],
+        None => contents,
+    }
+}
+
 /// Whether a presented token is the expected one, in time that does not depend on
 /// how much of it was right.
 ///

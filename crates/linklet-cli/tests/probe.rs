@@ -67,6 +67,7 @@ impl Agent {
 
         let mut child = Command::new(agent_binary())
             .env("LINKLET_TOKEN", TEST_TOKEN)
+            .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
             .arg("--root")
@@ -106,6 +107,7 @@ impl Drop for Agent {
 fn probe(agent: &str, token: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_linklet"))
         .env("LINKLET_TOKEN", token)
+        .env_remove("LINKLET_TOKEN_FILE")
         .arg("probe")
         .arg("--agent")
         .arg(agent)

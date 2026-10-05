@@ -68,6 +68,7 @@ fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Json> {
         .stderr(Stdio::piped());
     if let Some(token) = token {
         command.env("LINKLET_TOKEN", token);
+        command.env_remove("LINKLET_TOKEN_FILE");
     }
 
     let mut child = command.spawn().expect("the binary under test should start");
@@ -515,6 +516,7 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
 
     let mut agent = Command::new(agent_binary())
         .env("LINKLET_TOKEN", token)
+        .env_remove("LINKLET_TOKEN_FILE")
         .arg("--port")
         .arg("0")
         .arg("--root")

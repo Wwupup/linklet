@@ -33,7 +33,7 @@ use std::time::Duration;
 use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::arguments::{Args, Flag, Strictness};
-use linklet_core::auth::Token;
+use linklet_core::auth::{Token, secret_in_file};
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::wire::{
     self, GrepRequest, KillRequest, LsRequest, RunRequest, SpawnRequest, TailRequest,
@@ -511,8 +511,10 @@ impl ToolRunner for LiveRunner {
     }
 
     fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
-        // The MCP server reads the token from the environment once at startup;
-        // see `run_mcp`. A tool argument would put the secret in the conversation.
+        // The token comes from the environment (or from the file it names) at each
+        // call, never from a tool argument: an argument would put the secret in the
+        // conversation. A token that is missing or unusable is reported on stderr
+        // and the call fails at the handshake, which is the reply the client sees.
         exec_on(
             agent,
             command,
@@ -1759,21 +1761,69 @@ fn transfer_on(
     }
 }
 
-/// The token this host presents, from the environment.
+/// The token this host presents, from the file it names or from the environment.
 ///
 /// The environment rather than a flag, so that the secret does not appear in a
-/// process listing or a shell history. `LINKLET_TOKEN` is the same variable the
-/// agent reads, so a bench with both ends on one machine needs it set once.
+/// process listing or a shell history. `LINKLET_TOKEN_FILE` names a file instead,
+/// for the callers that must not hold the value themselves: an MCP client's
+/// configuration, and the scheduler script that starts a supervisor. `LINKLET_TOKEN`
+/// is the same variable the agent reads, so a bench with both ends on one machine
+/// needs it set once.
 ///
-/// An unusable token is reported and treated as absent rather than refused: the
-/// caller finds out from the agent refusing the session, which is the same thing
-/// that happens when it is wrong, and one message for one problem is better than two.
+/// **A secret is named once.** When both are set, that is reported and the run goes
+/// ahead with no token at all; ordering them silently would make the loser the
+/// source the operator believed was in force, and the symptom of that is a caller
+/// being told its token is wrong when the one it offered was right for one of the
+/// two. For the same reason a file that was named and cannot be read is not
+/// answered from the environment -- that would authenticate with a secret nobody
+/// named.
+///
+/// A token problem never stops the run, and that is the same decision the message
+/// below has always made: an unusable token is reported and treated as absent, and
+/// the caller finds out from the agent refusing the session, which is the same
+/// thing that happens when the token is simply wrong -- one message for one problem
+/// is better than two. It is also what keeps `check` and `testbed` working, since
+/// neither needs a secret at all and a misconfigured token must not take away a
+/// capability that never used it.
 fn token_from_environment() -> Option<Token> {
-    let secret = std::env::var("LINKLET_TOKEN").ok()?;
+    let file = std::env::var("LINKLET_TOKEN_FILE").ok();
+    let secret = std::env::var("LINKLET_TOKEN").ok();
+
+    if file.is_some() && secret.is_some() {
+        eprintln!(
+            "linklet: LINKLET_TOKEN_FILE and LINKLET_TOKEN are both set; the secret is one \
+             thing, so name the one that is in force -- no order between the two is \
+             predictable from here"
+        );
+        return None;
+    }
+
+    let (named, secret) = match file {
+        Some(path) => {
+            let contents = match std::fs::read_to_string(&path) {
+                Ok(contents) => contents,
+                Err(error) => {
+                    eprintln!(
+                        "linklet: LINKLET_TOKEN_FILE is unusable: cannot read {path}: {error}"
+                    );
+                    return None;
+                }
+            };
+            // The first line, minus a byte-order mark and the line ending, so that a
+            // file written by a Windows editor holds the secret that was typed into
+            // it. See `linklet_core::auth::secret_in_file`.
+            (
+                format!("LINKLET_TOKEN_FILE ({path})"),
+                secret_in_file(&contents).to_string(),
+            )
+        }
+        None => ("LINKLET_TOKEN".to_string(), secret?),
+    };
+
     match Token::new(secret) {
         Ok(token) => Some(token),
         Err(error) => {
-            eprintln!("linklet: LINKLET_TOKEN is unusable: {error}");
+            eprintln!("linklet: {named} is unusable: {error}");
             None
         }
     }

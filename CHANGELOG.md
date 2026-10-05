@@ -11,8 +11,20 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
-Nothing yet. What follows is what a release looks like -- see `docs/VERSIONING.md`
-for what a version number means here and what has to happen before one is cut.
+### Added
+
+- **A secret can be read from a file**, so that a script or a client configuration
+  can name the secret instead of holding it. `LINKLET_TOKEN_FILE` on both ends, and
+  `--token-file` on the agent. A byte-order mark and the line ending are not part of
+  the secret, so a file written by a Windows editor or by `Set-Content -Encoding
+  utf8` holds exactly what was typed into it. **A secret is named once**: a file and
+  a value together are refused rather than ordered, and on the host a file that was
+  named and cannot be read is never answered from the environment -- either would
+  authenticate with a secret nobody named while telling the caller its token was
+  wrong.
+
+What a release looks like, and what a version number means here, is in
+`docs/VERSIONING.md`.
 
 ## [0.2.0] -- 2026-10-01
 

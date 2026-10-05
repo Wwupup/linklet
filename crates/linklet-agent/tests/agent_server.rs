@@ -71,6 +71,7 @@ impl Agent {
             // path a deployment actually uses and keeps a secret out of the
             // process command line.
             .env("LINKLET_TOKEN", TEST_TOKEN)
+            .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
             .arg("--root")
@@ -81,6 +82,36 @@ impl Agent {
             .spawn()
             .expect("the agent should start");
 
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let port = read_banner(stdout);
+
+        Self { child, port, root }
+    }
+
+    /// Starts the agent with no secret in the environment, so that a test can name
+    /// one another way.
+    ///
+    /// Needed because a token file and a secret in the environment are two answers
+    /// to one question and the agent refuses both, so a test of the file cannot
+    /// inherit the harness's `LINKLET_TOKEN`. `env_remove` rather than relying on
+    /// the machine: a developer with `LINKLET_TOKEN` exported would otherwise get a
+    /// different result from the same test.
+    fn start_with_environment(extra: &[&str], environment: &[(&str, &str)]) -> Self {
+        let root = scratch_dir();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_linklet-agent"));
+        command
+            .env_remove("LINKLET_TOKEN")
+            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(environment.iter().copied())
+            .arg("--port")
+            .arg("0")
+            .arg("--root")
+            .arg(&root)
+            .args(extra)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = command.spawn().expect("the agent should start");
         let stdout = child.stdout.take().expect("stdout was piped");
         let port = read_banner(stdout);
 
@@ -535,6 +566,7 @@ fn the_agent_refuses_to_start_with_a_log_it_cannot_open() {
     let directory = scratch_dir();
     let child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
         .env("LINKLET_TOKEN", TEST_TOKEN)
+        .env_remove("LINKLET_TOKEN_FILE")
         .arg("--port")
         .arg("0")
         .arg("--root")
@@ -987,6 +1019,7 @@ fn the_agent_refuses_to_start_with_a_root_that_is_not_a_directory() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
         .env("LINKLET_TOKEN", TEST_TOKEN)
+        .env_remove("LINKLET_TOKEN_FILE")
         .args(["--port", "0"])
         .arg("--root")
         .arg(&missing)
@@ -1041,6 +1074,7 @@ fn the_agent_refuses_to_start_without_a_usable_token() {
             Some(value) => command.env("LINKLET_TOKEN", value),
             None => command.env_remove("LINKLET_TOKEN"),
         };
+        command.env_remove("LINKLET_TOKEN_FILE");
 
         let output = command.output().expect("the agent should run");
         assert_eq!(
@@ -1054,4 +1088,137 @@ fn the_agent_refuses_to_start_without_a_usable_token() {
             "{label}: the message should name the token: {stderr}"
         );
     }
+}
+
+// --- the secret, when it is a file -------------------------------------------
+
+/// Writes a token file the way a Windows editor or `Set-Content -Encoding utf8`
+/// does: a UTF-8 byte-order mark, the secret, and a CRLF.
+///
+/// Both of those extra bytes are the reason `secret_in_file` exists, and this
+/// writes them as escapes so the source stays ASCII (rule 7).
+fn write_token_file(directory: &std::path::Path) -> std::path::PathBuf {
+    let path = directory.join("token.txt");
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"\xef\xbb\xbf");
+    bytes.extend_from_slice(TEST_TOKEN.as_bytes());
+    bytes.extend_from_slice(b"\r\n");
+    std::fs::write(&path, bytes).expect("a token file");
+    path
+}
+
+#[test]
+fn the_agent_serves_with_a_secret_read_from_a_file() {
+    // The deployment this exists for: the secret lives in a file with an ACL, and
+    // a script or a client configuration names the file instead of holding the
+    // value. The file is written with a BOM and a CRLF on purpose -- if either
+    // reached the key derivation, the handshake below would fail while the
+    // operator's file looked perfectly correct.
+    let directory = scratch_dir();
+    let path = write_token_file(&directory);
+
+    let agent =
+        Agent::start_with_environment(&["--token-file", path.to_str().expect("a UTF-8 path")], &[]);
+
+    let mut conversation = agent.sealed_with(TEST_TOKEN);
+    let reply = conversation.ask(&Request::Run(RunRequest {
+        command: "echo token-file".to_string(),
+        timeout_seconds: 10,
+    }));
+    assert!(
+        matches!(reply, Reply::Result(_)),
+        "the agent should serve a session authenticated from its token file: {reply:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn the_token_file_may_be_named_by_the_environment_instead_of_the_flag() {
+    // Same source, the other way of naming it. `LINKLET_TOKEN_FILE` is the half a
+    // scheduler script uses, where a flag would put the path in the task's record
+    // alongside the secret it is there to avoid.
+    let directory = scratch_dir();
+    let path = write_token_file(&directory);
+
+    let agent = Agent::start_with_environment(
+        &[],
+        &[("LINKLET_TOKEN_FILE", path.to_str().expect("a UTF-8 path"))],
+    );
+
+    let mut conversation = agent.sealed_with(TEST_TOKEN);
+    let reply = conversation.ask(&Request::Run(RunRequest {
+        command: "echo token-file".to_string(),
+        timeout_seconds: 10,
+    }));
+    assert!(
+        matches!(reply, Reply::Result(_)),
+        "the file named by the environment should be the secret in force: {reply:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_token_file_that_cannot_be_read_is_a_refusal_to_start() {
+    // The same rule `--log` and `--root` follow: an operator who asked for
+    // something and silently did not get it has evidence they believe exists and
+    // does not. Falling back to the environment here would be worse than that --
+    // it would authenticate with a secret nobody named.
+    let missing = scratch_dir().join("linklet-no-such-token-file.txt");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
+        .env_remove("LINKLET_TOKEN")
+        .env_remove("LINKLET_TOKEN_FILE")
+        .args(["--port", "0"])
+        .arg("--token-file")
+        .arg(&missing)
+        .output()
+        .expect("the agent should run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected a refusal to start rather than a running agent"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("linklet-no-such-token-file.txt"),
+        "the message should name the file: {stderr}"
+    );
+}
+
+#[test]
+fn a_secret_and_a_token_file_together_are_refused() {
+    // Two answers to one question. The agent refuses rather than ordering them,
+    // because whichever lost would be the one the operator believed was in force
+    // -- and the symptom of that is a caller being told its token is wrong when
+    // the token it was given is the right one for the file.
+    let directory = scratch_dir();
+    let path = write_token_file(&directory);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
+        .env_remove("LINKLET_TOKEN")
+        .env_remove("LINKLET_TOKEN_FILE")
+        .args(["--port", "0", "--token", TEST_TOKEN])
+        .arg("--token-file")
+        .arg(&path)
+        .output()
+        .expect("the agent should run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected a refusal to start rather than a running agent"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // "not both" rather than the word "token": the usage text says "append one
+    // line per request", so a looser claim passes on the *absence* of the flag,
+    // which is exactly the state this test is supposed to fail in. It did.
+    assert!(
+        stderr.contains("not both"),
+        "the message should say that one of the two has to be named: {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&directory);
 }
