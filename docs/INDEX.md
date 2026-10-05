@@ -116,7 +116,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |
 | `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, and why a failed search is not an empty one |
 | `crates/linklet-core/src/listing.rs` | what is in a directory, and why an empty one is not one that is not there |
-| `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, and what it leaves out |
+| `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, what it leaves out, and how both platforms spell a network |
 | `crates/linklet-core/src/fanout.rs` | one operation across several machines: the order, the fates, and the panics that do not take the report with them |
 | `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, the pair that names a request that never finished, and when the file rolls over |
 | `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
@@ -124,7 +124,9 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
 | `crates/linklet-adapters/src/transfer.rs` | moving a file: the `.part`, the running total, the digest, the rename |
 | `crates/linklet-adapters/src/channel.rs` | ChaCha20-Poly1305, HKDF, and the X25519 handshake |
-| `crates/linklet-adapters/src/discovery.rs` | ipconfig, the routing table, and the sockets a scan opens |
+| `crates/linklet-adapters/src/discovery.rs` | the scan, the plan, and which networks a machine has -- the platform behind two functions |
+| `crates/linklet-adapters/src/discovery/windows.rs` | `ipconfig` and `route print -4` |
+| `crates/linklet-adapters/src/discovery/linux.rs` | `ip`, and why this one does not read `/proc` |
 | `crates/linklet-adapters/src/listing.rs` | reading a directory on this machine, one unreadable name at a time |
 | `crates/linklet-adapters/src/search.rs` | reading a file on this machine: the ceiling, the window, and the machine's own decoding |
 | `crates/linklet-adapters/src/processes.rs` | the process list and the kill: the orchestration, and the two invariants it holds |
@@ -151,6 +153,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 | `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
 | `crates/linklet-cli/tests/token_file.rs` | the secret as a file on both ends: the Windows bytes, the two refusals, and what each end does instead |
+| `crates/linklet-cli/tests/testbed.rs` | `testbed check` against this machine: the `no-process` requirement, which used to be Windows-only |
 | `crates/linklet-cli/tests/fanout.rs` | one command across several agents: the labels and the exit codes, and a refusal told apart from an unreachable machine |
 | `crates/linklet-client/tests/probe.rs` | whether an agent is working or only listening, against a socket that accepts and says nothing |
 | `crates/linklet-cli/tests/probe.rs` | the probe's exit codes as a supervisor reads them |

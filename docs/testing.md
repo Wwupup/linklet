@@ -116,10 +116,11 @@ the tool now works on. **The claims are the durable thing and the program was no
 
 **`tools/verify.ps1` is the only definition of done, and CI calls that script rather than
 restating its four commands.** `.github/workflows/verify.yml` is the caller: one step, on
-Windows. Windows and not Linux because the tests spawn `tasklist`, `taskkill`, `ipconfig`
-and `route`: those tests are about the *Windows implementations* of the adapters, and the
-parts that are portable are exercised by the same suites on either platform once the agent
-can start a command on it. The rest is `docs/ROADMAP.md` M11.
+Windows. Windows and not Linux because some tests exercise the *Windows implementations* of the
+adapters -- `tasklist`, `taskkill`, `ipconfig`, `route` -- and a job on the other operating
+system would fail for a reason that has nothing to do with the change. **The whole suite also
+passes on Linux**, run by hand from a checkout (`docs/ROADMAP.md` M11), which is what makes
+that job the right shape rather than the whole story.
 
 The script's own header names the failure this arrangement prevents: the four commands were
 documented in three files, a commit went in red anyway, and the rules were fine -- nothing

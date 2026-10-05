@@ -250,12 +250,13 @@ deployment actually has.
 
 Then make the seven claims against that address.
 
-**On Linux the same procedure works**, with three differences and one thing that does not:
-the firewall rule is `ufw`, `firewalld` or nothing; the agent needs no token file permissions
-beyond the usual; and **`ps`, `kill`, `spawn`, `exec`, both transfers, `ls`, `grep` and `tail`
-all work**, so the seven claims and the deploy loop are made the same way. What does not work
-there is `discover` (it parses `ipconfig`), `testbed` (it reads `tasklist`) and a `grep` of a
-file that is not UTF-8 -- see `docs/ROADMAP.md` M11 for what each would take.
+**On Linux the same procedure works**, with two differences and one thing that does not: the
+firewall rule is `ufw`, `firewalld` or nothing, and the agent needs no token file permissions
+beyond the usual. **`ps`, `kill`, `spawn`, `exec`, both transfers, `ls`, `grep`, `tail`,
+`discover` and `testbed` all work there**, so the seven claims and the deploy loop are made the
+same way. What does not work there is a `grep` of a file that is not UTF-8: a Linux machine has
+no code page for those bytes, and `docs/ROADMAP.md` M11 says what that costs and what closing
+it would take.
 
 **The claims are made against a Linux target the same way** -- one line and one exit code
 each -- and the deploy loop is the one worth doing by hand, because it is the sequence a

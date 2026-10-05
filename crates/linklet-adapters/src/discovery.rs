@@ -1,10 +1,19 @@
 //! Finding the machines: this host's networks, and the addresses that answer on them.
 //!
 //! `linklet_core::discover` decides **which addresses a scan would try and what it leaves
-//! out**; this runs `ipconfig`, reads the routing table, and opens the sockets. The split is
-//! rule 1 of `AGENTS.md`, and it carries the weight it usually does here: the ceilings that
-//! make a scan a bounded act rather than an incident are in the core, where they are a table
-//! rather than an experiment on somebody's network.
+//! out**; this reads this machine's interfaces, reads its routing table, and opens the
+//! sockets. The split is rule 1 of `AGENTS.md`, and it carries the weight it usually does here:
+//! the ceilings that make a scan a bounded act rather than an incident are in the core, where
+//! they are a table rather than an experiment on somebody's network.
+//!
+//! # Two programs and one shape
+//!
+//! Which program describes a machine's networks is a fact about the machine, and it is the only
+//! thing that differs: `ipconfig` and `route print -4` on Windows, `ip` on Linux. So the
+//! platform is a module (`windows`, `linux`) answering two questions -- what interfaces does
+//! this host have, and what is its default gateway -- and everything that could be *decided
+//! wrongly* is written once, here, and tested on whichever platform the tests run on. This is
+//! the arrangement `crate::shell` and `crate::processes` already use, for the same reason.
 //!
 //! # What this reports, and what it refuses to imply
 //!
@@ -15,12 +24,28 @@
 //! `docs/framing.md` makes about a timeout and the same one `ps` makes about a process list.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-use std::process::Command;
 use std::time::Duration;
 
-use linklet_core::discover::{
-    Candidate, Interface, Plan, dotted, dotted_quads_in, parse_interfaces, plan,
-};
+use linklet_core::discover::{Candidate, Interface, Plan, dotted, plan};
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+use linux as platform;
+
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+use windows as platform;
+
+// A platform with neither backend would fail to compile below with a message about a missing
+// module. This says why, in the words of the thing that is missing.
+#[cfg(not(any(windows, target_os = "linux")))]
+compile_error!(
+    "linklet can find networks with ipconfig (Windows) or ip (Linux), and not on this \
+     platform: see crates/linklet-adapters/src/discovery.rs for the two things a backend has \
+     to provide"
+);
 
 /// How long one address gets to answer.
 ///
@@ -64,67 +89,63 @@ pub struct Scan {
     pub skipped: Vec<String>,
 }
 
-/// The networks this host is on, from `ipconfig`.
+/// The networks this host is on that a scan could use, by asking this platform.
+///
+/// # What is left out, and why it is left out here
+///
+/// **An interface with no host addresses is not a network to scan.** A /31 or a /32 is a
+/// point-to-point address, and this is not a hypothetical: the loopback device on the machine
+/// this was written for carries `10.255.255.254/32` besides its `127.0.0.1/8`. Keeping one
+/// would put an address in the list that no plan can offer a candidate from, and -- because
+/// `plan` centres its window on the address it is given -- make the plan skip and centre on an
+/// address no scan will reach.
+///
+/// **It is filtered here rather than in the parser** so that one answer reaches everything that
+/// asks: `discover --networks` prints this list and a scan is planned from this list, and two
+/// answers to "which networks is this host on" is the kind of disagreement this project refuses
+/// everywhere else. `linklet_core::discover::parse_ip_addr` stays a faithful read of what the
+/// machine said, point-to-point addresses included; deciding what is worth scanning is this
+/// function's job.
 ///
 /// # Errors
 ///
-/// A sentence when the command cannot be run. **Not an empty list**: "this machine is on no
+/// A sentence when the machine cannot be asked, when it answered with nothing this could read,
+/// or when nothing it said is scannable. **Not an empty list**: "this machine is on no
 /// networks" is a fact about a machine and "the interfaces could not be read" is a fact about
 /// the call, and returning one for the other is the mistake this project keeps meeting.
 pub fn local_interfaces() -> Result<Vec<Interface>, String> {
-    let output = Command::new("ipconfig").output();
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return Err(format!("cannot run ipconfig: {error}")),
-    };
+    let mut interfaces = platform::local_interfaces()?;
 
-    // **Decoded as the machine's own bytes and not as UTF-8.** `ipconfig` writes its labels
-    // in the console code page, so on the bench they are GBK and a strict UTF-8 read would
-    // refuse the whole output over a letter of an adapter's name. The addresses this needs
-    // are ASCII either way; `from_utf8_lossy` keeps them and replaces only the label.
-    let text = String::from_utf8_lossy(&output.stdout);
-    let interfaces = parse_interfaces(&text);
+    interfaces.retain(|interface| interface.has_hosts());
 
     if interfaces.is_empty() {
-        // A machine with no IPv4 address at all is possible and it is not an error -- but it
-        // is worth being able to tell from a parser that read nothing, and the caller can see
-        // the difference because the reason says which.
-        return Err("no IPv4 interface was found in the output of ipconfig".to_string());
+        return Err(
+            "no interface was found with an address a scan could try: every one of them is a \
+             point-to-point or loopback address"
+                .to_string(),
+        );
     }
 
     Ok(interfaces)
 }
 
-/// The default gateway, from the routing table.
+/// The default gateway, by asking this platform.
 ///
 /// `None` when there is not one or it cannot be read, which is an ordinary state on a machine
 /// with no route out. **It is not an error**: the only thing the gateway is used for is
 /// keeping the scan off a router, and a scan without it is a scan that probes one more
 /// address rather than a scan that fails.
 pub fn default_gateway() -> Option<u32> {
-    let output = Command::new("route").args(["print", "-4"]).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-
-    for line in text.lines() {
-        let quads = dotted_quads_in(line);
-        // The default route is the row whose destination and mask are both zero, which is
-        // the one thing about that row that is the same in every language. The gateway is
-        // the third address on it: `0.0.0.0  0.0.0.0  <gateway>  <interface>  <metric>`.
-        if quads.len() >= 3 && quads[0] == 0 && quads[1] == 0 && quads[2] != 0 {
-            return Some(quads[2]);
-        }
-    }
-
-    None
+    platform::default_gateway()
 }
 
 /// Builds a plan for this machine's networks.
 ///
 /// # Errors
 ///
-/// A sentence when the interfaces cannot be read -- see [`local_interfaces`], which is the
-/// one place that decides an empty interface list is a failure to look rather than a machine
-/// with nothing on it.
+/// A sentence when the interfaces cannot be read -- see [`local_interfaces`], which is the one
+/// place that decides an empty interface list is a failure to look rather than a machine with
+/// nothing on it.
 pub fn plan_here() -> Result<Plan, String> {
     let interfaces = local_interfaces()?;
     let local = interfaces.first().map(|interface| interface.address);
@@ -206,63 +227,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_gateway_is_the_third_address_on_the_default_route_and_not_the_first() {
-        // The row every Windows machine prints, labels and all. **The first address on it is
-        // `0.0.0.0`**, so a parser that took the first would name the zero address as the
-        // gateway of every machine and then skip nothing.
-        let table = "\
-===========================================================================
-Interface List
- 17...44 67 4e ad 56 cd ......Intel(R) Ethernet Connection
-===========================================================================
-
-IPv4 Route Table
-===========================================================================
-Active Routes:
-Network Destination        Netmask          Gateway       Interface  Metric
-          0.0.0.0          0.0.0.0      192.168.3.1    192.168.3.157     25
-        127.0.0.0        255.0.0.0         On-link         127.0.0.1    331
-";
-
-        let gateway = table
-            .lines()
-            .filter_map(|line| {
-                let quads = dotted_quads_in(line);
-                (quads.len() >= 3 && quads[0] == 0 && quads[1] == 0 && quads[2] != 0)
-                    .then(|| quads[2])
-            })
-            .next();
-
-        assert_eq!(gateway, Some(0xC0A80301), "192.168.3.1");
-    }
-
-    #[test]
-    fn a_route_row_that_is_not_the_default_one_is_not_the_gateway() {
-        let row = "        127.0.0.0        255.0.0.0         On-link         127.0.0.1    331";
-        let quads = dotted_quads_in(row);
-
-        assert_eq!(quads[0], 0x7F000000, "the destination is not zero");
-        assert!(
-            !(quads.len() >= 3 && quads[0] == 0 && quads[1] == 0 && quads[2] != 0),
-            "so this row is not the default route"
-        );
-    }
-
-    #[test]
-    fn deviceless_output_is_a_failure_to_read_and_not_a_machine_with_no_networks() {
-        // "This machine is on no networks" and "the interfaces could not be read" are
-        // different facts, and the second must not be reported as the first.
-        let text = "Windows IP Configuration\n\nWireless LAN adapter WLAN:\n\n   Media State . . . : Media disconnected\n";
-        assert!(
-            parse_interfaces(text).is_empty(),
-            "nothing to find in that output"
-        );
-    }
-
-    #[test]
     fn the_local_plan_is_bounded_and_keeps_this_machine_out_of_it() {
         // What this machine actually is, read at the layer that can see it. The assertion is
-        // not a particular network -- a build machine's are its own business -- but three
+        // not a particular network -- a build machine's are its own business -- but four
         // properties that must hold wherever this runs.
         let Ok(plan) = plan_here() else {
             // No IPv4 interface at all is a legitimate state for a machine, and the error is
@@ -285,6 +252,13 @@ Network Destination        Netmask          Gateway       Interface  Metric
                 .any(|skip| skip.reason.contains("own address")),
             "this machine's own address is skipped and said so: {:#?}",
             plan.skipped
+        );
+        assert!(
+            plan.interfaces
+                .iter()
+                .all(linklet_core::discover::Interface::has_hosts),
+            "an interface with no host addresses is not one to scan: {:#?}",
+            plan.interfaces
         );
     }
 }

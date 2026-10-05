@@ -118,6 +118,57 @@ impl Interface {
         }
         (self.network() + 1)..self.broadcast()
     }
+
+    /// Whether this network has any address a scan could try.
+    ///
+    /// The question a caller asks to pick the address it should keep out of its own scan, and
+    /// it is here rather than at the call site because the answer is the arithmetic above:
+    /// a host on a /32 is on no network to scan, and choosing it would skip nothing and centre
+    /// nothing. `hosts()` is a range, so this is a comparison rather than a walk -- a /8 would
+    /// otherwise be sixteen million steps.
+    pub fn has_hosts(&self) -> bool {
+        !self.hosts().is_empty()
+    }
+
+    /// Whether this is a loopback address.
+    ///
+    /// **By range and not by name.** `lo` is what Linux calls it, `Loopback Pseudo-Interface 1`
+    /// is what Windows calls it, and both are labels in somebody's language -- the argument this
+    /// module already makes about `ipconfig`. `127.0.0.0/8` is the address that means "this
+    /// machine and nothing else" in every language, which is why it is the test.
+    pub fn is_loopback(&self) -> bool {
+        self.address >> 24 == 127
+    }
+
+    /// Reads an address and a prefix length, which is how Linux writes a network.
+    ///
+    /// # Errors
+    ///
+    /// A sentence naming what was wrong: an address that is not four dotted octets, or a prefix
+    /// length that is not 0 to 32. **The prefix is refused rather than masked**, because
+    /// `192.168.1.5/33` has no network and a mask computed from it by shifting would be either
+    /// a panic or a number that looks like a mask and describes nothing.
+    pub fn from_prefix(address: &str, prefix: u8) -> Result<Self, String> {
+        let address =
+            parse_dotted(address).ok_or_else(|| format!("{address:?} is not an address"))?;
+
+        if prefix > 32 {
+            return Err(format!(
+                "{prefix} is not a prefix length: an IPv4 network is written with 0 to 32"
+            ));
+        }
+
+        // **The one shift a `u32` cannot do is `/0`**, and it is a prefix that occurs -- a
+        // default route is `0.0.0.0/0`. Written out rather than guarded against, so that the
+        // edge is a line a reader can see rather than a panic waiting for the wrong input.
+        let mask = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - prefix)
+        };
+
+        Ok(Self { address, mask })
+    }
 }
 
 impl fmt::Display for Interface {
@@ -348,6 +399,58 @@ fn is_contiguous_mask(mask: u32) -> bool {
     }
 }
 
+/// The interfaces described by `ip -o -4 addr show` output, which is how Linux writes them.
+///
+/// # Why the addresses are read and not the labels, again
+///
+/// The same argument as [`parse_ipconfig`], and it holds for a different reason. `ip` does not
+/// translate its output, so there is no language to be misled by -- what it does do is put an
+/// **interface name, a family, an address with a prefix length, a broadcast address, a scope
+/// and a lifetime** on one line, and the broadcast address is a dotted quad that is not the
+/// machine's address. So the parser looks for the one token that carries a `/` and reads that,
+/// and never asks which of the others it should have used.
+///
+/// The trailing `\` that `ip -o` leaves on a long line is ignored for the same reason: it is
+/// part of a field this does not read.
+///
+/// A line whose address is loopback is **not** an interface. `lo` is on every Linux machine and
+/// `127.0.0.0/8` is not a network with machines on it, so keeping it would put sixteen million
+/// addresses of noise into the total the ceilings are counted against, and -- worse -- make
+/// [`plan`] centre and skip on an address no scan will reach.
+pub fn parse_ip_addr(text: &str) -> Vec<Interface> {
+    let mut interfaces = Vec::new();
+
+    for line in text.lines() {
+        let Some((address, prefix)) = address_with_prefix(line) else {
+            continue;
+        };
+        // A line this cannot read is not an interface: an address without a prefix is half a
+        // pair, and inventing the other half would invent the range a plan then scans.
+        let Ok(interface) = Interface::from_prefix(address, prefix) else {
+            continue;
+        };
+
+        if interface.is_loopback() {
+            continue;
+        }
+        interfaces.push(interface);
+    }
+
+    interfaces
+}
+
+/// The address and prefix length on one line of `ip -o -4 addr show` output.
+///
+/// The token with a `/` in it, and nothing else on the line. `10.0.0.5/24` is one; the `brd
+/// 10.0.0.255` beside it is a dotted quad with no slash and is not.
+fn address_with_prefix(line: &str) -> Option<(&str, u8)> {
+    line.split_whitespace().find_map(|word| {
+        let (address, prefix) = word.split_once('/')?;
+        let prefix: u8 = prefix.parse().ok()?;
+        Some((address, prefix))
+    })
+}
+
 /// The interfaces described by `ipconfig` output.
 ///
 /// # Why this reads addresses and not labels
@@ -361,7 +464,7 @@ fn is_contiguous_mask(mask: u32) -> bool {
 ///
 /// That is also why a disconnected adapter is harmless: it has no address line, so it
 /// contributes nothing, and the ones that do contribute are the ones this host is on.
-pub fn parse_interfaces(text: &str) -> Vec<Interface> {
+pub fn parse_ipconfig(text: &str) -> Vec<Interface> {
     let mut interfaces = Vec::new();
     let mut pending: Option<u32> = None;
 
@@ -460,11 +563,167 @@ Wireless LAN adapter Wireless Network Connection:
 ";
 
     #[test]
+    fn the_interfaces_are_read_from_ip_output_and_the_broadcast_is_not_mistaken_for_one() {
+        // **Real output from a Linux machine**, `ip -o -4 addr show`, kept whole: the `lo`
+        // lines, the `brd` addresses, and the trailing `\` that `ip -o` leaves on a long line
+        // are all part of what this has to survive, and a fixture trimmed to the interesting
+        // token would not prove that any of them is ignored.
+        const IP_ADDR: &str = "\
+1: lo    inet 127.0.0.1/8 scope host lo\\       valid_lft forever preferred_lft forever
+1: lo    inet 10.255.255.254/32 brd 10.255.255.254 scope global lo\\       valid_lft forever preferred_lft forever
+2: eth0    inet 192.168.100.1/24 brd 192.168.100.255 scope global noprefixroute eth0\\       valid_lft forever preferred_lft forever
+3: eth1    inet 192.168.3.157/24 brd 192.168.3.255 scope global noprefixroute eth1\\       valid_lft forever preferred_lft forever
+6: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\\       valid_lft forever preferred_lft forever
+";
+
+        let interfaces = parse_ip_addr(IP_ADDR);
+
+        // **Four, not five, and not three.** `127.0.0.1/8` is gone because 127.0.0.0/8 is not a
+        // network with machines on it. `10.255.255.254/32` is *kept*, because it is a real
+        // address on a real (point-to-point) network and this function's job is to read what the
+        // machine said -- what a machine can be scanned for is the plan's question, and
+        // `plan_here` is where the answer to it lives. A fixture that dropped it here would
+        // hide the case that made this test interesting.
+        assert_eq!(interfaces.len(), 4, "{interfaces:#?}");
+        assert!(
+            !interfaces.iter().any(|interface| interface.is_loopback()),
+            "no 127.0.0.0/8 interface survives: {interfaces:#?}"
+        );
+        assert_eq!(
+            interfaces[0].address,
+            parse_dotted("10.255.255.254").expect("an address"),
+            "the point-to-point address on this machine's loopback device is read, not skipped"
+        );
+        assert!(
+            !interfaces[0].has_hosts(),
+            "and it is a /32: a scan can offer no address from it"
+        );
+
+        // The three real networks, with the masks their prefix lengths stand for.
+        assert_eq!(
+            interfaces[1].address,
+            parse_dotted("192.168.100.1").expect("an address")
+        );
+        assert_eq!(
+            interfaces[1].mask,
+            parse_dotted("255.255.255.0").expect("a mask")
+        );
+        assert_eq!(
+            interfaces[2].address,
+            parse_dotted("192.168.3.157").expect("an address")
+        );
+        assert_eq!(
+            interfaces[3].mask,
+            parse_dotted("255.255.0.0").expect("a /16 mask")
+        );
+        assert_eq!(
+            interfaces[3].network(),
+            parse_dotted("172.17.0.0").expect("an address"),
+            "the broadcast quad beside the address did not become the network"
+        );
+    }
+
+    #[test]
+    fn a_prefix_length_becomes_the_mask_it_stands_for() {
+        // The Linux spelling of a network. The mask has to be the same number the Windows path
+        // builds from dotted form, or the same machine described two ways would scan two
+        // different ranges.
+        let slash_24 = Interface::from_prefix("192.168.100.1", 24).expect("a /24");
+        let dotted_24 = Interface::parse("192.168.100.1", "255.255.255.0").expect("a /24");
+
+        assert_eq!(slash_24, dotted_24);
+        assert_eq!(
+            slash_24.mask,
+            parse_dotted("255.255.255.0").expect("a mask")
+        );
+        assert_eq!(
+            slash_24.network(),
+            parse_dotted("192.168.100.0").expect("an address")
+        );
+        assert_eq!(slash_24.hosts().count(), 254);
+    }
+
+    #[test]
+    fn the_two_prefix_lengths_a_shift_cannot_express_are_read_correctly() {
+        // `/0` and `/32` are the edges: there is no "shift by 32" in Rust, so a mask computed
+        // as `!0 << (32 - prefix)` panics at one end and is undefined-looking at the other.
+        // Both occur in the wild -- a default route is a /0 and a point-to-point address is
+        // often a /32 -- and both are read here rather than being the two inputs that crash.
+        let everything = Interface::from_prefix("10.0.0.1", 0).expect("a /0");
+        assert_eq!(everything.mask, 0, "a /0 mask is all zeros");
+        assert_eq!(everything.size(), 1 << 32);
+
+        let single = Interface::from_prefix("10.0.0.1", 32).expect("a /32");
+        assert_eq!(single.mask, u32::MAX, "a /32 mask is all ones");
+        assert_eq!(single.hosts().count(), 0, "and holds no host but itself");
+        assert!(!single.has_hosts());
+    }
+
+    #[test]
+    fn every_prefix_length_gives_a_contiguous_mask() {
+        // The property `Interface::parse` refuses a mask for, guaranteed by construction here
+        // -- which is why this constructor does not repeat that check. If it stopped holding,
+        // `network` and `broadcast` would mean something no arithmetic produces.
+        for prefix in 0..=32u8 {
+            let interface =
+                Interface::from_prefix("10.0.0.1", prefix).expect("every prefix is valid");
+            assert!(
+                is_contiguous_mask(interface.mask),
+                "/{prefix} gave a mask of {:08x}, which is not a mask",
+                interface.mask
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_length_beyond_32_is_refused_by_name() {
+        // Not masked, not clamped: `192.168.1.5/33` describes no network, and a mask invented
+        // for it would scan a range the operator never wrote.
+        for prefix in [33u8, 64, 255] {
+            let error = Interface::from_prefix("192.168.1.5", prefix).expect_err("not a prefix");
+            assert!(error.contains(&prefix.to_string()), "{error}");
+            assert!(error.contains("prefix"), "{error}");
+        }
+
+        let error = Interface::from_prefix("not-an-address", 24).expect_err("not an address");
+        assert!(error.contains("not-an-address"), "{error}");
+    }
+
+    #[test]
+    fn loopback_is_recognised_by_its_range_and_not_by_the_name_a_machine_gives_it() {
+        // `lo`, `Loopback Pseudo-Interface 1` -- the names are labels, and this module does not
+        // read labels. The whole of 127.0.0.0/8 means "this machine and nothing else".
+        for address in ["127.0.0.1", "127.1.2.3", "127.255.255.254"] {
+            let interface = Interface::from_prefix(address, 8).expect("a loopback address");
+            assert!(interface.is_loopback(), "{address} is loopback");
+        }
+
+        for address in ["10.0.0.1", "192.168.100.1", "172.17.0.1", "126.255.255.255"] {
+            let interface = Interface::from_prefix(address, 24).expect("an ordinary address");
+            assert!(!interface.is_loopback(), "{address} is not loopback");
+        }
+    }
+
+    #[test]
+    fn an_ip_line_with_no_prefix_length_contributes_nothing() {
+        // A machine whose `ip` printed something this does not understand must not have a
+        // network invented for it: an address without the mask is half a pair, which is the
+        // same rule the `ipconfig` parser applies to an address with no mask line.
+        for text in [
+            "",
+            "1: lo    inet 127.0.0.1 scope host lo\n",
+            "Error: either \"dev\" is duplicate, or \"nonsense\" is a garbage.\n",
+        ] {
+            assert!(parse_ip_addr(text).is_empty(), "{text:?}");
+        }
+    }
+
+    #[test]
     fn the_interfaces_are_read_without_reading_a_single_label() {
         // **The whole parser, against real output.** Two adapters are on networks and the
         // third is disconnected; the labels are English here and would be Chinese on the
         // bench, and the answer does not change because no label is looked at.
-        let interfaces = parse_interfaces(IPCONFIG);
+        let interfaces = parse_ipconfig(IPCONFIG);
 
         assert_eq!(interfaces.len(), 2, "{interfaces:#?}");
         assert_eq!(
@@ -486,7 +745,7 @@ Wireless LAN adapter Wireless Network Connection:
         // A half-read pair is not a network, and inventing a mask for it would be inventing
         // the address range the plan then scans.
         let text = "   IPv4 Address. . . . . . . . . . . : 10.0.0.5\n   Media disconnected\n";
-        assert!(parse_interfaces(text).is_empty());
+        assert!(parse_ipconfig(text).is_empty());
     }
 
     #[test]

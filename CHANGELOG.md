@@ -37,11 +37,25 @@ to answer one question: **what can I do now that I could not do before?**
   `taskkill /T /F` or a process-group `kill -9`. And `ps`, `kill` and `spawn` were `tasklist`
   and `taskkill`: they now have a second backend in `linklet-adapters/src/processes/`, reading
   `/proc`, which is the machine-readable answer `ps` formats and is not localised. **Windows
-  and Linux pass the same 45 test suites**, and the deploy loop -- kill the old build, push,
+  and Linux pass the same 46 test suites**, and the deploy loop -- kill the old build, push,
   start, confirm it stayed up, stop it, confirm it is gone -- was driven in both directions
-  between real machines. What is still Windows-only is `discover` (it parses `ipconfig`),
-  `testbed` (it reads `tasklist`) and a `grep` of a file that is not UTF-8;
-  `docs/ROADMAP.md` M11 has the rest and what each would take.
+  between real machines.
+- **`testbed`'s `no-process` requirement works on Linux.** It was `tasklist` written beside the
+  prober, which made the requirement that makes a testbed worth having on a hand-prepared
+  machine -- "this machine has none of yesterday's program on it" -- one that could only be
+  checked on Windows. It now calls the process backend, which is `tasklist` there and `/proc`
+  here. The match stays exact and case-insensitive, as `kill`'s `name` is: a filter casting a
+  net over what to act on is a different question from whether one named process is there.
+- **`discover` works on Linux.** It reads `ip -o -4 addr show` for the networks and
+  `ip -4 route show default` for the gateway, and the plan it builds is the same one the Windows
+  path builds: on this project's own bench both find the same machine, over the same 1,530
+  addresses, with the same skips. The parsing lives in `linklet_core::discover` beside the
+  `ipconfig` one -- addresses and prefix lengths, no labels read -- and the platform is a module
+  answering two questions, as it is for `shell` and `processes`. **Loopback is excluded by
+  address range and not by the name a machine gives it**, and an interface whose network has no
+  host addresses (a /31 or /32, which is what a loopback device carries besides its 127/8
+  address on some setups) is left out of the plan rather than chosen as the address to centre
+  it on -- which also fixes the same latent imprecision on Windows.
 - **`linklet-agent --no-log`**, for an operator who wants no record written. It is the
   opt-out the default below made necessary, and what it costs is stated where it is
   offered: a request that never finishes then leaves no evidence behind.

@@ -768,25 +768,37 @@ Linux host -> Windows agent (192.168.100.2:8790)
   ps --name PING.EXE  -> 0 of 190 match
 ```
 
-### What is left, which is three call sites
+### What is left, which is one call site
 
 | where | what it assumes | used by | state |
 |---|---|---|---|
 | `linklet-agent/src/shell.rs` | `cmd /C` or `sh -c`, and `taskkill /T` or `kill -9 -PGID` | `exec`, `spawn` | **done** |
-| `linklet-adapters/src/processes/` | `tasklist`/`wmic` or `/proc` | `ps`, `kill` | **done** |
-| `linklet-adapters/src/system.rs` | `tasklist` | `testbed` | open |
-| `linklet-adapters/src/discovery.rs` | `ipconfig`, `route print -4` | `discover` | open |
+| `linklet-adapters/src/processes/` | `tasklist`/`wmic` or `/proc` | `ps`, `kill`, and `testbed`'s `no-process` | **done** |
+| `linklet-adapters/src/discovery/` | `ipconfig` and `route print -4`, or `ip` | `discover` | **done** |
 | `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 | open |
 
-**`testbed` is the cheapest of the three**: it asks "is this process still running", which the
-Linux backend's `exists` already answers, so it is a call that has to move rather than a
-parser that has to be written. **`discover` is the most work and the least needed**: `ipconfig`
-is replaced by the routing table and `/proc/net`, which is a different program and a different
-parser. **`search` is the one that is a real gap in capability** rather than in coverage: a
-Linux machine's default encoding is UTF-8, so a file that is not UTF-8 has no rule there that
-turns it into text, and the honest answer today is a refusal that names the problem. Closing it
-means the same thing it means on Windows -- a code page table -- which is a dependency and a
-decision rather than a fix.
+**`testbed` turned out to be the cheapest, and it was not a port at all.** The `no-process`
+requirement asked `tasklist` from beside the prober, so the fix was to move the question to the
+module that already knows how to answer it -- `testbed` now gets `/proc` on Linux for free, and
+the same exact-name match on both. It had no test at the adapter layer at all, only the core's
+table with a fake machine, which is why nothing noticed; `crates/linklet-cli/tests/testbed.rs`
+is that test now, and it failed on Linux before the change with `cannot run tasklist`.
+
+**`discover` was the middle one.** `ipconfig` is replaced by `ip -o -4 addr show` and `ip -4
+route show default`, and the interesting part is what is *not* `/proc`: there is no `/proc`
+file that gives an interface's address and prefix length together, and the address is the one
+thing a plan cannot do without -- it is what the window centres on and what must be kept out of
+the probe list. `ip` is a program, but it is the one whose output is *meant* to be read, and it
+does not translate its labels, which is why the parser beside it is short. The plan it builds
+is identical to the Windows one on this bench: same 1,530 addresses, same skips, same machine
+found.
+
+**`search` is the one that is a real gap in capability** rather than in coverage, and it is
+still open. A Linux machine's default encoding is UTF-8, so a file that is not UTF-8 has no
+rule there that turns it into text; the honest answer today is a refusal that names the
+problem. Closing it means the same thing it means on Windows -- a code page table -- which is a
+dependency and a decision rather than a fix. See below for the shape that is available without
+one.
 
 ### What it does not do, and what this does not claim
 
