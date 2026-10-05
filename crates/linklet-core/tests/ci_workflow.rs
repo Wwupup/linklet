@@ -77,6 +77,219 @@ const INVOCATION: &str = "verify.ps1";
 /// repository can check.
 const RUNNERS: [&str; 2] = ["windows-latest", "ubuntu-latest"];
 
+/// One workflow's text, by file name.
+fn workflow(name: &str) -> String {
+    workflows()
+        .into_iter()
+        .find(|(file, _)| file == name)
+        .unwrap_or_else(|| panic!("{name} should exist under .github/workflows"))
+        .1
+}
+
+/// A workflow's text **with its comments removed**, which is the part that is behaviour.
+///
+/// The checks below started out searching the whole file, and the first run of them failed on
+/// comments in `release.yml` that *explain* the rules -- one naming `Compress-Archive` while saying
+/// why the archive is not built with it, one naming `integrations/README.md`. A workflow's prose is
+/// not its commands, and a check that cannot tell them apart is the "looks at text instead of
+/// parsing it" failure `tests/architecture.rs` records. Stripping comments is not a real parse; it
+/// is enough to make these two checks about what the workflow *does*.
+fn commands(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<&str>>()
+        .join("\n")
+}
+
+/// Whether `haystack` names `needle` as a whole path element.
+///
+/// A plain substring test is wrong here in a way that is easy to miss: `integrations/README.md`
+/// contains `README.md`, so a payload check written with `contains` would report a release that
+/// carries the README twice and call it a second list. That is a false positive today and a false
+/// negative the day somebody writes `docs/LICENSE`.
+fn mentions(haystack: &str, needle: &str) -> bool {
+    let is_path_char =
+        |c: char| c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | '_' | '-' | '.');
+
+    let mut from = 0;
+    while let Some(offset) = haystack[from..].find(needle) {
+        let start = from + offset;
+        let end = start + needle.len();
+        let clear_before = haystack[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_path_char(c));
+        let clear_after = haystack[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_path_char(c));
+        if clear_before && clear_after {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// The files the release archive carries, read out of `tools/make_release.sh`.
+///
+/// Read from the script rather than written down a second time here, because the check below is
+/// that there is **one** list. A test with its own copy would pass while the two copies disagreed,
+/// which is the failure this whole file is about.
+fn release_payload() -> Vec<String> {
+    let script = fs::read_to_string(root().join("tools/make_release.sh"))
+        .expect("tools/make_release.sh is where the release is assembled");
+
+    let start = script
+        .find("payload=(")
+        .expect("the release script names its payload in a list")
+        + "payload=(".len();
+    let rest = &script[start..];
+    let end = rest.find(")\n").expect("the payload list is closed");
+
+    // Split on whitespace rather than on lines: the list is written one item per line, and a
+    // rewrite that put two on one line should not quietly change what is checked.
+    rest[..end].split_whitespace().map(str::to_string).collect()
+}
+
+/// The target triples the release ships, read out of the same script's two variables.
+fn release_triples() -> Vec<String> {
+    let script = fs::read_to_string(root().join("tools/make_release.sh"))
+        .expect("tools/make_release.sh is where the release is assembled");
+
+    ["windows=", "linux="]
+        .iter()
+        .map(|prefix| {
+            let start = script
+                .find(prefix)
+                .unwrap_or_else(|| panic!("the release script names {prefix}"))
+                + prefix.len();
+            script[start..]
+                .lines()
+                .next()
+                .expect("a value follows the name")
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn the_release_carries_one_archive_for_both_platforms() {
+    // **The archive is assembled where the zip tool writes the Unix mode, and this is the check on
+    // that.** `Compress-Archive` writes `external_attr = 0` on every entry -- measured, it puts a
+    // Linux binary on disk at mode 600 -- so an archive the Windows image made would ship a Linux
+    // executable nobody can run. Info-ZIP `zip` writes the mode, and it is on the Ubuntu image.
+    let release = workflow("release.yml");
+    let release_commands = commands(&release);
+
+    assert!(
+        !release_commands.contains("Compress-Archive"),
+        "release.yml uses `Compress-Archive`, which writes no Unix mode -- a Linux binary in that \
+         archive arrives at mode 600. tools/make_release.sh extracts what it wrote and checks the \
+         bit; the header of that script has the measurement."
+    );
+
+    let publish = release
+        .split("\n  publish:")
+        .nth(1)
+        .expect("release.yml has a job that assembles the archive");
+    assert!(
+        publish.contains("ubuntu-latest"),
+        "the job that assembles the archive does not run on the image whose `zip` writes the Unix \
+         mode, which is the whole reason it is not the Windows job"
+    );
+}
+
+#[test]
+fn the_release_builds_a_binary_for_every_platform_it_ships() {
+    // Three places have to agree about which platforms this release is for: the triples the
+    // assembling script reads, the matrix the build job runs, and the `bin/` directories a user
+    // ends up with. The first two are compared here; the third is checked by the script itself,
+    // because it is the one that can look inside the archive it just wrote.
+    let release = workflow("release.yml");
+    let triples = release_triples();
+
+    assert_eq!(
+        triples.len(),
+        2,
+        "the release script should name exactly the two platforms this release ships, and it named \
+         {triples:?}"
+    );
+
+    for triple in &triples {
+        assert!(
+            release.contains(triple),
+            "tools/make_release.sh hands over `{triple}` and release.yml never builds it, so the \
+             archive would be assembled from a directory that is not there"
+        );
+    }
+}
+
+#[test]
+fn the_payload_list_is_the_release_script_s_and_not_the_workflow_s() {
+    // The files a release carries that are **not** built used to be listed in the workflow. They
+    // are in `tools/make_release.sh` now, for the same reason the four gates are in
+    // `tools/verify.ps1`: one list, in a file a person can run, rather than a second one in a file
+    // only a runner executes.
+    let release = commands(&workflow("release.yml"));
+    let payload = release_payload();
+
+    assert!(
+        !payload.is_empty(),
+        "the payload list in tools/make_release.sh read as empty, so the checks below would pass \
+         while checking nothing"
+    );
+
+    for item in &payload {
+        assert!(
+            !mentions(&release, item),
+            "release.yml names `{item}`, which tools/make_release.sh is the one place for. Two \
+             lists of what a release carries is two lists that can drift, and the release is the \
+             worst place to find out which one won."
+        );
+    }
+
+    assert!(
+        payload.iter().any(|item| item == "integrations"),
+        "the payload should still carry `integrations` -- the client entry and the skill are half \
+         of what a release is for, and they are the half a `bin/`-only package loses silently"
+    );
+}
+
+#[test]
+fn the_readers_that_check_a_workflow_can_actually_see_a_command() {
+    // Guards the guards, for the reason `docs/testing.md` gives: a reader that returns nothing is
+    // indistinguishable from a workflow with nothing in it, and a `mentions` that always answered
+    // no would make the payload check above pass forever.
+    let text = "# a comment naming Compress-Archive and integrations/README.md\nrun: echo hi\n";
+    assert!(
+        commands(text).contains("echo hi"),
+        "the comment stripper threw away a command as well"
+    );
+    assert!(
+        !commands(text).contains("Compress-Archive"),
+        "the comment stripper left a comment behind, so every check on it is really a check on \
+         prose"
+    );
+
+    // The payload items are repository-relative paths, so the unit a mention is judged in is the
+    // whole path and not a file name at the end of one.
+    assert!(
+        mentions("cp docs/MCP.md dist/", "docs/MCP.md"),
+        "a payload path should count as named"
+    );
+    assert!(
+        mentions("payload: README.md", "README.md"),
+        "a payload item at the end of a line should count as named"
+    );
+    assert!(
+        !mentions("integrations/README.md", "README.md"),
+        "`integrations/README.md` is not a mention of the payload item `README.md`, and treating it \
+         as one is how the payload check reported a false positive the first time it ran"
+    );
+}
+
 #[test]
 fn the_gates_run_on_every_platform_the_tool_supports() {
     let (name, text) = workflows()
