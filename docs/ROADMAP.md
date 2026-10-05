@@ -688,7 +688,7 @@ either.** Both binaries link.
 | `linklet-agent` | all pass, once `cmd` stopped being hardcoded |
 | `linklet-cli` | all pass |
 
-**45 suites each on Windows and Linux, no failures on either.** `cargo test --workspace` stops
+**46 suites each on Windows and Linux, no failures on either.** `cargo test --workspace` stops
 at the first failing test binary, which is worth knowing before reading a partial run as a
 complete one: several of the failures below were invisible for exactly that reason until
 `--no-fail-fast` was used.

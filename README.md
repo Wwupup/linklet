@@ -278,13 +278,14 @@ accident. This tool:
   copy; there is nothing to talk to yet)
 - does not keep a database, a service, or a daemon on the host
 - **drives Windows and Linux targets, in both directions, verified between two real
-  machines.** The protocol, the sealed channel, both transfer directions, `exec`, `ps`,
-  `kill`, `spawn`, `ls`, `grep`, `tail`, `check`, `probe`, `discover` and `testbed` work on
-  either: a Windows host driving a Linux agent, and a Linux host driving a Windows one,
-  including the deploy loop -- look, start, confirm it stayed up, stop it, confirm it is
-  gone. **One thing is still Windows-only**: a `grep` of a file that is not UTF-8, which
-  needs a code-page table Linux does not have -- the bytes are decoded by a named fallback
-  there, and `docs/ROADMAP.md` M11 says what the difference is
+  machines.** Every command works on either: the protocol, the sealed channel, both transfer
+  directions, `exec`, `ps`, `kill`, `spawn`, `ls`, `grep`, `tail`, `check`, `probe`,
+  `discover` and `testbed` -- a Windows host driving a Linux agent and a Linux host driving a
+  Windows one, including the deploy loop (look, start, confirm it stayed up, stop it, confirm
+  it is gone). **The one real difference is the quality of one answer**: a file that is not
+  UTF-8 is read on Windows with the machine's code page, which recovers the characters, and
+  elsewhere with ISO-8859-1, which is total and lossless but does not -- so the mojibake there
+  is labelled rather than decoded. `docs/ROADMAP.md` M11 says why
 - does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
 - **has no service on the target, and no supervisor either.** An agent that dies stays

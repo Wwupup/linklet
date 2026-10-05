@@ -114,7 +114,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/auth.rs` | the token, where it may come from, and the constant-time comparison that is the point of it |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |
-| `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, and why a failed search is not an empty one |
+| `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, why a failed search is not an empty one, and the total rule for bytes no machine can name |
 | `crates/linklet-core/src/listing.rs` | what is in a directory, and why an empty one is not one that is not there |
 | `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, what it leaves out, and how both platforms spell a network |
 | `crates/linklet-core/src/fanout.rs` | one operation across several machines: the order, the fates, and the panics that do not take the report with them |
@@ -128,7 +128,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/discovery/windows.rs` | `ipconfig` and `route print -4` |
 | `crates/linklet-adapters/src/discovery/linux.rs` | `ip`, and why this one does not read `/proc` |
 | `crates/linklet-adapters/src/listing.rs` | reading a directory on this machine, one unreadable name at a time |
-| `crates/linklet-adapters/src/search.rs` | reading a file on this machine: the ceiling, the window, and the machine's own decoding |
+| `crates/linklet-adapters/src/search.rs` | reading a file on this machine: the ceiling, the window, and which rule decoded it |
 | `crates/linklet-adapters/src/processes.rs` | the process list and the kill: the orchestration, and the two invariants it holds |
 | `crates/linklet-adapters/src/processes/windows.rs` | `tasklist`, `taskkill`, `wmic`, and the CSV parser that survives a localised notice |
 | `crates/linklet-adapters/src/processes/linux.rs` | `/proc`, `kill`, and the zombie that is not a running process |
