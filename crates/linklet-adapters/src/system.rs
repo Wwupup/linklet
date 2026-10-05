@@ -12,7 +12,6 @@
 use std::fs;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
-use std::process::Command;
 use std::time::Duration;
 
 use linklet_core::testbed::{Observation, PathKind, Prober, Requirement};
@@ -99,38 +98,26 @@ fn reachable(target: &str) -> Observation {
     }
 }
 
-/// Running processes whose name matches, on Windows.
+/// Running processes whose name matches.
 ///
-/// `tasklist` with a filter rather than anything cleverer: it is present on
-/// every Windows machine, it needs no privileges for processes owned by the
-/// current user, and a testbed is checking for the process *it* started.
+/// **One implementation for both platforms, and it moved to get there.** This was
+/// `tasklist /FI "IMAGENAME eq ..."` written here, next to the prober -- which meant the
+/// `no-process` requirement, the one that makes a testbed worth having on a machine somebody
+/// prepared by hand, could only be checked on Windows. The knowledge of how to read a process
+/// list belongs with everything else that reads one (`crate::processes`), so this is now a call
+/// rather than a program: `tasklist` on Windows, `/proc` on Linux, the same verb.
 ///
-/// A failure to run the command is reported as `Unknown` with the reason, not as
-/// "nothing is running". Those lead to opposite actions -- one says the machine
-/// is clean, the other says the machine cannot be seen -- and confusing them is
-/// how a test runs against a machine that still has yesterday's process on it.
+/// The match stays **exact**, which is the semantics the Windows version had and the one the
+/// tests pin: `--name` on `ps` is a substring because it is casting a net over what to act on,
+/// and this is asking whether one named process is there.
+///
+/// A failure is reported as `Unknown` with the reason, not as "nothing is running". Those lead
+/// to opposite actions -- one says the machine is clean, the other says the machine cannot be
+/// seen -- and confusing them is how a test runs against a machine that still has yesterday's
+/// process on it.
 fn processes_named(name: &str) -> Observation {
-    let output = Command::new("tasklist")
-        .args(["/FI", &format!("IMAGENAME eq {name}"), "/NH", "/FO", "CSV"])
-        .output();
-
-    let output = match output {
-        Ok(output) => output,
-        Err(error) => return Observation::Unknown(format!("cannot run tasklist: {error}")),
-    };
-
-    // `tasklist` writes its "no tasks are running" notice to stdout with a
-    // success code, so the exit status cannot be trusted for the answer. The
-    // CSV rows are the answer, and there are none in that case.
-    let text = String::from_utf8_lossy(&output.stdout);
-    let found: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| line.starts_with('"'))
-        .filter_map(|line| line.split(',').next())
-        .map(|field| field.trim_matches('"').to_string())
-        .filter(|field| field.eq_ignore_ascii_case(name))
-        .collect();
-
-    Observation::Processes(found)
+    match crate::processes::named(name) {
+        Ok(found) => Observation::Processes(found),
+        Err(reason) => Observation::Unknown(reason),
+    }
 }

@@ -179,6 +179,37 @@ pub fn kill(
     Ok(report)
 }
 
+/// The processes whose image name is exactly `name`.
+///
+/// **The testbed feature's question, and the reason it is answered here rather than beside it.**
+/// It used to be `tasklist /FI "IMAGENAME eq ..."` inside `system.rs`, which made the
+/// `no-process` requirement -- the one that says "this machine has none of yesterday's program
+/// on it", and the requirement that makes a testbed worth having on a hand-prepared machine --
+/// **Windows-only by accident of where the code lived.** Everything that knows how to read a
+/// machine's process list is here, so this is a third caller of a backend rather than a third
+/// backend.
+///
+/// The match is **exact**, case-insensitively, and deliberately not the substring match
+/// [`Filter::name`] does: a `--name` filter is looking for what to act on and casts a wide net,
+/// while a requirement that fired on a *different* process than the one named would be one
+/// nobody could satisfy by fixing the machine. `kill`'s `name` is exact for the same reason.
+///
+/// # Errors
+///
+/// The reason the machine's process list could not be read. **Not an empty list**: a testbed
+/// that read "I could not look" as "there is nothing there" would declare a machine clean
+/// exactly when it cannot tell.
+pub fn named(name: &str) -> Result<Vec<String>, String> {
+    let parsed = platform::read_all()?;
+
+    Ok(parsed
+        .processes
+        .into_iter()
+        .map(|process| process.name)
+        .filter(|found| found.eq_ignore_ascii_case(name))
+        .collect())
+}
+
 /// The pids this agent must not stop, and a note when the guard is weaker than it should be.
 ///
 /// The agent's own pid is always protected. Its **parent** is protected too, because the
