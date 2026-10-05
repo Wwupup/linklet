@@ -26,7 +26,6 @@ linklet-<version>/
   bin/linklet.exe          the host tool, and the MCP server a client is pointed at
   bin/linklet-agent.exe    goes on each machine being driven
   integrations/            this file, the client entry, and the skill
-  tools/                   the supervisor and the real-machine smoke test
   README.md, CHANGELOG.md, LICENSE, docs/
 ```
 
@@ -141,11 +140,16 @@ every caller. `--root` is checked the same way, and the firewall rule is the one
 nothing here can do for you: an agent cannot open a port on a machine it has not been
 installed on yet.
 
-Then make it survive the console: `docs/smoke.md` has the `schtasks` recipe and
-`tools/linklet-supervise.ps1`, which restarts an agent that died **and** one that
-wedged. An agent started from a console dies with that console, and the port it was
-listening on is then silently dropped rather than refused -- which reads exactly like
-a firewall that was never opened.
+Then make it survive the console: `docs/smoke.md` has the `schtasks` recipe. An agent
+started from a console dies with that console, and the port it was listening on is then
+silently dropped rather than refused -- which reads exactly like a firewall that was
+never opened.
+
+**Nothing restarts it for you.** There is no supervisor any more, and that is a decision
+rather than a gap: a script pretending to be a service is worse than the platform's own
+answer, and the platform has one. The caller driving this tool is what notices -- `probe`
+is the call that tells a dead agent from a wedged one, and it is step 2 of the skill
+below.
 
 ## Reference
 
@@ -153,5 +157,5 @@ a firewall that was never opened.
   protocol decisions
 - `skills/linklet/SKILL.md` -- the shipped skill, readable as plain documentation if
   you would rather not install it
-- `docs/smoke.md` -- the target side in full: the firewall, the scheduler, the
-  supervisor, and what was measured on a real machine
+- `docs/smoke.md` -- the target side in full: the firewall, the scheduler, the log,
+  and what was measured on a real machine

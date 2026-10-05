@@ -23,9 +23,9 @@ conclusion before it was found.
   and led to a hand-written SHA-256 -- see `docs/decisions.md` D1.
 - **The toolchain is pinned to 1.95.0 MSVC, and the registry is rsproxy.** Adding
   a dependency works; there is no reason to hand-write a library that exists.
-- **The real-machine smoke test needs no administrator rights.**
-  `pwsh tools/smoke.ps1 -Target <host:port>` against a machine running
-  `linklet-agent` with the port allowed. `docs/smoke.md` is the whole of it.
+- **The real-machine smoke test needs no administrator rights.** The seven claims in
+  `docs/smoke.md`, made against a machine running `linklet-agent` with the port
+  allowed. There is no script for it any more; the claims are the list.
 - **The harness sandbox can fail before any command runs, and it looks like a broken
   toolchain.** Under `workspace-write`, every shell call failed with
   `SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\projects\linklet)` -- that mode

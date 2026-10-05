@@ -154,7 +154,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-cli/tests/arguments.rs` | every command's flags, asserted as one contract rather than ten behaviours |
 | `crates/linklet-core/tests/ci_workflow.rs` | the CI workflow calls the one gate script instead of restating it |
 | `crates/linklet-core/tests/ascii_only.rs` | rule 7, checked instead of remembered |
-| `tools/linklet-supervise.ps1` | keeping an agent running: restart on death and on wedged, by port, with backoff |
+| `tools/verify.ps1` | the one gate script: fmt, clippy, test, rustdoc, actionlint, inventory |
 | `integrations/README.md` | the two pieces an agent installs: the server entry per client, and the token |
 | `integrations/dsh/mcp-entry.yml` | the DSH server entry, with the reason for each of its four fields |
 | `integrations/skills/linklet/SKILL.md` | the procedure: the order the calls go in, and the rules that bite when ignored |

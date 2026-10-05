@@ -25,16 +25,11 @@ to answer one question: **what can I do now that I could not do before?**
 
 - **The release is one archive**, `linklet-<version>.zip`, with the executables under `bin/`
   and everything needed to install and operate them beside them: the MCP client entry, the
-  skill that carries the order the calls go in, the two scripts that keep an agent alive on a
-  target, and the three documents an operator reads. Four loose assets had asked whoever
-  downloaded to work out which of them went where. `docs/VERSIONING.md` has the layout and
-  `integrations/README.md` has what the material is. **Nothing in it installs an agent on a
-  target** -- that first copy is a file copy, once, by hand.
-- **`tools/smoke.ps1 -TokenFile <file>`**, so the release's own gate can be run the way
-  the installation is now documented to be. `-Token` also applies now: it was
-  documented and ignored, so a run that passed one presented whatever `LINKLET_TOKEN`
-  happened to hold -- a parameter silently losing to an ambient variable, which is the
-  shape of failure this tool exists to refuse.
+  skill that carries the order the calls go in, and the three documents an operator reads.
+  Four loose assets had asked whoever downloaded to work out which of them went where.
+  `docs/VERSIONING.md` has the layout and `integrations/README.md` has what the material is.
+  **Nothing in it installs an agent on a target** -- that first copy is a file copy, once, by
+  hand.
 
 ### Fixed
 
@@ -55,6 +50,21 @@ to answer one question: **what can I do now that I could not do before?**
   the scheduler's directory and the default would have landed in `System32\logs` on
   exactly the unattended machines this exists for. `--log` still chooses a path and
   `--no-log` turns it off.
+
+### Removed
+
+- **`tools/linklet-supervise.ps1`**, which restarted an agent that died or wedged. It was
+  right about the decision and wrong about the shape: it was a process standing in for a
+  service, so nothing watched *it*, and a dead supervisor stopped restarting a dead agent. It
+  was also the last Windows-only moving part of a tool that now runs on two platforms. What is
+  left is the platform's own scheduler for survival and **`linklet probe`** for the caller who
+  wants to know the difference between dead and wedged -- and the caller is now the thing that
+  drives this tool, which for an agent is step 2 of the skill. `docs/smoke.md` has both.
+- **`tools/smoke.ps1`**, the real-machine layer. It was a PowerShell program that drove the
+  commands any caller can already drive, which made it a second client to keep in step with the
+  first and one that could only run on one platform. **The seven claims are the durable thing
+  and the program was not**: they are a list in `docs/smoke.md` now, and they are made with
+  whatever client is to hand.
 
 ### Added
 

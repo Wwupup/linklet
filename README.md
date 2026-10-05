@@ -281,9 +281,11 @@ accident. This tool:
   abstraction away from being portable rather than a rewrite
 - does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
-- **has no service on the target either.** `tools/linklet-supervise.ps1` restarts an agent
-  that died and one that wedged, and it is a process the scheduler starts, not a service:
-  nothing watches the supervisor. See `docs/smoke.md`
+- **has no service on the target, and no supervisor either.** An agent that dies stays
+  dead, and one that has wedged is not noticed, until somebody asks: `linklet probe`
+  answers whether an agent is *working* rather than only *listening*, and the caller that
+  drives this tool is the thing that runs it. Making the agent a service is the platform's
+  job -- `docs/smoke.md` has the scheduled-task form and what it does and does not cover
 - **has no identities.** The token authenticates the channel and says nothing about
   *which* caller it is, so there is no per-caller revocation and no audit trail
 - **has no cipher agility.** One curve, one cipher, one key derivation, chosen at

@@ -201,13 +201,13 @@ in this rebuild the reasoning was the part that failed.
 
 Listed because a claim nobody tested is worse than an absent one.
 
-- **No second machine has been driven.** `tools/smoke.ps1` exists and holds its
-  seven claims against this machine over its LAN address, which exercises the real
-  network stack and the sealed channel off loopback. **It has never run against a
-  second machine**, so the claim it was written for -- that Windows Firewall blocks
-  the agent port on a real deployment -- is still untested. The script was written
-  first and its first real run is deliberately left to the person who owns a
-  second machine, because a claim about a LAN cannot be self-certified.
+- **No second machine has been driven.** The seven claims in `docs/smoke.md` were
+  made against this machine over its LAN address, which exercises the real
+  network stack and the sealed channel off loopback. **They had never been made
+  against a second machine**, so the claim they were written for -- that Windows
+  Firewall blocks the agent port on a real deployment -- was still untested. The
+  list was written first and its first real run was deliberately left to the person
+  who owns a second machine, because a claim about a LAN cannot be self-certified.
 - **No identities.** The token authenticates the channel and says nothing about
   which caller it is, so there is no per-caller revocation and no audit trail.
 - **No cipher agility.** One curve, one cipher, one derivation, at build time.

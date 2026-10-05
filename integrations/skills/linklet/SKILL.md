@@ -137,5 +137,5 @@ of the command line.
 - `README.md` -- every command, the output formats, and the exit codes
 - `docs/MCP.md` -- the surface: why each tool is separate, and where a caller goes wrong
 - `docs/smoke.md` -- the target side: the firewall, starting the agent so it survives
-  its console, and the supervisor that restarts a dead or wedged one
+  its console, the log, and the seven claims a real-machine run makes
 - `integrations/README.md` -- how this server and this skill were installed

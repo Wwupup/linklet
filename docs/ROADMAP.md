@@ -257,7 +257,8 @@ those, because the first two items are defects in what M7 already ships -- every
 on top of them is built on an answer that is wrong in a specific way.
 
 The round that produced it: `linklet-agent` on a Windows 11 eval guest (192.168.100.2), the
-seven claims of `tools/smoke.ps1`, then transfers in both directions, a killed transfer, and
+seven claims that are now the list in `docs/smoke.md` (they were a script then), then
+transfers in both directions, a killed transfer, and
 every refusal case. Six bugs came out of that and five are fixed in the commits around this
 section; what is left is below.
 
@@ -385,6 +386,14 @@ on everything in this list -- which is why reading it beats designing from scrat
       ... no reply within 2000 ms`, exit 4.** `probe` completes a handshake and reads a reply,
       so a wedged agent fails it. A wrong token is exit 0 and not exit 4, because an agent that
       says no has proved it is running.
+
+      ~~**The supervisor was removed afterwards**, and the argument above is kept because it is
+      still the argument for `probe`. The script was right about the decision and wrong about
+      the shape: **it was a process and not a service**, so nothing watched *it*, and it was the
+      last Windows-only moving part of a tool that now runs on two platforms. What replaced it
+      is the platform's own scheduler for survival and `probe` for the caller who wants to know
+      -- see `docs/smoke.md`. This file is a current document, so this is what happened to the
+      item rather than a rewriting of what it found.~~
 
       **Running the supervisor over a real wedged socket found a bug the design had not**: it
       killed `linklet-agent.exe` by name, which does nothing when the process holding the port

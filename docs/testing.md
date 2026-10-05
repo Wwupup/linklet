@@ -100,23 +100,26 @@ why that distinction is the whole design. The practical consequences:
    a laptop.
 3. **The gap is stated, not implied.** There is still no *automated* run against a
    second machine -- it needs a machine, so it cannot be a gate. What exists is
-   `tools/smoke.ps1`, which is a script you run, and `docs/smoke.md`, which says
-   what it claims and what it cannot. `docs/ROADMAP.md` records the automated part
-   as open rather than done, because a checked-off item that was quietly dropped is
-   how a roadmap becomes fiction.
+   `docs/smoke.md`: seven claims, and a procedure for making them. `docs/ROADMAP.md`
+   records the automated part as open rather than done, because a checked-off item that
+   was quietly dropped is how a roadmap becomes fiction.
 
-**A fifth layer, and it is not a gate.** `tools/smoke.ps1` takes an address and makes
-seven claims about a machine that exists. It is a script and not part of
-`tools/verify.ps1` because it needs a machine: a gate that needs one stops being run,
-and then the behaviour it covered rots. `docs/smoke.md` is the whole argument.
+**A fifth layer, and it is not a gate, and it is not a script either.** The seven claims
+are made against a machine that exists, by whatever client is to hand -- a person at a
+terminal, or an agent through the MCP surface. A PowerShell script used to make them, and
+it was removed: it drove the same commands a caller can already drive, so it was a second
+client to keep in step with the first, and it could only run on one of the two platforms
+the tool now works on. **The claims are the durable thing and the program was not.**
+`docs/smoke.md` is the whole argument, and the claims are a list there rather than code.
 
 ## What runs it
 
 **`tools/verify.ps1` is the only definition of done, and CI calls that script rather than
 restating its four commands.** `.github/workflows/verify.yml` is the caller: one step, on
-Windows, because the tests spawn `tasklist`, `taskkill`, `ipconfig` and `route` and bind
-loopback sockets -- a job on another operating system would fail for a reason that has
-nothing to do with the change.
+Windows. Windows and not Linux because the tests spawn `tasklist`, `taskkill`, `ipconfig`
+and `route`: those tests are about the *Windows implementations* of the adapters, and the
+parts that are portable are exercised by the same suites on either platform once the agent
+can start a command on it. The rest is `docs/ROADMAP.md` M11.
 
 The script's own header names the failure this arrangement prevents: the four commands were
 documented in three files, a commit went in red anyway, and the rules were fine -- nothing

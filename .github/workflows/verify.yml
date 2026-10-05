@@ -17,8 +17,9 @@
 # # What passing this does not mean
 #
 # It does not mean the tool works on a LAN. No test here touches a second machine -- the
-# real-machine layer is `tools/smoke.ps1`, which needs a target and therefore cannot be a gate.
-# `docs/testing.md` is the argument, and `docs/smoke.md` is what the missing layer would claim.
+# real-machine layer is the seven claims in `docs/smoke.md`, which need a target and therefore
+# cannot be a gate. `docs/testing.md` is the argument, and `docs/smoke.md` is what the missing
+# layer claims.
 
 name: verify
 

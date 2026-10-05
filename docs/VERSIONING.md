@@ -70,11 +70,13 @@ already had once: a release was called 0.2.0 while every binary still reported 0
 
 1. `pwsh tools/verify.ps1` -- every gate. Nothing is committed red and nothing is released
    red; this is the same command that guards a commit, and the same one CI runs.
-2. **Drive a real machine.** `pwsh tools/smoke.ps1 -Target <host:port>`, plus the commands the
-   release added, by hand. `docs/smoke.md` is what that claim covers and what it does not. **A
-   release that was never run against a second machine is a release whose every claim is
-   untested outside this host** -- that is a decision a person makes, not one this document makes
-   for them.
+2. **Drive a real machine.** The seven claims in `docs/smoke.md`, run by hand or by an agent
+   through the tool itself, plus the commands the release added. There is no script for this
+   any more: one existed, and it was a PowerShell program that drove the commands a caller can
+   already drive, which made it a second client to keep in step with the first. `docs/smoke.md`
+   is what the claim covers and what it does not. **A release that was never run against a
+   second machine is a release whose every claim is untested outside this host** -- that is a
+   decision a person makes, not one this document makes for them.
 3. **Write the version into `CHANGELOG.md`.** Move what is under `[Unreleased]` into a new
    section named for the version, state the date, and leave `[Unreleased]` empty above it.
    `[0.2.0]` is the worked example: what a user can do now that they could not before, plus the
@@ -103,7 +105,6 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    | `bin/linklet.exe` | the host tool, and the MCP server |
    | `bin/linklet-agent.exe` | goes on each machine being driven |
    | `integrations/` | the client entry, the skill, and how to install both |
-   | `tools/` | the supervisor and the real-machine smoke test |
    | `README.md`, `CHANGELOG.md`, `LICENSE`, `docs/` | the three documents an operator needs |
 
    **One archive because a release is one thing to download.** The binaries are self-contained,
@@ -131,17 +132,14 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    ```powershell
    gh release download v0.2.0 --dir $env:TEMP\check
    Expand-Archive "$env:TEMP\check\linklet-0.2.0.zip" -DestinationPath "$env:TEMP\check"
-   # then the seven claims, and the deploy loop, against the target
-   pwsh "$env:TEMP\check\linklet-0.2.0\tools\smoke.ps1" -Target <host:port> `
-       -Linklet "$env:TEMP\check\linklet-0.2.0\bin\linklet.exe"
-   # add -TokenFile <file> if that is how the target's secret is deployed
+   # then the seven claims of docs/smoke.md, and the deploy loop, against the target,
+   # with $env:TEMP\check\linklet-0.2.0\bin\linklet.exe
    ```
 
    **The rest of the archive is not part of that claim, and this is the place to say so.**
-   Nothing in it runs on its own: the client entry is a configuration, the skill is
-   instructions, and the two scripts need a target. What can be checked about it is that it is
-   complete and that its files are the tag's, which is exactly what the workflow's payload
-   check does.
+   Nothing in it runs on its own: the client entry is a configuration and the skill is
+   instructions. What can be checked about it is that it is complete and that its files are the
+   tag's, which is exactly what the workflow's payload check does.
 
    **Either do this, or word the claim as "the same commit" and not "these binaries".** A
    release note that says a specific artifact was verified, when a different artifact was, is

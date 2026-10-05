@@ -1766,7 +1766,7 @@ fn transfer_on(
 /// The environment rather than a flag, so that the secret does not appear in a
 /// process listing or a shell history. `LINKLET_TOKEN_FILE` names a file instead,
 /// for the callers that must not hold the value themselves: an MCP client's
-/// configuration, and the scheduler script that starts a supervisor. `LINKLET_TOKEN`
+/// configuration, and a scheduler script that starts the agent. `LINKLET_TOKEN`
 /// is the same variable the agent reads, so a bench with both ends on one machine
 /// needs it set once.
 ///

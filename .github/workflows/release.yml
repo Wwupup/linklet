@@ -11,12 +11,12 @@
 #
 # **It does not decide that a release is ready.** Steps 1 to 5 of that checklist are a person
 # running the gates and driving a real machine, and no workflow can stand in for the second one:
-# `tools/smoke.ps1` needs a target on a network, and a runner has none. So this job starts from
-# the premise that the tag was pushed on purpose, after somebody did that.
+# the claims in `docs/smoke.md` need a target on a network, and a runner has none. So this job
+# starts from the premise that the tag was pushed on purpose, after somebody did that.
 #
-# **It does not install anything.** The archive is files: two executables, a client entry, a
-# skill and two scripts. Putting an agent on a target is still a file copy a person makes once,
-# and `integrations/README.md` says so where somebody about to try it will read it.
+# **It does not install anything.** The archive is files: two executables, a client entry and a
+# skill. Putting an agent on a target is still a file copy a person makes once, and
+# `integrations/README.md` says so where somebody about to try it will read it.
 #
 # **It does not renumber anything.** The version in `Cargo.toml` and the tag have to agree, and
 # the job refuses if they do not -- rather than releasing a binary whose `--version` disagrees
@@ -130,7 +130,10 @@ jobs:
             Copy-Item $from "$stage/bin/$name"
           }
 
-          # Everything else is a file from the tag.
+          # Everything else is a file from the tag. No `tools/`: the scripts that used to
+          # be shipped here kept an agent alive and drove a real machine, and both are
+          # gone -- the first because a script is not a service and the second because a
+          # tool an agent drives does not need a script to drive it.
           $payload = @(
             'README.md'
             'CHANGELOG.md'
@@ -139,8 +142,6 @@ jobs:
             'docs/machine.md'
             'docs/smoke.md'
             'integrations'
-            'tools/linklet-supervise.ps1'
-            'tools/smoke.ps1'
           )
 
           foreach ($item in $payload) {
