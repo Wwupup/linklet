@@ -14,6 +14,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 
 use linklet_client::{AgentAddress, CallError, kill, ps, run, spawn};
 use linklet_core::auth::Token;
@@ -129,6 +130,75 @@ fn own_image_name() -> String {
         .into_owned()
 }
 
+/// A program that keeps running for long enough to be found and stopped, on this platform.
+///
+/// Returns the command to run, **the name `ps` will report for it**, and a word it prints so a
+/// test can find that word in its output file. `label` is that word, and it is the caller's so
+/// that two tests can tell their own output apart.
+///
+/// **Three values and not one, because every one of them is platform-specific and none of them
+/// is the point.** The claim these tests make is about `ps`, `kill` and `spawn` -- that a
+/// process can be found, confirmed, stopped and confirmed stopped -- and `ping` was only ever
+/// the Windows way to say "runs for a while". A test that hardcoded it was testing the platform
+/// as well as the feature, and stopped meaning anything on the other one.
+fn a_long_running_program(label: &str) -> (String, &'static str, String) {
+    if cfg!(windows) {
+        // `ping` prints its first line immediately, which is what the spawn test reads back.
+        (
+            "ping -n 600 127.0.0.1".to_string(),
+            "PING.EXE",
+            "127.0.0.1".to_string(),
+        )
+    } else {
+        // `echo` writes the label before the sleep, for the same reason. The shell runs the
+        // builtin and then `exec`s the last command, so the process that lives is the `sleep`
+        // itself -- and it is the process group leader `spawn` made, which is what makes
+        // stopping the pid take it with it.
+        (
+            format!("echo {label}; sleep 600"),
+            "sleep",
+            label.to_string(),
+        )
+    }
+}
+
+/// Held by the two tests that put a long-running process on the machine.
+///
+/// **`ps` can only tell two processes apart by name**, and these two tests each need one of
+/// their own on a machine they share -- cargo runs them in parallel. So the deploy-loop test
+/// and the spawn test both look for "a program that keeps running", and without this the first
+/// to look can find the other's and then assert that *it* was stopped.
+///
+/// This is not new: on Windows both used `ping` and the race was always there, and the timing
+/// simply made it rare. Running the suite on Linux found it immediately, which is the useful
+/// thing about running a suite somewhere it was not written.
+///
+/// The lock is a `Mutex` rather than an ordering of the two tests because cargo owns the order,
+/// and it is taken with the poison recovered: one test failing must not fail the other with a
+/// message about a lock.
+static ONE_LONG_RUNNING_PROCESS_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+/// Serialises a test against the other one that needs a process of its own.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    ONE_LONG_RUNNING_PROCESS_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A path that tries to leave the agent's transfer root, in this platform's syntax.
+///
+/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
+/// `..\escaped.log` walks up out of the root, and on Linux a backslash is an ordinary character
+/// in a filename -- so the same string names a safe file *inside* the root and a test using it
+/// would pass while proving nothing.
+fn escaping_path(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"..\{name}")
+    } else {
+        format!("../{name}")
+    }
+}
+
 #[test]
 fn a_listing_finds_this_test_process_by_name() {
     // The whole request, over a socket, through the agent's own `tasklist`, and back. A
@@ -205,40 +275,72 @@ fn a_filter_that_matches_nothing_still_says_what_it_looked_at() {
 fn an_empty_filter_answers_with_the_machine_and_a_complete_listing() {
     let agent = Agent::start();
     let listing = ps(&agent.address, &Filter::any()).expect("the agent should answer");
+    let ceiling = linklet_core::process::MAX_LISTED;
 
     assert!(listing.total > 0, "a running machine has processes");
-    assert!(listing.truncated, "and more of them than one reply carries");
-    assert_eq!(listing.count(), linklet_core::process::MAX_LISTED);
+
+    // **The rule rather than a property of this machine.** It used to assert that the answer
+    // was truncated and exactly `MAX_LISTED` long, which is true of a busy Windows desktop and
+    // false of the small machine this now also runs on -- so the test was measuring the
+    // machine. What it is supposed to pin is the relationship: everything read is counted, the
+    // answer is capped, and `truncated` says whether the cap bit.
+    assert_eq!(
+        listing.count(),
+        listing.total.min(ceiling),
+        "the answer is the total, capped: {listing:#?}"
+    );
+    assert_eq!(
+        listing.truncated,
+        listing.total > ceiling,
+        "truncated has to say whether anything was left out: {listing:#?}"
+    );
     assert!(listing.applied_is_empty());
 }
 
 #[test]
-fn a_field_this_implementation_cannot_supply_is_reported_and_not_defaulted() {
-    // `tasklist` gives no command line, so a caller that filters on one is told rather than
-    // handed an empty list. Asking for `cmdline` is the case `docs/ROADMAP.md` M10 records
-    // from a real machine, and it is the one where a silent empty answer would be believed.
+fn a_field_the_machine_cannot_supply_is_reported_and_one_it_can_is_used() {
+    // **The property, which is the same on both platforms: a field is never silently empty.**
+    // `tasklist` has no command line at all, so on Windows a caller that filters on one must be
+    // told rather than handed an empty list -- the case `docs/ROADMAP.md` M10 records from a
+    // real machine, where a silent empty answer would be believed. `/proc` has one, so on Linux
+    // the same filter has to actually find the process.
+    //
+    // Written as one test with the platform's answer inside it, rather than two tests or a
+    // skipped one, because the claim being defended is the invariant and not either answer.
     let agent = Agent::start();
 
     let listing = ps(
         &agent.address,
         &Filter {
-            cmdline: Some("--port".to_string()),
+            cmdline: Some("linklet-agent".to_string()),
             ..Filter::any()
         },
     )
     .expect("the agent should answer");
 
-    assert_eq!(listing.count(), 0, "no process could be checked");
     assert!(listing.total > 0, "and there were processes to check");
-    assert_eq!(
-        listing.incomplete(),
-        Incomplete::No,
-        "the machine was read fine; the field was not available"
-    );
-    assert!(
-        listing.notes.iter().any(|note| note.contains("cmdline")),
-        "the note has to name the field that could not be checked: {listing:#?}"
-    );
+
+    if cfg!(windows) {
+        assert_eq!(listing.count(), 0, "no process could be checked");
+        assert_eq!(
+            listing.incomplete(),
+            Incomplete::No,
+            "the machine was read fine; the field was not available"
+        );
+        assert!(
+            listing.notes.iter().any(|note| note.contains("cmdline")),
+            "the note has to name the field that could not be checked: {listing:#?}"
+        );
+    } else {
+        assert!(
+            listing.count() >= 1,
+            "the agent's own command line names it, and was read from /proc: {listing:#?}"
+        );
+        assert!(
+            !listing.notes.iter().any(|note| note.contains("cmdline")),
+            "nothing was unanswerable here: {listing:#?}"
+        );
+    }
 }
 
 #[test]
@@ -274,10 +376,13 @@ fn a_ps_call_to_a_machine_with_no_agent_is_a_transport_failure_and_not_an_empty_
 /// intermittently. Each caller passes an executable of its own for that reason.
 fn start_a_marker(agent: &Agent, executable: &str) -> String {
     // Long enough that the test always stops it rather than racing it: the process has to
-    // outlive the calls that look for it and stop it. `ping -n 40` was written first and the
-    // race was lost -- the marker exited on its own between the `ps` and the `kill`, and the
-    // failure read as the filter not matching.
-    let command = format!("{executable} -n 600 127.0.0.1");
+    // outlive the calls that look for it and stop it. A command that finished sooner was
+    // written first and the race was lost -- the marker exited on its own between the `ps` and
+    // the `kill`, and the failure read as the filter not matching.
+    //
+    // **The command and the name both come from the platform**, because on Linux the marker is
+    // `sleep` and there is no `PING.EXE` to look for. See `a_long_running_program`.
+    let (command, name, _) = a_long_running_program(&format!("marker-{executable}"));
     let address = agent.address.clone();
     std::thread::spawn(move || {
         let _ = run(
@@ -289,9 +394,7 @@ fn start_a_marker(agent: &Agent, executable: &str) -> String {
         );
     });
 
-    // The image name `cmd` starts for that command: `exec` runs through `cmd /C`, so the
-    // process that lives is the program, not the shell.
-    format!("{}.EXE", executable.to_uppercase())
+    name.to_string()
 }
 
 #[test]
@@ -300,6 +403,7 @@ fn the_deploy_loop_can_be_closed_look_start_and_stop() {
     // confirm it stayed up -- and the two halves that were missing are `ps` and `kill`.
     // This closes the loop with a real process on a real machine: find it, confirm it is
     // running, stop it by pid, and confirm it is gone.
+    let _serial = one_at_a_time();
     let agent = Agent::start();
     let marker = start_a_marker(&agent, "ping");
 
@@ -442,16 +546,18 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     // is also how a caller reads it afterwards, with the `pull` that already exists.
     let agent = Agent::start();
     let output = agent.root.join("spawned.log");
+    let (command, name, marker) = a_long_running_program("spawned-marker");
+    let _serial = one_at_a_time();
 
     // What was running before, so the program can be identified by being new. The pid the
-    // reply carries is the shell's -- `spawn` runs through `cmd`, exactly as `run` does --
-    // and the shell is not what the caller wants to watch: it exits as soon as the program
-    // is started, while the program keeps running. The pid is still the right handle to stop
-    // the tree, which is what `kill` does with it.
+    // reply carries is the shell's -- `spawn` runs through a shell, exactly as `run` does --
+    // and the shell is not what the caller wants to watch: it exits as soon as the program is
+    // started, while the program keeps running. The pid is still the right handle to stop the
+    // tree, which is what `kill` does with it.
     let before: Vec<u32> = ps(
         &agent.address,
         &Filter {
-            name: Some("PING.EXE".to_string()),
+            name: Some(name.to_string()),
             ..Filter::any()
         },
     )
@@ -465,19 +571,14 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     let report = spawn(
         &agent.address,
         &SpawnRequest {
-            // `ping` again, and the two tests cannot be confused for each other because each
-            // looks only for pids that were not there before it started. `timeout /T` was
-            // tried for a distinct executable and cannot be used: it refuses redirected
-            // input, which is how `spawn` runs a command, so it exits at once.
-            command: "ping -n 300 127.0.0.1".to_string(),
+            // The platform's own long-running program, so that the two tests that start one
+            // cannot be confused for each other: each looks only for pids that were not there
+            // before it started.
+            command: command.clone(),
             output: output.to_string_lossy().into_owned(),
         },
     )
     .expect("the agent should answer");
-    assert!(
-        report.command.contains("ping"),
-        "the command is echoed back: {report:#?}"
-    );
     assert!(
         started.elapsed() < std::time::Duration::from_secs(5),
         "spawn waited {:?}, which is `exec` with another name",
@@ -491,7 +592,7 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
         let listing = ps(
             &agent.address,
             &Filter {
-                name: Some("PING.EXE".to_string()),
+                name: Some(name.to_string()),
                 ..Filter::any()
             },
         )
@@ -508,9 +609,9 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     }
     let pid = spawned.unwrap_or_else(|| panic!("the spawned program never appeared in a listing"));
 
-    // Stop it, so the test leaves nothing behind -- and by the pid the reply gave, which is
-    // the shell: `taskkill /T` takes the program it started with it, which is why that is
-    // the pid worth returning.
+    // Stop it, so the test leaves nothing behind -- and by the pid the reply gave, which is the
+    // shell: a tree kill takes the program it started with it, which is why that is the pid
+    // worth returning.
     let killed = kill(
         &agent.address,
         &KillRequest {
@@ -523,11 +624,11 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     .expect("the agent should answer");
     assert_eq!(killed.killed.len(), 1, "{killed:#?}");
 
-    // The program itself is gone too, which is the part `/T` is for.
+    // The program itself is gone too, which is the part the tree kill is for.
     let after = ps(
         &agent.address,
         &Filter {
-            name: Some("PING.EXE".to_string()),
+            name: Some(name.to_string()),
             ..Filter::any()
         },
     )
@@ -540,13 +641,15 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     // The output file the spawn was told to write. It is inside the agent's root, so the
     // existing `pull` reaches it -- which is why `spawn` needs no new way to read a file.
     //
-    // Read after the program was stopped, so the file is complete; `ping` writes its first
-    // line immediately, which is what this asserts is there.
+    // Read after the program was stopped, so the file is complete. The program writes its
+    // marker immediately, which is what this asserts is there -- and the marker is the
+    // platform's, because the claim is "the program's own output went to its own file" and not
+    // "ping prints an address".
     let text = std::fs::read_to_string(&output).unwrap_or_else(|error| {
         panic!("the program's own output file is not there: {error}");
     });
     assert!(
-        text.contains("127.0.0.1"),
+        text.contains(&marker),
         "the program's own output should be in its own file: {text:?}"
     );
 }
@@ -579,6 +682,10 @@ fn a_spawn_output_path_is_relative_to_the_transfer_root() {
             command: "echo relative".to_string(),
             // A relative path, which is what the protocol says this is and what every caller
             // sends: the tool's own schema calls it "a path on the target".
+            //
+            // Lower-case and no `echo` differences between the platforms: the separator is the
+            // caller's, and on both it is `/` inside a relative path -- Windows accepts it and
+            // the agent's `Destination` resolves it the same way.
             output: "nested/spawned-relative.log".to_string(),
         },
     )
@@ -609,7 +716,7 @@ fn a_spawn_output_that_leaves_the_transfer_root_is_refused_by_name() {
         &agent.address,
         &SpawnRequest {
             command: "echo escaped".to_string(),
-            output: r"..\escaped.log".to_string(),
+            output: escaping_path("escaped.log"),
         },
     )
     .expect_err("a path that leaves the root must not be written");

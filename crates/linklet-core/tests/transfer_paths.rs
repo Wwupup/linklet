@@ -21,8 +21,64 @@ use linklet_core::transfer::{
     TransferError, verify_digest,
 };
 
-/// A root these tests can use on Windows.
+/// A root these tests can use, absolute on whichever platform they run on.
+///
+/// The rules below are mostly Windows path rules and they are applied unconditionally by
+/// `Destination::resolve` -- refusing a colon, a leading `\\`, a reserved device name and a
+/// trailing dot is over-strict on Linux and harmless there, where those are ordinary
+/// characters. **What is not inert is the root itself**: on Linux `C:\linklet` is a *relative*
+/// path, so every test in this file failed at the fixture rather than at the rule, which is how
+/// a suite can look like it covers a platform it has never run on.
+#[cfg(windows)]
 const ROOT: &str = r"C:\linklet";
+#[cfg(not(windows))]
+const ROOT: &str = "/linklet";
+
+/// The platform's own separator, for building a path that is more than one component.
+///
+/// Backslash is a separator to `resolve` on Windows and an ordinary character on Linux, so a
+/// test that spells a nested path with one is testing Windows on both -- see the note on
+/// `ROOT`. A test that means "a name with directories in it" has to say so in the syntax of the
+/// machine it is running on.
+#[cfg(windows)]
+const SEP: char = '\\';
+#[cfg(not(windows))]
+const SEP: char = '/';
+
+/// A nested relative path, in this platform's syntax.
+fn nested(parts: &[&str]) -> String {
+    parts.join(&SEP.to_string())
+}
+
+/// A path that tries to leave the root by climbing out of it, in this platform's syntax.
+fn escaping() -> String {
+    nested(&["..", "..", "etc", "hosts"])
+}
+
+/// An absolute path that is not under the root, in this platform's syntax.
+#[cfg(windows)]
+fn outside_root() -> String {
+    r"C:\Windows\System32\drivers\etc\hosts".to_string()
+}
+#[cfg(not(windows))]
+fn outside_root() -> String {
+    "/etc/hosts".to_string()
+}
+
+/// A directory whose *name* starts with the root's, which is the string-prefix trap.
+fn sibling_of_the_root() -> String {
+    let root = std::path::Path::new(ROOT);
+    let name = format!(
+        "{}evil",
+        root.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let parent = root.parent().unwrap_or(std::path::Path::new("/"));
+    parent
+        .join(name)
+        .join("build.exe")
+        .to_string_lossy()
+        .into_owned()
+}
 
 fn destination() -> Destination {
     Destination::new(ROOT).expect("an absolute root")
@@ -47,9 +103,8 @@ fn a_plain_relative_path_lands_under_the_root() {
 fn a_relative_path_with_directories_lands_under_the_root() {
     // Subdirectories are allowed and are the normal case: a build is put somewhere
     // rather than in the root of whatever the operator configured.
-    let resolved = destination()
-        .resolve(r"artifacts\latest\build.exe")
-        .expect("a nested name");
+    let requested = nested(&["artifacts", "latest", "build.exe"]);
+    let resolved = destination().resolve(&requested).expect("a nested name");
     assert_eq!(
         resolved,
         std::path::Path::new(ROOT)
@@ -64,8 +119,9 @@ fn an_absolute_path_inside_the_root_is_allowed() {
     // Refusing every absolute path would be simpler and would break the case an
     // operator meets first: they configured the root, so they know where it is and
     // will type it.
+    let requested = std::path::Path::new(ROOT).join("build.exe");
     let resolved = destination()
-        .resolve(r"C:\linklet\build.exe")
+        .resolve(&requested.to_string_lossy())
         .expect("inside the root");
     assert_eq!(resolved, std::path::Path::new(ROOT).join("build.exe"));
 }
@@ -84,8 +140,12 @@ fn the_root_itself_is_case_insensitive() {
 
 #[test]
 fn a_parent_component_is_refused_by_name() {
-    // The headline case from the document.
-    let error = refused(r"..\..\Windows\System32\drivers\etc\hosts");
+    // The headline case from the document. **In this platform's syntax**, because the rule is
+    // "a `..` component" and what counts as a component is the separator: on Linux a backslash
+    // is an ordinary character in a filename, so `..\..\x` is one harmless name rather than an
+    // escape -- and a test that spelled it that way would be asserting a refusal a correct
+    // Linux agent has no reason to give.
+    let error = refused(&escaping());
     assert!(
         matches!(error, PathError::Parent { .. }),
         "expected a parent refusal, got {error:?}"
@@ -95,15 +155,14 @@ fn a_parent_component_is_refused_by_name() {
 
 #[test]
 fn a_parent_component_is_refused_anywhere_in_the_path() {
-    // Not just at the front. `a\..\..\b` escapes by the same route.
+    // Not just at the front. `a/../.. /b` escapes by the same route.
     for requested in [
-        r"..\hosts",
-        r"a\..\b",
-        r"a\b\..\..\c",
-        r"a\..\..\Windows\hosts",
-        "../hosts",
+        nested(&["..", "hosts"]),
+        nested(&["a", "..", "b"]),
+        nested(&["a", "b", "..", "..", "c"]),
+        nested(&["a", "..", "..", "Windows", "hosts"]),
     ] {
-        let error = refused(requested);
+        let error = refused(&requested);
         assert!(
             matches!(error, PathError::Parent { .. }),
             "{requested:?} gave {error:?}"
@@ -113,7 +172,7 @@ fn a_parent_component_is_refused_anywhere_in_the_path() {
 
 #[test]
 fn an_absolute_path_outside_the_root_is_refused() {
-    let error = refused(r"C:\Windows\System32\drivers\etc\hosts");
+    let error = refused(&outside_root());
     assert!(
         matches!(error, PathError::OutsideRoot { .. }),
         "expected an outside-root refusal, got {error:?}"
@@ -122,10 +181,10 @@ fn an_absolute_path_outside_the_root_is_refused() {
 
 #[test]
 fn a_root_that_is_a_prefix_of_another_directory_is_not_enough() {
-    // The string-prefix mistake: `C:\linkletevil` starts with `C:\linklet`, and a
-    // comparison on the string form would accept it. Components are compared for
-    // this reason, and this test is the reason that reason is written down.
-    let error = refused(r"C:\linkletevil\build.exe");
+    // The string-prefix mistake: a sibling directory whose *name* starts with the root's name
+    // would be accepted by a comparison on the string form. Components are compared for this
+    // reason, and this test is the reason that reason is written down.
+    let error = refused(&sibling_of_the_root());
     assert!(
         matches!(error, PathError::OutsideRoot { .. }),
         "expected an outside-root refusal, got {error:?}"
@@ -152,12 +211,16 @@ fn a_stream_on_an_absolute_path_is_refused_too() {
     refused(r"C:\linklet\build.exe:evil");
 }
 
+#[cfg(windows)]
 #[test]
 fn a_drive_relative_path_is_refused() {
     // `C:build.exe` is not `C:\build.exe`. It is build.exe relative to whatever the
     // current directory happens to be on drive C -- a different file depending on
     // how the process was started, which is exactly the kind of thing a root is
     // supposed to remove.
+    //
+    // **Windows only**: on Linux a colon is an ordinary character in a filename, so this is a
+    // legal name and refusing it would be a rule with no reason behind it. See M11.
     let error = refused("C:build.exe");
     assert!(
         matches!(error, PathError::Colon { .. }),
@@ -178,11 +241,19 @@ fn a_network_share_is_refused() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn a_component_ending_in_a_dot_or_a_space_is_refused() {
     // Windows strips them, so `build.exe.` and `build.exe ` and `build.exe` are one
     // file. A check that compared the names literally would pass a name that
     // becomes a different one on disk -- which is how a name-based rule is evaded.
+    //
+    // **Windows only, and the rule is inert rather than absent on Linux** where a trailing dot
+    // or space is an ordinary character in a filename. `Destination::resolve` refuses them
+    // there too, because the checks are not platform-conditional -- so this is over-strict on
+    // Linux rather than broken, and `docs/ROADMAP.md` M11 records the POSIX policy that would
+    // replace it. What is *not* acceptable is the reverse: a test that asserted the refusal on
+    // a platform where the name is legal would be asserting a rule nobody wrote.
     for requested in [r"build.exe.", r"build.exe ", r"a.\b", r"a \b"] {
         let error = refused(requested);
         assert!(
@@ -211,9 +282,11 @@ fn every_reserved_device_name_is_refused_with_and_without_an_extension() {
     }
 }
 
+#[cfg(windows)]
 #[test]
 fn a_reserved_name_in_a_subdirectory_is_refused_too() {
-    // The check is per component, not on the whole path.
+    // The check is per component, not on the whole path. Windows-only for the same reason as
+    // the two above: `NUL` is a device there and a file here.
     refused(r"logs\NUL");
 }
 
@@ -226,6 +299,52 @@ fn an_ordinary_name_that_merely_starts_like_a_device_is_allowed() {
         .expect("an ordinary name");
     destination().resolve("com10.txt").expect("not a device");
     destination().resolve("nullify").expect("not a device");
+}
+
+// --- what Linux does with the Windows forms ----------------------------------
+
+/// The Windows path forms are **not refused on Linux, and cannot escape either**, and this is
+/// the test that says so.
+///
+/// The rules above were written for a Windows filesystem and they are applied unconditionally
+/// -- but three of them are decided by `std` questions that are platform-dependent: whether a
+/// path is absolute, and what counts as a separator. On Linux `..\..\etc\hosts` is therefore a
+/// single name containing backslashes rather than a climb out of the root, and `C:\Windows\x`
+/// is a relative name rather than an absolute path.
+///
+/// **So the refusal does not happen, and the property that matters still does.** T1 is about
+/// writes leaving the directory the operator configured, and nothing here leaves it: every one
+/// of these resolves to a path *inside* the root, because a name that is not absolute and has
+/// no parent component can only be joined under it. That is a weaker guarantee than the
+/// Windows side gives -- a caller is not told its path was odd -- and it is not something to
+/// rely on by accident either, which is why `docs/ROADMAP.md` M11 records the POSIX policy that
+/// would make these refusals explicit rather than incidental.
+#[cfg(not(windows))]
+#[test]
+fn a_windows_path_form_cannot_leave_the_root_on_linux() {
+    let root = std::path::Path::new(ROOT);
+
+    for requested in [
+        r"..\..\Windows\System32\drivers\etc\hosts",
+        r"..\hosts",
+        r"a\..\..\b",
+        r"C:\Windows\System32\drivers\etc\hosts",
+        r"\\server\share\build.exe",
+        r"logs\NUL",
+        r"build.exe.",
+    ] {
+        match destination().resolve(requested) {
+            // Refused: the checks that do not depend on the platform caught it.
+            Err(_) => {}
+            // Not refused, and then it has to be inside the root -- which is the whole of T1.
+            Ok(resolved) => assert!(
+                resolved.starts_with(root),
+                "{requested:?} resolved to {}, which is outside {}",
+                resolved.display(),
+                root.display()
+            ),
+        }
+    }
 }
 
 // --- the shapes that are not paths at all ------------------------------------
@@ -278,7 +397,7 @@ fn every_refusal_quotes_what_caused_it() {
     // A caller reading one of these is a person looking at a path that did not
     // work. "invalid path" would leave them comparing it against a manual.
     let cases: [(PathError, &str); 5] = [
-        (refused(r"..\hosts"), ".."),
+        (refused(&escaping()), ".."),
         (refused("nul"), "device"),
         (refused(r"\\server\share"), "share"),
         (refused("build.exe:evil"), "colon"),
@@ -368,7 +487,7 @@ fn a_manifest_that_checks_out_resolves_to_a_path_under_the_root() {
     use linklet_core::transfer::Manifest;
 
     let manifest = Manifest {
-        path: r"artifacts\build.exe".to_string(),
+        path: nested(&["artifacts", "build.exe"]),
         bytes: 1024,
         sha256: DIGEST.to_string(),
     };
@@ -467,7 +586,7 @@ fn a_manifest_checks_the_path_and_not_only_the_size() {
     use linklet_core::transfer::{Manifest, ManifestError};
 
     let manifest = Manifest {
-        path: r"..\..\Windows\System32\drivers\etc\hosts".to_string(),
+        path: escaping(),
         bytes: 1024,
         sha256: DIGEST.to_string(),
     };
@@ -726,7 +845,7 @@ fn the_senders_own_check_does_not_look_at_the_path() {
     // else's machine, and this side cannot resolve it. Splitting the check is what
     // stops the two ends from disagreeing about who validates what.
     let manifest = Manifest {
-        path: r"..\..\Windows\System32\drivers\etc\hosts".to_string(),
+        path: escaping(),
         bytes: 1,
         sha256: DIGEST.to_string(),
     };

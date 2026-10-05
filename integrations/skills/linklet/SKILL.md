@@ -1,6 +1,6 @@
 ---
 name: linklet
-description: Use when deploying, starting, inspecting or debugging a program on a Windows LAN test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (check, testbed, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent.exe on each target.
+description: Use when deploying, starting, inspecting or debugging a program on a Windows or Linux test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (check, testbed, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent on each target.
 ---
 
 # Driving linklet
@@ -10,9 +10,11 @@ because the order of the calls matters and the wrong order produces failures tha
 look like bugs.
 
 There are two sides. The **host** is the machine you are on, where the MCP server
-runs. Each **target** is a machine running `linklet-agent.exe`. Every tool but
-`check` and `testbed` takes `agent`, an address written `host:port` -- that is the
-only way a tool names a machine, and there is no tool that finds one (see below).
+runs. Each **target** is a machine running a `linklet-agent`. **Targets may be Windows
+or Linux**, and the two are handled the same way from here; the commands you send are
+not, because they run in the target's own shell (`cmd` or `sh`). Every tool but `check`
+and `testbed` takes `agent`, an address written `host:port` -- that is the only way a
+tool names a machine, and there is no tool that finds one (see below).
 
 ## Before anything else
 
@@ -92,15 +94,24 @@ only way a tool names a machine, and there is no tool that finds one (see below)
 - **`kill` refuses to stop the agent itself**, and the refusal comes from the target
   rather than being filtered here: a request that named it is a request that must be
   decided again, not a request that silently succeeded on everything else.
-- **A command sent to a target cannot carry a quote.** The agent runs commands through
-  `cmd /C`, and three layers rewrite quote characters on the way, so a command with
-  quotes comes back reading like the program does not exist. What works is a command
-  with **no quotes at all**: an absolute path with no space in it, and builtins like
-  `certutil` and `type`. `docs/machine.md` has the measured forms that failed.
+- **A command sent to a Windows target cannot carry a quote.** There the agent runs commands
+  through `cmd /C`, and three layers rewrite quote characters on the way, so a command with
+  quotes comes back reading like the program does not exist. What works is a command with **no
+  quotes at all**: an absolute path with no space in it, and builtins like `certutil` and
+  `type`. On Linux the same command goes to `sh -c`, where quoting is ordinary -- but a command
+  written for one target is not automatically right for the other, which is the general shape
+  of this rule. `docs/machine.md` has the measured Windows forms.
 - **A command runs in the agent's working directory, not yours.** A relative path is
   relative to wherever the agent was started, which is usually why a file "is not
   there" -- pass absolute paths, and remember that a transfer path is resolved against
   the agent's root while a *command's* paths are not.
+- **A command is written for the target's own shell.** `dir` is not `ls`, and a deployment
+  script that runs on both machines is two commands, not one. Ask `ps` or `ls` for what is
+  there rather than composing a command that assumes it.
+- **`kill` takes the program with it on both platforms, for different reasons.** On Windows
+  `taskkill /T` walks the child list; on Linux the signal goes to the process group when the
+  pid leads one, which is what `spawn` arranges. Either way, stop a program by the pid `spawn`
+  gave you rather than by the pid `ps` found for it, or a helper it started can outlive it.
 - **One call at a time.** A single MCP server serialises its tools: an `exec` with a
   600-second timeout holds every other call in this session until it returns.
 

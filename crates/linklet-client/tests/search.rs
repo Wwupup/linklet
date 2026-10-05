@@ -229,13 +229,22 @@ fn a_path_that_leaves_the_transfer_root_is_refused_like_a_pull() {
 }
 
 #[test]
-fn a_file_that_is_not_utf8_comes_back_as_text_and_says_which_rule_was_used() {
-    // **The second lesson, over a socket.** These four bytes are GBK for two CJK
-    // characters; they are not UTF-8, and a reader handed them as mojibake without being
-    // told has a broken answer that looks like a working one.
+fn a_file_that_is_not_utf8_is_either_decoded_by_a_named_rule_or_refused_by_name() {
+    // **The second lesson, over a socket.** These four bytes are GBK for two CJK characters;
+    // they are not UTF-8, and a reader handed them as mojibake without being told has a broken
+    // answer that looks like a working one.
     //
     // What is asserted is the label and the round trip, not the characters: the code page
     // differs between machines, and pinning the text would pin the test to this one.
+    //
+    // **What the machine can do about these bytes differs, and both halves are the lesson.**
+    // Windows has a code page table and decodes them, and the answer says which rule it used.
+    // Linux has no such table -- its default encoding is UTF-8 and these bytes are precisely the
+    // ones that are not -- so its honest answer is that it cannot decode them, which is a
+    // *failure to search* and must never be reported as a file with no matches.
+    //
+    // Written as one test with the platform's answer inside it because the invariant is the
+    // same on both: **a reader is never handed text whose provenance is unstated.**
     let agent = Agent::start();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"first\r\n");
@@ -246,27 +255,43 @@ fn a_file_that_is_not_utf8_comes_back_as_text_and_says_which_rule_was_used() {
     let search = grep(&agent.address, &grep_for("gbk.log", "", Direction::First))
         .expect("the agent should answer");
 
-    assert!(search.searched, "{search:#?}");
-    assert_eq!(
-        search.encoding,
-        Encoding::Oem,
-        "these bytes are not UTF-8 and carry no mark, so the machine's code page is the rule"
-    );
+    if cfg!(windows) {
+        assert!(search.searched, "{search:#?}");
+        assert_eq!(
+            search.encoding,
+            Encoding::Oem,
+            "these bytes are not UTF-8 and carry no mark, so the machine's code page is the rule"
+        );
 
-    let text: String = search
-        .lines
-        .iter()
-        .map(|line| line.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        !text.contains('\u{fffd}'),
-        "a lossy decode rather than the machine's: {text:?}"
-    );
-    assert!(
-        text.contains("last"),
-        "and the ASCII around it is intact: {text:?}"
-    );
+        let text: String = search
+            .lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !text.contains('\u{fffd}'),
+            "a lossy decode rather than the machine's: {text:?}"
+        );
+        assert!(
+            text.contains("last"),
+            "and the ASCII around it is intact: {text:?}"
+        );
+    } else {
+        assert!(
+            !search.searched,
+            "this machine cannot name an encoding for these bytes: {search:#?}"
+        );
+        let problem = search.problem.as_deref().unwrap_or_default();
+        assert!(
+            problem.contains("not UTF-8"),
+            "the refusal has to say what it could not do, and said: {problem:?}"
+        );
+        assert!(
+            search.lines.is_empty(),
+            "and it must not report a partial answer as a complete one: {search:#?}"
+        );
+    }
 }
 
 #[test]

@@ -250,10 +250,19 @@ deployment actually has.
 
 Then make the seven claims against that address.
 
-**On Linux the same procedure works**, with two differences and one thing that does not:
-the firewall rule is `ufw`, `firewalld` or nothing, the agent needs no token file
-permissions beyond the usual, and `discover` is Windows-only because it parses `ipconfig`
--- see `docs/ROADMAP.md` M11 for what is portable and what is not.
+**On Linux the same procedure works**, with three differences and one thing that does not:
+the firewall rule is `ufw`, `firewalld` or nothing; the agent needs no token file permissions
+beyond the usual; and **`ps`, `kill`, `spawn`, `exec`, both transfers, `ls`, `grep` and `tail`
+all work**, so the seven claims and the deploy loop are made the same way. What does not work
+there is `discover` (it parses `ipconfig`), `testbed` (it reads `tasklist`) and a `grep` of a
+file that is not UTF-8 -- see `docs/ROADMAP.md` M11 for what each would take.
+
+**The claims are made against a Linux target the same way** -- one line and one exit code
+each -- and the deploy loop is the one worth doing by hand, because it is the sequence a
+person actually performs: `ps` to see the old build, `spawn` the new one, `ps` again to
+confirm it stayed up, `kill` it by the pid the reply gave, and `ps` once more to confirm it
+is gone. Both directions have been driven between real machines: a Windows host against a
+Linux agent and a Linux host against a Windows one.
 
 ## What it deliberately does not do
 

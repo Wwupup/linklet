@@ -127,7 +127,10 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/discovery.rs` | ipconfig, the routing table, and the sockets a scan opens |
 | `crates/linklet-adapters/src/listing.rs` | reading a directory on this machine, one unreadable name at a time |
 | `crates/linklet-adapters/src/search.rs` | reading a file on this machine: the ceiling, the window, and the machine's own decoding |
-| `crates/linklet-adapters/src/processes.rs` | `tasklist` and `taskkill`, the parser that survives the localised notice, and the guard that refuses to stop the agent |
+| `crates/linklet-adapters/src/processes.rs` | the process list and the kill: the orchestration, and the two invariants it holds |
+| `crates/linklet-adapters/src/processes/windows.rs` | `tasklist`, `taskkill`, `wmic`, and the CSV parser that survives a localised notice |
+| `crates/linklet-adapters/src/processes/linux.rs` | `/proc`, `kill`, and the zombie that is not a running process |
+| `crates/linklet-agent/src/shell.rs` | the one module that knows which operating system this is: `cmd /C` or `sh -c` |
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
 | `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
 | `crates/linklet-agent/src/log.rs` | the agent's log file, and what happens when it cannot be written |
@@ -144,7 +147,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |
 | `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary, transfers included |
 | `crates/linklet-client/tests/search.rs` | the search over a socket: the window, the ceiling and the encoding that won |
-| `crates/linklet-client/tests/ps.rs` | the listing and the deploy loop over a socket: look, stop, and confirm |
+| `crates/linklet-client/tests/ps.rs` | the listing and the deploy loop over a socket: look, stop, and confirm -- on whichever platform the suite runs on |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 | `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
 | `crates/linklet-cli/tests/token_file.rs` | the secret as a file on both ends: the Windows bytes, the two refusals, and what each end does instead |

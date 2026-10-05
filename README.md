@@ -276,11 +276,13 @@ accident. This tool:
   copy; there is nothing to talk to yet)
 - does not keep a database, a service, or a daemon on the host
 - **drives Windows and Linux targets, in both directions, verified between two real
-  machines.** The protocol, the sealed channel, both transfer directions, `exec`, `ls`,
-  `grep`, `tail`, `check` and `probe` work either way round: a Windows host driving a Linux
-  agent and a Linux host driving a Windows one. **`ps`, `kill` and `spawn` are Windows-only
-  for now** -- they are `tasklist` and `taskkill` in `linklet-adapters`, and a `ps`-based
-  backend is the work `docs/ROADMAP.md` M11 specifies
+  machines.** The protocol, the sealed channel, both transfer directions, `exec`, `ps`,
+  `kill`, `spawn`, `ls`, `grep`, `tail`, `check` and `probe` work either way round: a
+  Windows host driving a Linux agent, and a Linux host driving a Windows one, including the
+  deploy loop -- look, start, confirm it stayed up, stop it, confirm it is gone. **Three
+  things are still Windows-only**: `discover`, which parses `ipconfig`; `testbed`, which
+  reads `tasklist`; and a `grep` of a file that is not UTF-8, which needs a code-page table
+  Linux does not have. `docs/ROADMAP.md` M11 has the measurement and what each would take
 - does not guess: when it cannot determine something, it returns `unknown` with
   the reason, never a plausible default
 - **has no service on the target, and no supervisor either.** An agent that dies stays

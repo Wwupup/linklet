@@ -31,8 +31,31 @@ to answer one question: **what can I do now that I could not do before?**
   **Nothing in it installs an agent on a target** -- that first copy is a file copy, once, by
   hand.
 
+- **The tool runs on Linux, not only Windows.** Two pieces were in the way and both are done.
+  The agent ran every command by starting `cmd`: that is now `crates/linklet-agent/src/shell.rs`,
+  the one module that knows which operating system it is on, picking `cmd /C` or `sh -c` and
+  `taskkill /T /F` or a process-group `kill -9`. And `ps`, `kill` and `spawn` were `tasklist`
+  and `taskkill`: they now have a second backend in `linklet-adapters/src/processes/`, reading
+  `/proc`, which is the machine-readable answer `ps` formats and is not localised. **Windows
+  and Linux pass the same 45 test suites**, and the deploy loop -- kill the old build, push,
+  start, confirm it stayed up, stop it, confirm it is gone -- was driven in both directions
+  between real machines. What is still Windows-only is `discover` (it parses `ipconfig`),
+  `testbed` (it reads `tasklist`) and a `grep` of a file that is not UTF-8;
+  `docs/ROADMAP.md` M11 has the rest and what each would take.
+- **`linklet-agent --no-log`**, for an operator who wants no record written. It is the
+  opt-out the default below made necessary, and what it costs is stated where it is
+  offered: a request that never finishes then leaves no evidence behind.
+
 ### Fixed
 
+- **A kill refused to act on a machine it could not see.** A kill needs the process list twice
+  -- to find the process a name refers to, and to check the request against the pids that must
+  not be stopped -- and it used to be handed an empty one when the machine could not be read.
+  That answered both questions wrongly: `matched: 0`, which a deploy loop reads as a clean
+  machine, and "no protected pid found", which is how an explicit `--pid` naming the agent
+  itself would have got through and ended the conversation. The candidate list is now a value
+  (`Seen`) that a caller has to build on purpose, and `Seen::Blind` is refused by name with
+  nothing attempted.
 - **The agent's log recorded a never-ending liveness check.** `identity` is the one
   request that asks for nothing, and it is what a monitor calls; writing it down turned
   the record into a heartbeat. On this project's own bench, four days of a five-second
@@ -50,6 +73,16 @@ to answer one question: **what can I do now that I could not do before?**
   the scheduler's directory and the default would have landed in `System32\logs` on
   exactly the unattended machines this exists for. `--log` still chooses a path and
   `--no-log` turns it off.
+- **A file that is not UTF-8 cannot be searched on Linux, and now says so rather than
+  reporting a missing file.** The code-page fallback is PowerShell, which is not there, so the
+  failure read as `No such file or directory (os error 2)` -- which sends a reader looking for
+  a log that is present and correct. It now names the gap: this machine has no code page for
+  these bytes. `docs/ROADMAP.md` M11 records what closing it would take.
+- **The supervisor wrote a line every five seconds for as long as the machine was up**, on the
+  console of whoever was watching the target and in its own log. Measured on this project's
+  bench after four days: **18,786 of the 18,815 lines were one sentence** saying the agent was
+  fine. A cycle is now written when it changes, or when it has stood for five minutes. Nothing
+  is hidden: every death, recovery, kill and start is still there.
 
 ### Removed
 
@@ -65,30 +98,6 @@ to answer one question: **what can I do now that I could not do before?**
   first and one that could only run on one platform. **The seven claims are the durable thing
   and the program was not**: they are a list in `docs/smoke.md` now, and they are made with
   whatever client is to hand.
-
-### Added
-
-- **The agent runs on Linux.** `crates/linklet-agent/src/shell.rs` is now the only module in
-  the project that knows which operating system it is on: it picks `cmd /C` or `sh -c`, and
-  `taskkill /T /F` or a process-group `kill -9`, so `exec` and `spawn` and the deadline that
-  stops them work on both. It was two files each hardcoding `cmd`, and it turned the whole
-  `linklet-agent` suite green on Linux -- 36 tests that had never run there.
-  **A Windows host driving a Linux agent, and a Linux host driving a Windows one, are both
-  verified between real machines**; so are both transfer directions, digests included. What
-  is still Windows-only is `ps`, `kill` and `spawn`, which are `tasklist` and `taskkill` in
-  `linklet-adapters`; `docs/ROADMAP.md` M11 is what the rest of it would take, and what
-  running the suite on Linux found.
-- **`linklet-agent --no-log`**, for an operator who wants no record written. It is the
-  opt-out the default above made necessary, and what it costs is stated where it is
-  offered: a request that never finishes then leaves no evidence behind.
-- **The supervisor wrote a line every five seconds for as long as the machine was up**, on the
-  console of whoever was watching the target and in its own log. Measured on this project's
-  bench after four days: **18,786 of the 18,815 lines were one sentence** saying the agent was
-  fine, and the same probe had put 37,596 `identity` lines into the agent's own 37,781 -- so
-  the request log whose whole design is that a *missing* second line names a wedged request had
-  0.5% of its content left for the work. A cycle is now written when it changes, or when it has
-  stood for five minutes. Nothing is hidden: every death, recovery, kill and start is still
-  there. `docs/smoke.md` has the table and the reasoning.
 
 What a release looks like, and what a version number means here, is in
 `docs/VERSIONING.md`.

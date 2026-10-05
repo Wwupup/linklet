@@ -223,40 +223,62 @@ fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Ve
 
 /// Decodes a file with the machine's own idea of its default encoding.
 ///
-/// Through PowerShell, which has the code page tables `std` does not, and which is already
-/// on every Windows target this runs against. **The bytes are written out and read back
-/// rather than being decoded in place**, because what is wanted is the *text* of a file that
-/// may be any legacy code page, and asking the operating system for it beats guessing.
+/// On Windows, through PowerShell, which has the code page tables `std` does not and which is
+/// already on every Windows target this runs against. **The bytes are written out and read back
+/// rather than being decoded in place**, because what is wanted is the *text* of a file that may
+/// be any legacy code page, and asking the operating system for it beats guessing.
+///
+/// **On Linux there is no such table, and this says so rather than picking one.** A Linux
+/// machine's default encoding is UTF-8 and it has no notion of the "OEM code page" the label on
+/// this path names: the bytes that reach here are precisely the ones that are *not* valid
+/// UTF-8, so there is no rule this machine owns that turns them into text. The alternatives
+/// were both worse than a refusal -- decoding them lossily would hand a reader replacement
+/// characters while the label claimed a code page was used, and guessing a code page would be
+/// the same silent guess `docs/ROADMAP.md` M10 is about -- so this reports the gap and the
+/// caller is told which bytes could not be read.
 ///
 /// # Errors
 ///
-/// A sentence when the shell is not there or the file could not be read; **a decoding this
-/// cannot do is a failure to search and not a file with no matches**, which is the
-/// distinction the whole module is arranged around.
+/// A sentence when the shell is not there, the file could not be read, or -- on Linux -- the
+/// machine has no rule for these bytes. **A decoding this cannot do is a failure to search and
+/// not a file with no matches**, which is the distinction the whole module is arranged around.
 fn decode_with_the_machine(target: &Path, path: &str) -> Result<String, String> {
-    // `-Encoding Default` is the machine's ANSI code page, which for console output on a
-    // Chinese Windows is 936 and on an English one is 1252. **It is not the OEM code page**
-    // -- `Get-Content` has no spelling for that -- and the difference is stated in the
-    // label the caller reads rather than papered over: the label says which rule was used.
-    let script = format!(
-        "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; \
-         Get-Content -LiteralPath '{}' -Raw -Encoding Default",
-        target.display().to_string().replace('\'', "''")
-    );
+    #[cfg(windows)]
+    {
+        // `-Encoding Default` is the machine's ANSI code page, which for console output on a
+        // Chinese Windows is 936 and on an English one is 1252. **It is not the OEM code page**
+        // -- `Get-Content` has no spelling for that -- and the difference is stated in the
+        // label the caller reads rather than papered over: the label says which rule was used.
+        let script = format!(
+            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; \
+             Get-Content -LiteralPath '{}' -Raw -Encoding Default",
+            target.display().to_string().replace('\'', "''")
+        );
 
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .map_err(|error| format!("cannot read {path} as the machine's code page: {error}"))?;
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .map_err(|error| format!("cannot read {path} as the machine's code page: {error}"))?;
 
-    if !output.status.success() {
-        let complaint = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "cannot read {path} as the machine's code page: {}",
-            complaint.trim()
-        ));
+        if !output.status.success() {
+            let complaint = String::from_utf8_lossy(&output.stderr);
+            return Err(format!(
+                "cannot read {path} as the machine's code page: {}",
+                complaint.trim()
+            ));
+        }
+
+        String::from_utf8(output.stdout)
+            .map_err(|error| format!("the machine's own text was not UTF-8: {error}"))
     }
 
-    String::from_utf8(output.stdout)
-        .map_err(|error| format!("the machine's own text was not UTF-8: {error}"))
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        Err(format!(
+            "cannot decode {path}: these bytes are not UTF-8, and this machine has no code \
+             page to fall back on -- the file is binary or in a legacy encoding this platform \
+             cannot name"
+        ))
+    }
 }

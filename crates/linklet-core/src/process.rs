@@ -474,6 +474,37 @@ pub enum Refusal {
         /// The names that matched, which is what the caller has to act on.
         names: Vec<String>,
     },
+    /// The machine's process list could not be read, so the request could not be checked.
+    ///
+    /// **Refused rather than attempted against an empty list.** A kill needs the candidate
+    /// list twice: to find the process a name refers to, and to check the request against the
+    /// pids that must not be stopped. An empty list answers both questions wrongly -- it
+    /// reports `matched: 0`, which a deploy loop reads as a clean machine, and it finds no
+    /// protected pid, which is how an explicit `--pid` naming the agent itself would get
+    /// through. Neither is a fact about the machine; both are the absence of one.
+    CannotSee {
+        /// What went wrong, in the adapter's own words.
+        reason: String,
+    },
+}
+
+/// What the machine could tell us about what is running.
+///
+/// **An argument to [`plan_kill`] rather than a `&[Target]`, and that is the point.** A
+/// caller cannot pass an empty slice by accident, because an empty slice means something
+/// real -- a machine with nothing running -- and "I could not look" is a different fact that
+/// has to be constructed on purpose. `docs/ROADMAP.md` M10 is the whole of the argument, one
+/// layer down from where it is usually made: the same confusion that makes an empty listing
+/// unreadable makes an unreadable listing look like a safe one to kill against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seen<'a> {
+    /// The machine's process list was read, and these are the processes on it.
+    Listed(&'a [Target]),
+    /// It could not be read, and this is why.
+    Blind {
+        /// What went wrong, in the adapter's own words.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -489,6 +520,12 @@ impl std::fmt::Display for Refusal {
                 "{} is the agent serving this request, or the process that started it: \
                  stopping it would end the conversation before the answer could be sent",
                 names.join(", ")
+            ),
+            Self::CannotSee { reason } => write!(
+                f,
+                "the machine's process list could not be read ({reason}), so this request \
+                 could not be checked against the processes it must not stop: nothing was \
+                 attempted"
             ),
         }
     }
@@ -556,9 +593,9 @@ impl KillReport {
 ///
 /// # Errors
 ///
-/// [`Refusal::NotForced`] for a bulk request without `force`, and
-/// [`Refusal::WouldKillItself`] when the request would take a protected process. Both mean
-/// **nothing was attempted**.
+/// [`Refusal::NotForced`] for a bulk request without `force`, [`Refusal::CannotSee`] when the
+/// machine's process list could not be read, and [`Refusal::WouldKillItself`] when the request
+/// would take a protected process. All three mean **nothing was attempted**.
 ///
 /// `protected` is the pids the caller cannot afford to lose -- the agent's own and the
 /// process that started it -- and it is an argument rather than a constant because this
@@ -568,9 +605,18 @@ pub fn plan_kill(
     to_kill: &ToKill,
     force: bool,
     exclude: Option<&str>,
-    candidates: &[Target],
+    seen: Seen<'_>,
     protected: &[u32],
 ) -> Result<Vec<Target>, Refusal> {
+    // **The machine first**, before the request's own shape is judged. Both are refusals and
+    // both mean nothing was attempted, and this one is reported first because it is the one
+    // the caller cannot fix: being told to add `--yes` and then being told the machine could
+    // not be read is a turn spent on the wrong problem.
+    let candidates = match seen {
+        Seen::Listed(candidates) => candidates,
+        Seen::Blind { reason } => return Err(cannot_see(reason)),
+    };
+
     if to_kill.is_bulk() && !force {
         return Err(Refusal::NotForced {
             what: to_kill.describe(),
@@ -606,6 +652,14 @@ pub fn plan_kill(
         })
         .cloned()
         .collect())
+}
+
+/// The refusal for a machine that could not be read.
+///
+/// A named function rather than a struct literal inline, so the branch in [`plan_kill`] reads
+/// as the decision it is.
+fn cannot_see(reason: String) -> Refusal {
+    Refusal::CannotSee { reason }
 }
 
 /// A report for a request that was refused before anything ran.
@@ -989,8 +1043,14 @@ mod tests {
     #[test]
     fn a_pid_is_killed_without_being_forced() {
         // A pid is one process and the caller has already said which.
-        let planned = plan_kill(&ToKill::Pid(10), false, None, &candidates(), &PROTECTED)
-            .expect("one process by number");
+        let planned = plan_kill(
+            &ToKill::Pid(10),
+            false,
+            None,
+            Seen::Listed(&candidates()),
+            &PROTECTED,
+        )
+        .expect("one process by number");
 
         assert_eq!(planned.len(), 1);
         assert_eq!(planned[0].pid, 10);
@@ -1005,7 +1065,7 @@ mod tests {
             &ToKill::Matching("app".to_string()),
             false,
             None,
-            &candidates(),
+            Seen::Listed(&candidates()),
             &PROTECTED,
         )
         .expect_err("a bulk match without --yes");
@@ -1026,7 +1086,7 @@ mod tests {
             &ToKill::Matching("app".to_string()),
             true,
             None,
-            &candidates(),
+            Seen::Listed(&candidates()),
             &PROTECTED,
         )
         .expect("forced");
@@ -1049,7 +1109,7 @@ mod tests {
             &ToKill::Matching("linklet-agent".to_string()),
             true,
             None,
-            &candidates(),
+            Seen::Listed(&candidates()),
             &PROTECTED,
         )
         .expect_err("this would stop the agent");
@@ -1074,7 +1134,7 @@ mod tests {
             &ToKill::Matching("agent".to_string()),
             true,
             Some("linklet-agent"),
-            &candidates(),
+            Seen::Listed(&candidates()),
             &PROTECTED,
         )
         .expect_err("excluding it does not make the request safe");
@@ -1094,7 +1154,7 @@ mod tests {
             &ToKill::Matching("app".to_string()),
             true,
             Some("helper"),
-            &candidates(),
+            Seen::Listed(&candidates()),
             &PROTECTED,
         )
         .expect("forced");
@@ -1104,11 +1164,86 @@ mod tests {
     }
 
     #[test]
+    fn a_machine_that_could_not_be_read_is_refused_rather_than_killed_against() {
+        // **The hole this closes, and it was reachable two ways.** A kill needs the candidate
+        // list to find the process a name refers to *and* to check the request against the
+        // pids that must not be stopped. Handed an empty list when the machine could not be
+        // read, `plan_kill` answered both questions wrongly: `matched: 0`, which a deploy loop
+        // reads as a clean machine, and "no protected pid found", which is how an explicit
+        // `--pid` naming the agent itself would have got through and ended the conversation.
+        //
+        // The fix is that a caller cannot express any of that by accident: `Seen::Blind` is a
+        // value it has to build on purpose, and this is what happens when it does.
+        let refusal = plan_kill(
+            &ToKill::Pid(10),
+            false,
+            None,
+            Seen::Blind {
+                reason: "cannot run tasklist: not found".to_string(),
+            },
+            &PROTECTED,
+        )
+        .expect_err("a machine that could not be read is not a machine with nothing running");
+
+        let Refusal::CannotSee { reason } = &refusal else {
+            panic!("expected a refusal about not being able to look, got {refusal:?}");
+        };
+        assert!(reason.contains("tasklist"), "{refusal}");
+        let text = refusal.to_string();
+        assert!(
+            text.contains("nothing was attempted"),
+            "the refusal has to say that nothing ran: {text}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_pid_for_the_agent_is_guarded_by_the_list_and_not_by_the_number() {
+        // The other half of the same hole, on its own because it is the consequence that
+        // matters: the guard works by finding the protected pid *in the list*. With no list
+        // there is no guard -- which is why the answer is a refusal and not an attempt.
+        let agent_pid = PROTECTED[0];
+
+        let guarded = plan_kill(
+            // An explicit pid, which is never gated for forcing.
+            &ToKill::Pid(agent_pid),
+            false,
+            None,
+            Seen::Listed(&candidates()),
+            &PROTECTED,
+        )
+        .expect_err("the agent's own pid is protected");
+
+        assert!(
+            matches!(guarded, Refusal::WouldKillItself { .. }),
+            "{guarded:?}"
+        );
+
+        let blind = plan_kill(
+            &ToKill::Pid(agent_pid),
+            false,
+            None,
+            Seen::Blind {
+                reason: "the list could not be read".to_string(),
+            },
+            &PROTECTED,
+        )
+        .expect_err("blind is refused too, and for the reason that matters here");
+
+        assert!(matches!(blind, Refusal::CannotSee { .. }), "{blind:?}");
+    }
+
+    #[test]
     fn a_name_that_matches_nothing_plans_nothing_and_is_not_an_error() {
         // "Make sure it is gone" is an ordinary intent, and a machine where it never
         // existed is that intent already satisfied.
-        let planned = plan_kill(&ToKill::Pid(4242), false, None, &candidates(), &PROTECTED)
-            .expect("nothing to kill is not a refusal");
+        let planned = plan_kill(
+            &ToKill::Pid(4242),
+            false,
+            None,
+            Seen::Listed(&candidates()),
+            &PROTECTED,
+        )
+        .expect("nothing to kill is not a refusal");
 
         assert!(planned.is_empty());
     }

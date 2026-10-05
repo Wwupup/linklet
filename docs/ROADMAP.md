@@ -684,14 +684,14 @@ either.** Both binaries link.
 |---|---|
 | `linklet-core` | all pass -- it is pure, so this was never in question |
 | `linklet-adapters` | all pass, including the transfer and handshake suites |
-| `linklet-client` | all pass except `tests/ps.rs`, which is `ps`, `kill` and `spawn` |
-| `linklet-agent` | **all 36 pass**, once `cmd` stopped being hardcoded |
+| `linklet-client` | all pass, `tests/ps.rs` included: the deploy loop closes on Linux |
+| `linklet-agent` | all pass, once `cmd` stopped being hardcoded |
 | `linklet-cli` | all pass |
 
-The failures that remain are one module: **`ps`, `kill` and `spawn` are `tasklist`,
-`taskkill` and `wmic`**, in `linklet-adapters/src/processes.rs`, and that file has no
-platform split in it at all. Everything else -- the protocol, the frames, the cipher, the
-transfer, `exec`, `ls`, `grep`, `tail` -- passes on a machine none of it was written on.
+**45 suites each on Windows and Linux, no failures on either.** `cargo test --workspace` stops
+at the first failing test binary, which is worth knowing before reading a partial run as a
+complete one: several of the failures below were invisible for exactly that reason until
+`--no-fail-fast` was used.
 
 **`cmd` is no longer hardcoded**, which was the first step this section asked for and the
 one that mattered most: `crates/linklet-agent/src/shell.rs` is now the only module in the
@@ -742,48 +742,72 @@ directions are **cross-platform in both directions**, verified between two real 
 rather than reasoned about -- and the half that was hardest to get right is the half that
 did not need changing.
 
-### What is left, which is one module
+### 5. And the deploy loop closes on both
 
-The list used to be six call sites. Two of them are done -- `execute.rs` and `spawn.rs`
-now go through `linklet-agent/src/shell.rs`, which is where the `cfg` lives:
+The last piece was `ps`, `kill` and `spawn`, which were `tasklist`, `taskkill` and `wmic` with
+no platform split at all. `linklet-adapters/src/processes/` now holds two backends behind one
+facade: the orchestration -- read everything uncapped, filter, plan, report -- is shared and
+holds the invariants, and each platform answers only three questions.
+
+**Driven both ways between real machines**, look, start, confirm, stop, confirm:
+
+```text
+Windows host -> Linux agent (WSL)
+  ps --name sleep     -> 0 of 31 match, filter name=sleep
+  spawn 'echo deploy-marker; sleep 600' -> started 33844
+  ps --name sleep     -> 33844 sleep      1 of 32 match
+  kill --pid 33844    -> killed 1 of 1
+  ps --name sleep     -> 0 of 31 match, filter name=sleep
+  kill --name linklet-agent --yes -> refused, exit 3
+  pull deployed.log   -> "deploy-marker"
+
+Linux host -> Windows agent (192.168.100.2:8790)
+  spawn 'ping -n 600 127.0.0.1' -> started 3068
+  ps --name PING.EXE  -> 13064 PING.EXE   1 of 192 match
+  kill --pid 13064    -> killed 1 of 1
+  ps --name PING.EXE  -> 0 of 190 match
+```
+
+### What is left, which is three call sites
 
 | where | what it assumes | used by | state |
 |---|---|---|---|
 | `linklet-agent/src/shell.rs` | `cmd /C` or `sh -c`, and `taskkill /T` or `kill -9 -PGID` | `exec`, `spawn` | **done** |
-| `linklet-adapters/src/processes.rs` | `tasklist`, `taskkill`, `wmic` | `ps`, `kill` | open |
+| `linklet-adapters/src/processes/` | `tasklist`/`wmic` or `/proc` | `ps`, `kill` | **done** |
 | `linklet-adapters/src/system.rs` | `tasklist` | `testbed` | open |
 | `linklet-adapters/src/discovery.rs` | `ipconfig`, `route print -4` | `discover` | open |
-| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 | open, and harmless: Linux is UTF-8, so the path is never taken |
+| `linklet-adapters/src/search.rs` | `powershell` for the machine's code page | `grep`, `tail` on non-UTF-8 | open |
 
-**`processes.rs` is the one that matters**, because `ps`, `kill` and `spawn` are the deploy
-loop. The shape of the fix is the one this project already uses and already calls its best
-idea: M2 put a `Probe` trait in the core and the TCP implementation in `adapters`, and a
-`ps`-based backend behind the same [`Listing`](crate::process::Listing) would be the same
-move. What it needs is a `ps` parser with the care the `tasklist` one has -- the two
-notices, the capped listing against the uncapped one, the guard on the agent's own pid --
-and it is not a flag on the existing code.
-
-**The two bugs `processes.rs` records are the specification for that work**: a cap on what
-is reported must not be a cap on what is acted on, and a name match that was deliberately
-not killed leaves the report incomplete. Neither is a Windows fact.
+**`testbed` is the cheapest of the three**: it asks "is this process still running", which the
+Linux backend's `exists` already answers, so it is a call that has to move rather than a
+parser that has to be written. **`discover` is the most work and the least needed**: `ipconfig`
+is replaced by the routing table and `/proc/net`, which is a different program and a different
+parser. **`search` is the one that is a real gap in capability** rather than in coverage: a
+Linux machine's default encoding is UTF-8, so a file that is not UTF-8 has no rule there that
+turns it into text, and the honest answer today is a refusal that names the problem. Closing it
+means the same thing it means on Windows -- a code page table -- which is a dependency and a
+decision rather than a fix.
 
 ### What it does not do, and what this does not claim
 
-- **The deploy loop does not run on Linux yet.** `exec`, the transfers, `ls`, `grep`,
-  `tail`, `check` and `probe` do, on a real Linux agent driven from Windows and the other
-  way round; `ps`, `kill` and `spawn` are `tasklist` and `taskkill` and stop there.
-- **No Linux CI.** `.github/workflows/verify.yml` runs Windows. Adding an `ubuntu-latest`
-  job would now leave exactly one suite red, which is a truer signal than none -- and it is
-  a decision rather than a free addition, because a job that is expected to fail teaches
-  people to ignore it.
-- **`discover` is the one capability that cannot be shared**, because it parses
-  `ipconfig`. On Linux the answer is the routing table and `/proc`, which is a different
-  program and a different parser, not a fix to this one.
+- **The Linux path policy for transfers is sound but unspecified.** `Destination::resolve`
+  applies the Windows rules unconditionally, and three of them are decided by `std` questions
+  that are platform-dependent -- whether a path is absolute, and what a separator is. So on
+  Linux `..\..\etc\hosts` is an ordinary filename rather than a climb out of the root: **it is
+  not refused, and it cannot escape either**, which is verified rather than assumed
+  (`crates/linklet-core/tests/transfer_paths.rs` has the test). That is a weaker guarantee than
+  Windows gives -- a caller is not told its path was odd -- and it should not be relied on by
+  accident. The fix is a POSIX path policy beside the Windows one, and it was deliberately not
+  rushed: T1 is described in `docs/transfer.md` as more severe than anything in the framing
+  list, *"because a framing bug is a refusal and this is a write"*.
+- **No Linux CI.** `.github/workflows/verify.yml` runs Windows. An `ubuntu-latest` job would
+  now be green, which is the argument for adding it -- and it is a decision rather than a free
+  addition, because this suite has only ever been run on Linux by hand, from a checkout.
 
 ### What running the suite on Linux found, which is the useful part
 
-Six test files assumed Windows in ways that had nothing to do with the product, and every
-one of them would have passed forever on one machine:
+Every one of these passed forever on one machine, and each is a fact about a *test* rather
+than about the product:
 
 - `..\..\escaped.exe` is an escape on Windows and **an ordinary filename on Linux**, where
   a backslash is not a separator -- so three path-escape tests were asserting a refusal that
@@ -795,14 +819,35 @@ one of them would have passed forever on one machine:
 - "is not recognized" and "not found" are two shells' words for the same fact.
 - `ping -n 30` and `certutil` were the Windows way to say "runs for a while" and "prints a
   lot".
+- **The transfer-path suite never ran on Linux at all**, because its fixture built its root as
+  `C:\linklet`, which is not an absolute path there: thirteen tests failed at the fixture
+  rather than at a rule. Fixing that is what exposed the unspecified-policy finding above.
 - **A closed loopback port in WSL times out instead of being refused**, measured with bare
   Python sockets as well as with this tool, so `linklet` was reporting what the operating
   system told it -- which is the design -- while a test asserted the word Windows produces.
   `docs/machine.md` has it.
 
-And one real race: the completion line of the log is written *after* the reply is on the
-wire, deliberately, so a test that reads the log the moment it holds the reply can read it
-one line early. Windows timing hid it; the test now waits for the file to settle.
+Three findings are about the product rather than the tests, and all three came from the same
+place -- reading a live process table:
+
+- **A `spawn`ed program becomes a zombie on Linux**, because nothing reaps it: `spawn`
+  deliberately does not wait, and the agent is its parent. `kill` reported it gone (it reads
+  the state) while `ps` still listed it (it did not), which is two answers to one question and
+  the one disagreement a deploy loop cannot survive. A zombie is now not a process in either
+  answer. The zombie itself stays in the table until the agent exits, which is a bounded cost
+  and is named rather than hidden.
+- **The kill guard needed the process list to work**, and was silently handed an empty one when
+  the machine could not be read -- see the `Seen` entry in `CHANGELOG.md`.
+- **Two tests in `tests/ps.rs` both needed a process of their own** on a machine they share,
+  and `ps` can only tell them apart by name. Windows timing hid it; Linux found it at once.
+  They now take turns.
+
+And one race that is neither of those, because the product is right and the test was early:
+the completion line of the log is written *after* the reply is on the wire -- deliberately,
+because "answered" is a fact about a reply that has gone -- so a test that reads the log the
+moment it holds the reply can read it one line early and see a `->` with no `<-`. Windows
+timing hid it, and opening the log file per line rather than holding it made the window wider.
+The test waits for the file to settle now.
 
 ## Parked deliberately
 
@@ -815,10 +860,12 @@ accident. None of these is planned:
   sibling project needed six states, output files, TTLs, cancellation and orphan adoption
   for it, and `spawn` plus a log file is the honest smaller step.
 - a configuration file (flags until there is a proven need for persistence)
-- **a cross-platform agent, parked -- and now with a measurement under it.** It is not
-  refused on principle the way the rest of this list is; it is parked because nothing has
-  needed it yet. M11 is what it would take, and the surprise there is how little of it is
-  the hard part: the protocol and both transfer directions already work on Linux today.
+- **a cross-platform agent, parked -- and no longer parked in the interesting part.** It is
+  not refused on principle the way the rest of this list is. `ps`, `kill` and `spawn` landed in
+  M11, so the deploy loop runs on Linux and the same 45 suites pass on both platforms; what
+  remains there is `testbed`, `discover` and a code page for a non-UTF-8 file, plus the POSIX
+  path policy that transfers need before the two platforms can be said to be equally
+  specified.
 - a daemon or service **on the host** -- still refused; the host is a client. The *target*
   side is a different question and is now M10: the agent died with its console on the first
   real target and was not brought back.
