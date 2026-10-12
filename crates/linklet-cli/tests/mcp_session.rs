@@ -583,8 +583,11 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
         "the tool said {text:?}"
     );
     assert!(
-        text.contains(&format!("{} bytes", content.len())) && text.contains("sha256 "),
-        "the tool result should say what landed and what it hashes to: {text}"
+        text.contains(&format!("{} bytes", content.len()))
+            && text.contains("sha256 ")
+            && text.contains("(verified)"),
+        "the tool result should say what landed, what it hashes to, and that the digest \
+         was already compared: {text}"
     );
 
     let _ = std::fs::remove_file(&local);

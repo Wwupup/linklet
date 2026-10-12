@@ -1150,6 +1150,25 @@ fn the_rendered_text_carries_no_trailing_blank_line() {
 }
 
 #[test]
+fn a_transfer_result_says_the_digest_was_already_compared() {
+    // A result line is only ever printed for a transfer the receiving side hashed and
+    // compared before the file was put under its real name, and the line has to say so.
+    // Without that word it is a digest and nothing else, which a reader takes as an
+    // invitation to hash the file again at the other end -- a round trip for a
+    // comparison that has already been made, and a false alarm the moment the file
+    // changed in between, which a log still being written does by definition.
+    let outcome = wire::TransferOutcome {
+        bytes: 4096,
+        sha256: DIGEST.to_string(),
+    };
+
+    assert_eq!(
+        wire::render_transfer(&outcome, "build.exe"),
+        format!("build.exe: 4096 bytes, sha256 {DIGEST} (verified)")
+    );
+}
+
+#[test]
 fn the_identity_result_carries_a_name_and_a_version() {
     // Both, because a caller that has only a name cannot tell an old agent from a new
     // one, and "which agent is this" is a question about a version as much as a name.

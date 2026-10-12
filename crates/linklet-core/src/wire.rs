@@ -762,6 +762,9 @@ pub fn manifest_from_json(value: &Json) -> Result<Manifest, WireError> {
 /// **The digest it computed**, which is the evidence that T7 passed: a caller told
 /// only "done" has no way to know that the file now on the disk is the one that was
 /// sent, and the whole point of comparing digests is that somebody else can check it.
+/// And a value of this type exists only once that comparison **passed** -- a mismatch is
+/// a refusal and nothing else -- so the type itself is the statement that the bytes
+/// matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOutcome {
     /// How many bytes were written.
@@ -2016,10 +2019,17 @@ pub fn parse_body(body: &[u8]) -> Result<Json, WireError> {
 
 /// Renders a transfer's outcome as the text a caller reads.
 ///
-/// One line, in the order a person checks them: **where it landed, how big it is, and
-/// what it hashes to.** The digest is the whole reason a transfer reports anything --
-/// a caller that is told "done" has no way to know the file it now has is the one that
-/// was sent.
+/// One line, in the order a person checks them: **where it landed, how big it is, what
+/// it hashes to, and that the digest was compared.** The digest is the whole reason a
+/// transfer reports anything -- a caller that is told "done" has no way to know the file
+/// it now has is the one that was sent -- and the receiving side makes the comparison
+/// before the real path is touched, so this line is printed only for a transfer that
+/// matched.
+///
+/// **The trailing word is also an instruction not to repeat the work.** A bare digest
+/// reads as an invitation to hash the file again at the other end, which buys a round
+/// trip for a comparison that has already been made and raises a false alarm the moment
+/// the file has changed in between -- which a log still being written does by definition.
 ///
 /// The destination is passed in rather than read out of the manifest. On a push it is a
 /// path on the other machine and on a pull a path on this one, and either way it is what
@@ -2027,7 +2037,7 @@ pub fn parse_body(body: &[u8]) -> Result<Json, WireError> {
 /// question the caller already answered.
 pub fn render_transfer(outcome: &TransferOutcome, destination: &str) -> String {
     format!(
-        "{destination}: {} bytes, sha256 {}",
+        "{destination}: {} bytes, sha256 {} (verified)",
         outcome.bytes, outcome.sha256
     )
 }

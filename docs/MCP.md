@@ -117,6 +117,16 @@ emptiness readable; `ls` distinguishes a directory that is empty from one that i
 ways is the failure these tools exist to prevent** -- an agent acting on `count: 0` is one step
 from overwriting a running binary, which is where `docs/ROADMAP.md` M10 starts.
 
+**A transfer's result ends with `(verified)`, and that word is there because of what a bare
+digest invites.** The receiving side hashes what it wrote and compares it against the manifest
+before the real path is touched, so a result line is printed only for a transfer that matched
+-- a mismatch is a refusal, and prints no line at all. Without the word the line read as "here
+is a digest, check it", which is a round trip for a comparison already made, and a false alarm
+the moment the file has changed in between, which a log still being written does by definition.
+The tool descriptions carry the same fact before the call rather than after it: both transfers
+are *verified by digest*, so a caller that reads the list has no reason to plan the second
+check.
+
 ## Paths are a boundary
 
 Three arguments name something on **this** machine and refuse an absolute path or `..`:

@@ -11,7 +11,16 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **A transfer's result says the digest was compared, because it was.** The line after a
+  `push` or `pull` now ends with `(verified)`, and the two tools' descriptions say
+  `verified by digest` -- the receiving side has always made that comparison before the
+  file went under its real name, and what was missing was any sentence saying so. A bare
+  digest reads as an invitation to hash the file at the other end, which costs a round
+  trip for a comparison already made, and for a file that has changed in between -- a log
+  still being written, the normal case for a pull -- it manufactures a mismatch about the
+  file moving on rather than about the copy.
 
 ## [0.3.0] -- 2026-10-05
 

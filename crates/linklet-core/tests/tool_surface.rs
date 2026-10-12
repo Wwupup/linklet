@@ -92,7 +92,7 @@ impl ToolRunner for FakeRun {
             from.to_string(),
             to.to_string(),
         ));
-        ToolOutcome::ok("build.exe: 16 bytes, sha256 0123456789abcdef")
+        ToolOutcome::ok("build.exe: 16 bytes, sha256 0123456789abcdef (verified)")
     }
 
     fn pull(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
@@ -101,7 +101,7 @@ impl ToolRunner for FakeRun {
             from.to_string(),
             to.to_string(),
         ));
-        ToolOutcome::ok("build.log: 16 bytes, sha256 0123456789abcdef")
+        ToolOutcome::ok("build.log: 16 bytes, sha256 0123456789abcdef (verified)")
     }
 
     fn ps(&self, agent: &str, filter: &linklet_core::process::Filter) -> ToolOutcome {

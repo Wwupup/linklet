@@ -44,15 +44,19 @@ $ echo $?
 
 ```console
 $ linklet push --agent 10.0.0.5:8787 --from dist/app.exe --to app.exe
-app.exe: 4194304 bytes, sha256 9f86d081884c7d65...
+app.exe: 4194304 bytes, sha256 9f86d081884c7d65... (verified)
 $ linklet pull --agent 10.0.0.5:8787 --from build.log --to build.log
-build.log: 18244 bytes, sha256 2c26b46b68ffc68f...
+build.log: 18244 bytes, sha256 2c26b46b68ffc68f... (verified)
 ```
 
 A transfer goes to the directory the agent was started in, or the one it was given with
 `--root`, and nowhere else -- in either direction. The digest on the line is the one the
-receiving side computed, so a caller can check it against the file it sent or the file
-it now has.
+receiving side computed, and `(verified)` says it compared that against the sender's
+before the file went under its real name. A line is printed only when the comparison
+passed -- a mismatch is a refusal, and prints nothing -- so there is nothing left for the
+caller to check: hashing the file again costs a round trip and raises an alarm about
+nothing the moment the file has changed since, which a log still being written does by
+definition.
 
 **A path that would leave that directory is refused by name, and what counts as leaving it
 is a fact about the target's filesystem.** Use `/` as the separator: it is the one that means

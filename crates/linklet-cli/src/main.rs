@@ -1733,7 +1733,9 @@ fn ps_on(
 /// Shared by the command and the tool, so that the two cannot disagree about what a
 /// failure looks like -- the same shape [`exec_on`] has. The distinction it keeps is the
 /// one this project is arranged around: a call that could not be made is `is_error`, and
-/// a transfer that arrived with the wrong digest is a result carrying bad news.
+/// a transfer whose bytes did not match the digest is a refusal rather than a quiet
+/// success -- so an ok result means the receiving side compared digests and the file
+/// under the real name is the one that was sent.
 fn transfer_on(
     direction: Direction,
     agent: &str,

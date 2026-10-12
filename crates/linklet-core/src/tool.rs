@@ -476,7 +476,10 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "push",
-            description: "Copy one local file to a remote linklet agent.",
+            // "verified by digest" is the one fact a caller otherwise plans around: an agent
+            // that reads this as an ordinary copy hashes the file at the other end itself,
+            // which is a round trip for a comparison the receiving side already made.
+            description: "Copy one local file to a remote linklet agent, verified by digest.",
             input_schema: json::parse(
                 r#"{
                     "type": "object",
@@ -502,7 +505,9 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "pull",
-            description: "Copy one file from a remote linklet agent to here.",
+            // The same word as `push`, and for the same reason: the receiving side here is
+            // the host, and a caller that does not know it checks anyway.
+            description: "Copy one file from a remote linklet agent to here, verified by digest.",
             input_schema: json::parse(
                 r#"{
                     "type": "object",

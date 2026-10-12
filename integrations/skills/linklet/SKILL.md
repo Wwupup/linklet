@@ -51,7 +51,8 @@ tool names a machine, and there is no tool that finds one (see below).
    permissions problem.
 4. **`push`** the new build -- `from` is a local path inside the working tree, `to` is
    under the agent's transfer root. The receiving side verifies the digest before the
-   real path is touched, so a truncated copy fails here rather than confusingly later.
+   real path is touched, so a truncated copy fails here rather than confusingly later;
+   the reply ends `(verified)`, and there is nothing left to check after that.
 5. **`spawn`** it -- `output` is a file on the target for the program's own output,
    and the reply is `started <pid>`. **Never use `exec` for a program that keeps
    running**: `exec` waits, so the request, the connection and the agent's pipes are
@@ -91,6 +92,13 @@ tool names a machine, and there is no tool that finds one (see below).
 - **Every path the agent resolves goes through its transfer root** -- `push`'s `to`,
   `pull`'s `from`, and `spawn`'s `output` included. An absolute path or a `..` is
   refused by name rather than resolved, and the refusal names the argument.
+- **A `push` or `pull` that succeeded is already byte-verified; do not hash the file
+  again.** The receiving side made the comparison before the file went under its real
+  name, so a result line is printed only for a transfer that matched -- it ends
+  `(verified)` -- and a mismatch fails the call with no result line at all. Checking at
+  the other end afterwards buys a round trip for a comparison already made, and for a
+  log that is still being written it reports a "mismatch" that is only the file moving
+  on.
 - **Use `/` as the separator in a transfer path, and expect the target's own rules for
   everything else.** `/` means the same on both platforms; a backslash is a separator on
   Windows and an ordinary character on Linux, so on a Linux target it is refused rather than

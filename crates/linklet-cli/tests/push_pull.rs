@@ -186,8 +186,9 @@ fn a_push_takes_a_file_to_the_agent_and_says_what_landed() {
         "the line should name where it landed and how big it is: {text}"
     );
     assert!(
-        text.contains("sha256 "),
-        "and the digest, which is the only reason a transfer reports anything: {text}"
+        text.contains("sha256 ") && text.contains("(verified)"),
+        "the digest, which is the only reason a transfer reports anything, and the word \
+         that says it has already been compared: {text}"
     );
     assert!(
         stderr(&output).is_empty(),
@@ -226,6 +227,10 @@ fn a_pull_brings_a_file_back_and_says_what_arrived() {
     assert!(
         text.contains("collected.log") && text.contains("22 bytes"),
         "the line should name the local destination: {text}"
+    );
+    assert!(
+        text.contains("(verified)"),
+        "a pull is byte-verified by the receiving side too, and the line says so: {text}"
     );
 
     assert_eq!(
