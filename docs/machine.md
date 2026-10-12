@@ -109,3 +109,11 @@ conclusion before it was found.
   here and 100755 on a Linux clone. CI therefore calls it as `bash tools/make_release.sh`, not
   `./tools/make_release.sh`: calling it by name works on the runner and fails on the machine the
   file was written on.
+- **Windows on this machine answers in Chinese, and a test that matches English shell wording
+  fails looking like a code fault.** `cmd` reports a missing program in Chinese, in GBK bytes
+  that do not even decode as UTF-8, so the wording check in
+  `a_command_that_never_started_has_no_exit_code_and_says_so`
+  (`crates/linklet-agent/tests/agent_server.rs`) failed while the behaviour was right -- the
+  complaint did reach the caller, marked lossy, which is the design. The test now asserts that
+  the complaint arrived rather than what it says. Any test that quotes a program's expected
+  output will have the same fate on a machine with another display language.

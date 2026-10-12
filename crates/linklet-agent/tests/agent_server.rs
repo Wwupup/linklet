@@ -770,10 +770,13 @@ fn a_command_that_never_started_has_no_exit_code_and_says_so() {
     // the point -- this asserts the outcome shape rather than a particular code, because
     // which one the shell picks is the shell's business.
     //
-    // **Both shells' wording is accepted**, and the reason is that the claim is portable
-    // while the sentence is not: `cmd` says "is not recognized" and `sh` says "not found".
-    // Asserting one of them is how a test that looks platform-neutral turns out not to be,
-    // which is what running this suite on Linux found.
+    // **The complaint is asserted to arrive, not to read a particular way.** `cmd` says
+    // "is not recognized" and `sh` says "not found", and a Windows whose display language
+    // is not English says neither, in bytes that do not decode as UTF-8 at all -- measured
+    // on a Chinese-locale machine, where the wording check failed while the behaviour was
+    // correct: the text reached the caller, marked lossy, which is the design. The claim
+    // that travels to every machine is that the shell's words arrive; which words they are
+    // is the shell's business and the machine's language.
     let agent = Agent::start();
     let outcome = run(&agent, "this-program-does-not-exist-anywhere");
 
@@ -781,7 +784,7 @@ fn a_command_that_never_started_has_no_exit_code_and_says_so() {
     assert_ne!(outcome.exit_code, Some(0));
     let complaint = format!("{}{}", outcome.stderr.as_str(), outcome.stdout.as_str());
     assert!(
-        complaint.contains("not recognized") || complaint.contains("not found"),
+        !complaint.trim().is_empty(),
         "the shell's complaint should reach the caller: {outcome:#?}"
     );
 }
