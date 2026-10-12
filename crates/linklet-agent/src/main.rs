@@ -58,7 +58,7 @@ pub const DEFAULT_PORT: u16 = 8787;
 /// Where the log goes when nobody says.
 ///
 /// `logs/agent.log` beside the agent's own executable -- see the comment where it is
-/// used for why this is not the working directory, which is what `--root` defaults to.
+/// used for why this is not the working directory used by relative file paths.
 ///
 /// Falls back to the working directory only if the executable's own path cannot be read,
 /// which is the one case where there is nothing better to say, and it is not worth
@@ -75,7 +75,7 @@ const USAGE: &str = "\
 linklet-agent -- run a command on this machine when a host asks
 
 usage:
-  linklet-agent [--port <port>] [--root <directory>] [--log <file> | --no-log]
+  linklet-agent [--port <port>] [--log <file> | --no-log]
 
 options:
   --port <port>   the port to listen on (default 8787)
@@ -84,21 +84,21 @@ options:
                       LINKLET_TOKEN_FILE). A byte-order mark and the line ending
                       are not part of it. Name this or --token, not both -- the
                       two are two answers to one question
-  --root <directory>  the only directory a transfer may write in or read from, and it
-                      must exist (default: the directory the agent was started in)
   --log <file>    where the request log goes (or LINKLET_LOG). Default: logs/agent.log
                   in the directory the agent's own executable is in, rolled over when
                   it reaches a mebibyte with three older files kept
   --no-log        keep no log. A request that never finishes then leaves no evidence
                   behind, which is the one thing the log exists to answer
   -h, --help      print this
+
+File paths are absolute, or relative to the directory the agent was started in.
+Access is limited by this process's operating-system permissions.
 ";
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     let mut port = DEFAULT_PORT;
-    let mut root: Option<String> = None;
     let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
     let mut token_file: Option<String> = std::env::var("LINKLET_TOKEN_FILE").ok();
     let mut log_path: Option<String> = std::env::var("LINKLET_LOG").ok();
@@ -131,13 +131,6 @@ fn main() {
                 }
             },
             "--no-log" => no_log = true,
-            "--root" => match iterator.next() {
-                Some(value) => root = Some(value.clone()),
-                None => {
-                    eprintln!("linklet-agent: --root needs a directory");
-                    std::process::exit(2);
-                }
-            },
             "--token" => match iterator.next() {
                 Some(value) => token = Some(value.clone()),
                 None => {
@@ -206,56 +199,31 @@ fn main() {
         }
     };
 
-    // The one directory a transfer may touch. Checked here, before the port is bound,
-    // for the same reason the token is: a configuration error should be loud when it is
-    // made rather than at the first caller who tries to push a file.
-    //
-    // The default is the directory the operator started the agent in, made absolute.
-    // That is a decision rather than a convenience: it means the agent can write
-    // *somewhere* the moment it runs, and it is somewhere the operator chose by being
-    // there. Printing it in the banner is what turns that into something they can see.
-    let root = match root {
-        Some(text) => text,
-        None => match std::env::current_dir() {
-            Ok(directory) => directory.to_string_lossy().into_owned(),
-            Err(error) => {
-                eprintln!("linklet-agent: cannot read the working directory: {error}");
-                eprintln!("linklet-agent: pass --root <directory> to say where transfers go");
-                std::process::exit(2);
-            }
-        },
-    };
-    let root = match Destination::new(&root) {
-        Ok(root) => root,
+    // Use the startup directory only as the base for relative paths. Absolute
+    // paths may name any location accessible to this process's account.
+    let base = match std::env::current_dir() {
+        Ok(directory) => directory,
         Err(error) => {
-            eprintln!("linklet-agent: --root: {error}");
+            eprintln!("linklet-agent: cannot read the working directory: {error}");
+            std::process::exit(2);
+        }
+    };
+    let paths = match Destination::new(&base.to_string_lossy()) {
+        Ok(destination) => destination,
+        Err(error) => {
+            eprintln!("linklet-agent: working directory: {error}");
             std::process::exit(2);
         }
     };
 
-    // And that it is a directory that exists, checked here rather than at the first
-    // transfer. An agent that accepted a root which is not there would start happily and
-    // then fail **every** transfer with a filesystem error naming a path nobody typed --
-    // which is what happened on the first real machine this ran against. A configuration
-    // error should be loud when it is made.
-    if !root.root().is_dir() {
-        eprintln!(
-            "linklet-agent: --root {} is not a directory",
-            root.root().display()
-        );
-        eprintln!("linklet-agent: create it, or pass --root with one that exists");
-        std::process::exit(2);
-    }
-
-    // The log, opened before the port is bound for the same reason as the token and the
-    // root: an operator who asked for a log and silently did not get one has a machine
+    // The log, opened before the port is bound for the same reason as the token:
+    // an operator who asked for a log and silently did not get one has a machine
     // whose evidence they believe exists and does not. That is the mistake this feature
     // is a reaction to.
     //
     // **Where it goes by default, and why that is not the working directory.** The
-    // default is `logs/agent.log` beside the executable. A working directory would match
-    // `--root`'s default and would be easier to test, and it is wrong for the deployment
-    // this exists for: a scheduled task starts its program with the scheduler's working
+    // default is `logs/agent.log` beside the executable. A working directory is wrong
+    // for this deployment: a scheduled task starts its program with the scheduler's working
     // directory, not the operator's, so the default would land in `System32\logs` or
     // somewhere equally useless on exactly the machines that run unattended.
     //
@@ -327,19 +295,15 @@ fn main() {
         }
     };
 
-    // The root is on the banner because it is the answer to "what can this agent write
-    // to", which is the first question a person who is about to push a build should be
-    // able to answer without reading a manual. The log is on it for the same reason and
-    // one more: a person reading the log later needs to know it is the log this agent is
-    // writing, and the file it names is the answer.
+    // Name the relative-path base and the log without implying a directory boundary.
     match &log_path {
         Some(path) => println!(
-            "linklet-agent listening on 0.0.0.0:{bound} transfers under {} log {path}",
-            root.root().display()
+            "linklet-agent listening on 0.0.0.0:{bound} file access as process account; relative paths from {} log {path}",
+            paths.base().display()
         ),
         None => println!(
-            "linklet-agent listening on 0.0.0.0:{bound} transfers under {} no log",
-            root.root().display()
+            "linklet-agent listening on 0.0.0.0:{bound} file access as process account; relative paths from {} no log",
+            paths.base().display()
         ),
     }
 
@@ -350,9 +314,9 @@ fn main() {
                 // at a time and each one is a command the caller asked for; a
                 // pool would be machinery bought with nothing.
                 let token = token.clone();
-                let root = root.clone();
+                let paths = paths.clone();
                 let log = request_log.clone();
-                std::thread::spawn(move || server::serve_connection(stream, &token, &root, &log));
+                std::thread::spawn(move || server::serve_connection(stream, &token, &paths, &log));
             }
             // One failed accept is not a reason to stop serving. The listener is
             // still bound and the next caller may be fine.

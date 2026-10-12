@@ -49,23 +49,22 @@ $ linklet pull --agent 10.0.0.5:8787 --from build.log --to build.log
 build.log: 18244 bytes, sha256 2c26b46b68ffc68f... (verified)
 ```
 
-A transfer goes to the directory the agent was started in, or the one it was given with
-`--root`, and nowhere else -- in either direction. The digest on the line is the one the
-receiving side computed, and `(verified)` says it compared that against the sender's
-before the file went under its real name. A line is printed only when the comparison
-passed -- a mismatch is a refusal, and prints nothing -- so there is nothing left for the
-caller to check: hashing the file again costs a round trip and raises an alarm about
-nothing the moment the file has changed since, which a log still being written does by
-definition.
+File tools can use any ordinary path the agent account can access. Absolute paths are
+used directly, including other Windows drives and ordinary UNC shares. Relative paths,
+including `..`, start from the directory the agent was started in. There is no
+`--root` option. To choose the base for relative paths, set the working directory before
+starting the agent; it does not limit access to that directory.
 
-**A path that would leave that directory is refused by name, and what counts as leaving it
-is a fact about the target's filesystem.** Use `/` as the separator: it is the one that means
-the same on both platforms, where a backslash is a separator on Windows and an ordinary
-character elsewhere -- so on a Linux target a backslash is refused rather than quietly
-written as part of a filename. Names Windows cannot hold are ordinary on Linux (`NUL`,
-`a:stream`, a trailing dot) and are accepted there; the ones Windows would resolve to a
-*different file* -- a stream, a device, a name whose trailing dot it strips -- are refused
-there. `docs/transfer.md` T1 has the table and the reason each rule exists.
+The receiving side checks the digest before the file goes under its real name.
+`(verified)` means that comparison passed; a mismatch refuses the transfer and prints
+no success line. A second hash is unnecessary, especially for a log that is still changing.
+
+Use `/` as a portable separator. Empty paths and NUL bytes are refused. On Windows,
+device names, device namespaces, alternate streams, drive-relative paths such as
+`C:file.txt`, and names ending in a dot or space remain unsupported. POSIX refuses
+backslashes to catch Windows-shaped paths. File-type checks and transfer limits still
+apply; `docs/transfer.md` T1 describes them. Like `exec`, file tools use the agent's
+existing OS permissions and do not elevate them.
 
 `ps` prints one line per process, `pid name`, then a summary. **The summary is the
 point**: `0 of 214 match, filter name=app.exe` cannot be read as a clean machine, and an

@@ -46,7 +46,8 @@ Nothing but a running `linklet-agent` and the same token on both sides.
 # On the target, once:
 $env:LINKLET_TOKEN = '<at least sixteen bytes>'
 mkdir C:\linklet\transfers
-linklet-agent.exe --port 8787 --root C:\linklet\transfers
+Set-Location C:\linklet\transfers
+linklet-agent.exe --port 8787
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 ```
@@ -70,9 +71,10 @@ whichever lost would be the one the operator believed was in force.
 
 **The agent keeps a log by default**, at `logs/agent.log` in the directory its own
 executable is in. `--log <file>` (or `LINKLET_LOG`) puts it somewhere else, and
-`--no-log` turns it off. The default is not the working directory, which is what `--root`
-defaults to: a scheduled task starts its program with the *scheduler's* working
-directory, so a default that followed it would land in `System32\logs` on exactly the
+`--no-log` turns it off. File tools resolve relative paths from the startup working
+directory; the default log location is independent of that. A scheduled task starts its
+program with the *scheduler's* working directory, so a default that followed it would
+land in `System32\logs` on exactly the
 unattended machines this is for.
 
 The format is a pair, one line per request:
@@ -130,7 +132,8 @@ machine you intend to keep, have the scheduler start it:
 @'
 @echo off
 set LINKLET_TOKEN=<the secret>
-"C:\linklet\bin\linklet-agent.exe" --port 8787 --root C:\linklet\transfers > C:\linklet\banner.txt 2>&1
+cd /d C:\linklet\transfers
+"C:\linklet\bin\linklet-agent.exe" --port 8787 > C:\linklet\banner.txt 2>&1
 '@ | Set-Content C:\linklet\start-agent.cmd -Encoding ascii
 
 schtasks /Create /TN linklet-agent /SC ONCE /ST 00:00 /TR C:\linklet\start-agent.cmd /F
@@ -212,10 +215,9 @@ operator's secret.
 
 All of them learned by doing it on a real machine:
 
-- **The root has to exist.** The agent refuses to start if `--root` is not a directory,
-  rather than starting and failing every transfer later with a filesystem error naming a
-  path nobody typed. `--root` also defaults to the directory the agent was started in,
-  which is why it is worth passing explicitly on a target.
+- **The startup directory is the base for relative file paths.** Set it in the launcher
+  or scheduled task. Absolute paths and `..` may reach other directories under the agent
+  account permissions; there is no `--root` option.
 - **An explicit `--log` is checked the same way, and for the same reason.** An operator who
   asked for a log and silently did not get one has a machine whose evidence they believe
   exists and does not -- which is the mistake this whole feature is a reaction to. A log
@@ -258,13 +260,12 @@ same way. What does not work there is a `grep` of a file that is not UTF-8: a Li
 no code page for those bytes, and `docs/ROADMAP.md` M11 says what that costs and what closing
 it would take.
 
-**A transfer path is judged by the target's own filesystem rules**, so one of the claims above
-is worth making in both dialects: a path that would leave the root must be refused *by name*,
-and the shape of the escape differs. On Windows `..\..\Windows\hosts` is a climb; on Linux the
-same string is refused as a Windows-shaped path, and `../../etc/hosts` is the climb. **A
-capital letter is the case worth trying on Linux**: `/LINKLET/x` for a root of `/linklet` is a
-different directory there, and accepting it was a real escape until this release.
-`docs/transfer.md` T1 has both rule sets.
+**Check file access outside the startup directory with a disposable directory owned by
+the agent account.** Push and pull using both absolute and `../` paths, then use `ls`,
+`grep`, `tail` and `spawn --output` there. Verify that relative paths still use the startup
+directory. On Windows, test another available drive or ordinary UNC share when relevant;
+access depends on the account and share permissions. Device paths and alternate streams
+remain unsupported. `docs/transfer.md` T1 has the platform rules.
 
 **The claims are made against a Linux target the same way** -- one line and one exit code
 each -- and the deploy loop is the one worth doing by hand, because it is the sequence a
@@ -336,6 +337,5 @@ its console, `netstat` showed nothing listening, and `linklet check` said "no an
 **The agent leaves a record, so look at it third.** An agent that died mid-request leaves a
 `->` with no `<-`, and that line names the request it died on. An agent that died between
 requests leaves pairs, and the last one is simply the last thing it did. It is at
-`logs/agent.log` beside the agent's executable unless `--log` said otherwise, and where
-that is outside the transfer root, `linklet pull` cannot reach it -- read it on the machine
-another way, or start the agent with `--log` inside the root.
+`logs/agent.log` beside the agent's executable unless `--log` said otherwise, and `grep`, `tail` or
+`pull` can read its absolute path when the agent account has access.

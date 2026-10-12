@@ -65,8 +65,7 @@ impl Agent {
             .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
-            .arg("--root")
-            .arg(&root)
+            .current_dir(&root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -188,20 +187,6 @@ fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     ONE_LONG_RUNNING_PROCESS_AT_A_TIME
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-/// A path that tries to leave the agent's transfer root, in this platform's syntax.
-///
-/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
-/// `..\escaped.log` walks up out of the root, and on Linux a backslash is an ordinary character
-/// in a filename -- so the same string names a safe file *inside* the root and a test using it
-/// would pass while proving nothing.
-fn escaping_path(name: &str) -> String {
-    if cfg!(windows) {
-        format!(r"..\{name}")
-    } else {
-        format!("../{name}")
-    }
 }
 
 #[test]
@@ -693,17 +678,8 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
 }
 
 #[test]
-fn a_spawn_output_path_is_relative_to_the_transfer_root() {
-    // **Every other request resolves its path against the agent's transfer root, and `spawn`
-    // did not.** It handed the string straight to `OpenOptions::open`, so a relative path
-    // resolved against whatever directory the agent happened to be started in: the write was
-    // refused with "Access is denied" from a system directory, or it quietly landed somewhere
-    // nobody would look. Found by driving a real release candidate on a real machine, where
-    // every form of relative path failed.
-    //
-    // The failure was invisible to tests because **both spawn tests passed an absolute path**,
-    // and `agent.root.join(..)` produces exactly that. A test that only ever exercises the
-    // form the caller does not use is not testing the interface.
+fn a_spawn_output_path_is_relative_to_the_startup_directory() {
+    // Relative output paths use the same startup directory as other file tools.
     let agent = Agent::start();
 
     // The directory is made first, so that this test is about **where** the path resolves and
@@ -737,46 +713,6 @@ fn a_spawn_output_path_is_relative_to_the_transfer_root() {
         written.exists(),
         "the output should be at {}, which is under the agent's root",
         written.display()
-    );
-}
-
-#[test]
-fn a_spawn_output_that_leaves_the_transfer_root_is_refused_by_name() {
-    // The half that matters more than convenience. `spawn` created a file at a path of the
-    // caller's choosing with **no `..` guard at all**, because the guard lives in
-    // `Destination::resolve` and this path never went through it. Every other write in this
-    // protocol is rooted; this one was not, so it could create a file anywhere the agent
-    // could -- and it was only luck (the agent's working directory permissions) that made
-    // the escape fail rather than succeed.
-    let agent = Agent::start();
-
-    let error = spawn(
-        &agent.address,
-        &SpawnRequest {
-            command: "echo escaped".to_string(),
-            output: escaping_path("escaped.log"),
-        },
-    )
-    .expect_err("a path that leaves the root must not be written");
-
-    assert!(matches!(error, CallError::Refused(_)), "{error:?}");
-    let text = error.to_string();
-    assert!(
-        text.contains(".."),
-        "the refusal should name what it refused, and said: {text}"
-    );
-
-    // And nothing was written outside the root. The root's parent is this test's scratch
-    // directory, so a file there is a file that escaped.
-    let escaped = agent
-        .root
-        .parent()
-        .expect("the root has a parent")
-        .join("escaped.log");
-    assert!(
-        !escaped.exists(),
-        "{} must not exist: the agent wrote outside its root",
-        escaped.display()
     );
 }
 

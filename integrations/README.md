@@ -132,7 +132,8 @@ out what a deployment actually consists of. On the target, once:
 
 ```powershell
 mkdir C:\linklet\transfers
-linklet-agent.exe --port 8787 --root C:\linklet\transfers --token-file C:\linklet\token.txt
+Set-Location C:\linklet\transfers
+linklet-agent.exe --port 8787 --token-file C:\linklet\token.txt
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 ```
@@ -144,7 +145,8 @@ that never finished is named -- see `docs/smoke.md`.
 
 **An agent with no secret at all refuses to start and says so**, which is the cheapest
 place to find out -- the alternative is a port that accepts connections and refuses
-every caller. `--root` is checked the same way, and the firewall rule is the one step
+every caller. File tools accept absolute paths or resolve relative paths from the startup
+directory, with the agent account permissions. The firewall rule is the one step
 nothing here can do for you: an agent cannot open a port on a machine it has not been
 installed on yet.
 

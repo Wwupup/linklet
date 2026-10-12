@@ -222,7 +222,7 @@ least maintainable, and the maintainability half is what bit.
 tag is a commit and the binaries are a function of it. There is no migration to reverse and no
 state on the target that a version writes:
 
-- The agent keeps a log file and a transfer root. Both are the operator's and neither has a
+- The agent keeps a log file and transfers files to operator-selected paths. Neither has a
   format a version owns.
 - Nothing on the target records which tool talked to it.
 

@@ -1,86 +1,19 @@
-//! Where a transfer is allowed to write, and every way a path lies about that.
+//! File paths and transfer validation before any I/O.
 //!
-//! `docs/transfer.md` T1: the destination is the caller's, so a path the caller
-//! chooses is a path an attacker chooses if anything upstream is confused.
+//! Absolute paths name files directly; relative paths are joined to the agent's
+//! startup directory. The operating system enforces access permissions. This is
+//! the same authority used by command execution, so a directory boundary on file
+//! tools would not confine a caller that can also execute commands.
 //!
-//! This module is pure: it takes strings and returns a decision. That is what lets
-//! every rule below be tested in microseconds and what keeps the filesystem work --
-//! does it exist, is it a link, is it a regular file -- in the adapter where it
-//! belongs.
+//! Windows device names, alternate streams, ambiguous drive-relative paths and
+//! names with stripped suffixes are refused to avoid operating on a different
+//! object than the caller named. Ordinary UNC paths and other drives are allowed.
+//! POSIX keeps its own filename rules; a backslash is refused to catch a Windows
+//! path sent to a POSIX target. Empty paths and NUL bytes are refused everywhere.
 //!
-//! # Two rule sets, because there are two filesystems
-//!
-//! **A path rule is a fact about a filesystem**, and the two this tool runs on disagree about
-//! what a path even *is*. So the rules are split three ways rather than applied everywhere:
-//!
-//! | | rule | why |
-//! |---|---|---|
-//! | **both** | empty, a NUL byte, a `..` component, an absolute path outside the root | these are about *where the write lands*, and both filesystems answer the same way |
-//! | **Windows** | a colon (stream or drive-relative), a leading `\\` (share), a trailing dot or space, a reserved device name | each is something the Windows filesystem resolves to a *different file* than the name suggests |
-//! | **POSIX** | a backslash, and case-sensitivity | the converse: a backslash is not a separator here, and two names differing in case are two files |
-//!
-//! **Every rule in that middle row was a live hole in the reverse direction, and one of the
-//! POSIX ones still was.** The comparison that decides "inside the root" was
-//! case-insensitive everywhere -- correct on Windows, and on Linux it accepted
-//! `/LINKLET/build.exe` for the root `/linklet`, which is a different directory. That is T1
-//! itself: a write outside the root, reached by nothing more than a capital letter. It is
-//! fixed here and pinned by a test, and it is the reason [`Rules`] exists as a value: **both
-//! rule sets are now tested on both platforms**, which is the property whose absence let it
-//! live.
-//!
-//! # The rules, and what each one stops
-//!
-//! **`..` in any component.** The obvious one. `..\..\Windows\System32\drivers\etc\hosts`
-//! is a write as SYSTEM on someone else's machine.
-//!
-//! **A path that is absolute and outside the root.** An absolute path is not
-//! automatically wrong -- the operator may well have configured the root as
-//! `C:\linklet` and asked for `C:\linklet\build.exe` -- so this is a prefix check
-//! against the root rather than a refusal of absolutes. **And the comparison is by
-//! components, in the case rules of the filesystem**: `C:\linkletevil` is not inside
-//! `C:\linklet`, and on Linux neither is `/linkletEvil` nor `/LINKLET`.
-//!
-//! **A colon anywhere (Windows).** This is the Windows rule that is least obvious and most
-//! important. `file.txt:evil` is not a file called `file.txt:evil`, it is an
-//! **alternate data stream** on `file.txt`: it writes bytes that do not appear in a
-//! directory listing and that no ordinary tool will show you. `C:foo` is not a
-//! drive -- it is `foo` **relative to whatever the current directory is on drive
-//! C**, which is a different file depending on how the process was started. One
-//! rule refuses both.
-//!
-//! **A leading `\\` (Windows).** A UNC path is a network share, so it writes to another
-//! machine entirely, outside any root.
-//!
-//! **A component ending in a dot or a space (Windows).** Windows strips them, so `build.exe.`
-//! and `build.exe ` and `build.exe` are the same file. A check that compares names
-//! literally would pass a name that becomes a different one on disk.
-//!
-//! **A reserved device name (Windows).** `NUL`, `CON`, `AUX`, `PRN`, `COM1`..`COM9`,
-//! `LPT1`..`LPT9`, with or without an extension and in any case. `NUL` is the one
-//! that matters for a transfer: **writing to it succeeds and discards the bytes**,
-//! so a push that "verified its digest" would report success and have written
-//! nothing.
-//!
-//! **A backslash (POSIX), which is the rule this platform needs and the other does not.**
-//! There is no security claim in it: on Linux a backslash is an ordinary character, so
-//! `..\..\etc\hosts` names one file *inside* the root rather than a climb out of it, and
-//! nothing escapes. It is refused because **the same string means two different things on the
-//! two machines** -- an escape there, a strange filename here -- and a caller who wrote it is
-//! confused about which machine they are talking to. Accepting it writes a file whose name is
-//! a path fragment, which nobody meant and which nobody will find. `/` works on both
-//! platforms, so there is always a portable spelling and this rule points at it.
-//!
-//! **A path that is empty or contains a NUL byte.** The second cannot reach the
-//! filesystem API, but a string that contains one is a sign that something
-//! upstream is not doing what it thinks.
-//!
-//! # What is not here, deliberately
-//!
-//! **Whether the answer exists, is a link, or is a directory.** Those are questions
-//! for the filesystem and they are asked in the adapter, before the temporary file
-//! is opened -- T2 is enforced there, with `symlink_metadata`, because a link is the one
-//! thing a string cannot see. A validator that guessed at them from the string would be
-//! answering a question it cannot see.
+//! Parent components are left for the filesystem to resolve, including through
+//! existing directories and symlinks. File type checks, transfer digests and
+//! temporary-file handling belong to the adapters.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -103,25 +36,13 @@ const RESERVED: &[&str] = &[
 
 /// Which platform's path rules apply to a decision.
 ///
-/// **A value rather than a `cfg` in the middle of the checks**, and the reason is the bug this
-/// type was written after: the rules were applied unconditionally, so the Windows rules ran on
-/// Linux (over-refusing, harmless) **and the Windows case-insensitive comparison ran on Linux
-/// (under-refusing, which is T1)**. Neither was visible, because the tests for the one platform
-/// only ever ran on it.
-///
-/// With the rules as a parameter, both sets are exercised on both machines:
-/// `crates/linklet-core/tests/transfer_paths.rs` runs the Windows rules and the POSIX rules on
-/// whichever platform the suite is running on, and only the *default* is a property of the
-/// machine. That is the same argument `linklet_core::discover::plan` makes for taking the
-/// local address as an argument instead of finding it: a fact about a running machine should
-/// not be ambient inside a decision that can be tested without one.
+/// Explicit rules let tests exercise platform-specific string checks on either
+/// machine. Path component parsing and joining still use the build platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rules {
-    /// The rules of a Windows filesystem: case-insensitive names, and four ways a path can
-    /// name a file other than the one it looks like.
+    /// Windows checks for device paths, streams and ambiguous file names.
     Windows,
-    /// The rules of a POSIX filesystem: case-sensitive names, no drives, no streams, and a
-    /// backslash that is an ordinary character.
+    /// POSIX accepts ordinary file names but refuses Windows backslash separators.
     Posix,
 }
 
@@ -149,18 +70,13 @@ pub enum PathError {
     Empty,
     /// The path holds a NUL byte.
     NulByte,
-    /// A component is `..`.
-    Parent {
-        /// The path as it was given.
-        requested: String,
-    },
     /// A colon appears, so this is a stream or a drive-relative path.
     Colon {
         /// The path as it was given.
         requested: String,
     },
-    /// The path begins with `\\`, which is a share on another machine.
-    Network {
+    /// The path uses a Windows device or verbatim namespace.
+    DevicePath {
         /// The path as it was given.
         requested: String,
     },
@@ -187,15 +103,8 @@ pub enum PathError {
         /// The component that does.
         component: String,
     },
-    /// The path resolves outside the configured root.
-    OutsideRoot {
-        /// The path as it was given.
-        requested: String,
-        /// The root it had to stay inside.
-        root: String,
-    },
-    /// The configured root is not usable.
-    BadRoot {
+    /// The base directory is not usable.
+    BadBase {
         /// Why.
         why: String,
     },
@@ -206,19 +115,14 @@ impl std::fmt::Display for PathError {
         match self {
             Self::Empty => write!(f, "the path is empty"),
             Self::NulByte => write!(f, "the path contains a NUL byte"),
-            Self::Parent { requested } => write!(
-                f,
-                "{requested:?} contains a .. component, which leaves the directory it is in"
-            ),
             Self::Colon { requested } => write!(
                 f,
                 "{requested:?} contains a colon, so it names an alternate data stream or is \
-                 relative to a drive's current directory rather than to the root"
+                 relative to a drive's current directory rather than to the base"
             ),
-            Self::Network { requested } => write!(
+            Self::DevicePath { requested } => write!(
                 f,
-                "{requested:?} begins with a double backslash, which is a share on another \
-                 machine"
+                "{requested:?} uses a Windows device or verbatim namespace, not an ordinary file path"
             ),
             Self::TrailingDotOrSpace { component } => write!(
                 f,
@@ -236,112 +140,66 @@ impl std::fmt::Display for PathError {
                 "{component:?} is a device, not a file. On Windows the write would succeed and \
                  the bytes would be discarded"
             ),
-            Self::OutsideRoot { requested, root } => write!(
-                f,
-                "{requested:?} resolves outside {root:?}, which is the only directory a \
-                 transfer may write in"
-            ),
-            Self::BadRoot { why } => write!(f, "the configured root is unusable: {why}"),
+            Self::BadBase { why } => write!(f, "the base directory is unusable: {why}"),
         }
     }
 }
 
 impl std::error::Error for PathError {}
 
-/// The one directory a transfer may write into.
+/// Resolves file paths relative to an absolute base directory.
+///
+/// The base is not an access boundary. Absolute paths and parent components may
+/// name locations outside it, subject to operating-system permissions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Destination {
-    root: PathBuf,
+    base: PathBuf,
     rules: Rules,
 }
 
 impl Destination {
-    /// Fixes the root, under the rules of the machine this is running on.
+    /// Uses the current platform's path rules with the given absolute base.
     ///
     /// # Errors
     ///
-    /// [`PathError::BadRoot`] when the root is empty, relative, or has one of the
-    /// shapes this module refuses in a request. A root that is itself relative
-    /// would make every decision below depend on the process's working directory,
-    /// which is the thing the root exists to remove.
-    pub fn new(root: &str) -> Result<Self, PathError> {
-        Self::with_rules(root, Rules::here())
+    /// [`PathError::BadBase`] if the base is empty, contains a NUL byte, is not
+    /// fully qualified, or uses an unsupported special path form.
+    pub fn new(base: &str) -> Result<Self, PathError> {
+        Self::with_rules(base, Rules::here())
     }
 
-    /// Fixes the root, under rules that are given rather than looked up.
+    /// Uses explicitly selected path rules, for platform-specific validation tests.
     ///
-    /// # When to use this
-    ///
-    /// When the rules of the *far* side are what matter, or when a test needs both sets on
-    /// one machine. A host that is validating a path for a peer it knows to be a different
-    /// platform is the real case; the tests are the other, and they are the reason the
-    /// signature exists -- see [`Rules`] for what that bought.
+    /// Path component parsing and joining still follow the platform this binary
+    /// runs on. Production callers should use [`Self::new`].
     ///
     /// # Errors
     ///
-    /// The same as [`Destination::new`], plus the Windows-only root shapes when `rules` is
-    /// [`Rules::Windows`]: a share, or a colon that is not the drive separator.
-    pub fn with_rules(root: &str, rules: Rules) -> Result<Self, PathError> {
-        if root.trim().is_empty() {
-            return Err(PathError::BadRoot {
-                why: "it is empty".to_string(),
+    /// [`PathError::BadBase`] for the same invalid shapes as [`Self::new`].
+    pub fn with_rules(base: &str, rules: Rules) -> Result<Self, PathError> {
+        if base.trim().is_empty() || base.contains('\0') || !is_fully_qualified(base, rules) {
+            return Err(PathError::BadBase {
+                why: format!("{base:?} must be a nonempty absolute path without NUL bytes"),
             });
         }
-        if root.contains('\0') {
-            return Err(PathError::BadRoot {
-                why: "it contains a NUL byte".to_string(),
-            });
-        }
-        // A root that is not absolute is refused rather than joined to the working
-        // directory, because then "inside the root" would mean different things
-        // depending on how the process was started.
-        //
-        // **Asked of the rules and not of `std`**, which is a correction the tests forced:
-        // `Path::is_absolute` answers for the platform this *binary* was compiled for, so
-        // `with_rules("/linklet", Rules::Posix)` on a Windows build refused a perfectly good
-        // POSIX root -- which put the Windows rule set out of reach on Linux all over again, by
-        // the same mechanism as the bug this type exists to fix. What "fully qualified" means is
-        // part of what the rules *are*, so it belongs beside them.
-        if !is_fully_qualified(root, rules) {
-            return Err(PathError::BadRoot {
-                why: format!("{root:?} is not an absolute path"),
-            });
-        }
-
-        if rules == Rules::Windows {
-            if root.starts_with("\\\\") {
-                return Err(PathError::BadRoot {
-                    why: "it is a network share".to_string(),
-                });
-            }
-            // Exactly one colon, and only as the drive separator. `root[1..]` starts
-            // with that colon, so searching it for another one finds it immediately --
-            // which is what made this refuse `C:\linklet` on the first run. The search
-            // starts after it.
-            let after_the_drive = if root.as_bytes().get(1) == Some(&b':') {
-                &root[2..]
-            } else {
-                root
-            };
-            if after_the_drive.contains(':') {
-                return Err(PathError::BadRoot {
-                    why: "it contains an alternate data stream".to_string(),
-                });
-            }
-        }
-
-        Ok(Self {
-            root: PathBuf::from(root),
+        let destination = Self {
+            base: PathBuf::from(base),
             rules,
-        })
+        };
+        destination
+            .resolve(base)
+            .map_err(|error| PathError::BadBase {
+                why: error.to_string(),
+            })?;
+        Ok(destination)
     }
 
-    /// The root, for a message.
-    pub fn root(&self) -> &Path {
-        &self.root
+    /// The base directory used for relative paths.
+    pub fn base(&self) -> &Path {
+        &self.base
     }
 
-    /// The rules this destination decides under.
+    /// The platform rules used for validation.
     pub fn rules(&self) -> Rules {
         self.rules
     }
@@ -351,8 +209,8 @@ impl Destination {
     /// # Errors
     ///
     /// [`PathError`] for every rule in this module's documentation, and **which** rules those
-    /// are depends on [`Destination::rules`]. The returned path is guaranteed to be inside the
-    /// root **by the rules below**, not by whether it happens to exist.
+    /// are depends on [`Destination::rules`]. Relative paths are joined to the base;
+    /// absolute paths are returned unchanged. This does not check existence or permissions.
     pub fn resolve(&self, requested: &str) -> Result<PathBuf, PathError> {
         if requested.trim().is_empty() {
             return Err(PathError::Empty);
@@ -362,20 +220,19 @@ impl Destination {
         }
 
         // **The string checks that belong to one filesystem, and they go first** because they
-        // are about what the string *means* -- before anything is compared against the root.
+        // are about what the string *means* -- before the path is resolved.
         if self.rules == Rules::Windows {
-            // A share first, because `\\?\C:\...` contains a colon as well and would
-            // otherwise be refused as a stream -- the right refusal for the wrong reason,
-            // which is how a message sends a reader to the wrong place.
-            if requested.starts_with("\\\\") {
-                return Err(PathError::Network {
+            // Device namespaces have different parsing rules from ordinary paths.
+            let portable = requested.replace('\\', "/");
+            if portable.starts_with("//?/") || portable.starts_with("//./") {
+                return Err(PathError::DevicePath {
                     requested: requested.to_string(),
                 });
             }
 
             // One rule for three problems, and the exemption is the drive separator.
             // `file.txt:stream` is an alternate data stream; `C:foo` is relative to drive
-            // C's current directory rather than to the root; and `C:\linklet\build.exe`
+            // C's current directory rather than to the base; and `C:\linklet\build.exe`
             // is an ordinary absolute path whose first colon is the drive. Refusing every
             // colon refused the last one too, which the test caught.
             let after_the_drive = if requested.as_bytes().get(1) == Some(&b':') {
@@ -383,7 +240,7 @@ impl Destination {
             } else {
                 requested
             };
-            if !requested.starts_with('\\') && after_the_drive.contains(':') {
+            if after_the_drive.contains(':') {
                 return Err(PathError::Colon {
                     requested: requested.to_string(),
                 });
@@ -394,7 +251,7 @@ impl Destination {
 
         if self.rules == Rules::Windows {
             // `C:build.exe` has a prefix and no root, so `is_absolute()` is false and it
-            // would be joined to the root as though it were an ordinary relative name. It
+            // would be joined to the base as though it were an ordinary relative name. It
             // is not: it means build.exe relative to whatever the current directory is on
             // drive C, which is a different file depending on how the process started.
             let mut parts = candidate.components();
@@ -409,11 +266,6 @@ impl Destination {
 
         for component in candidate.components() {
             match component {
-                Component::ParentDir => {
-                    return Err(PathError::Parent {
-                        requested: requested.to_string(),
-                    });
-                }
                 Component::Normal(part) if self.rules == Rules::Windows => {
                     let part = part.to_string_lossy();
                     if part.ends_with('.') || part.ends_with(' ') {
@@ -439,10 +291,7 @@ impl Destination {
             }
         }
 
-        // **The POSIX rule, and it is last on purpose.** A backslash is not a separator here, so
-        // a path that climbs out of the root does so with `..` components, which the loop above
-        // has already refused and named. Reporting a separator problem for a path that is a
-        // real escape would send the reader to the wrong fact about it.
+        // A Windows separator must not silently become part of a POSIX filename.
         if self.rules == Rules::Posix && requested.contains('\\') {
             return Err(PathError::Backslash {
                 requested: requested.to_string(),
@@ -452,97 +301,31 @@ impl Destination {
         let resolved = if candidate.is_absolute() {
             candidate.to_path_buf()
         } else {
-            self.root.join(candidate)
+            self.base.join(candidate)
         };
-
-        if !within(&self.root, &resolved, self.rules) {
-            return Err(PathError::OutsideRoot {
-                requested: requested.to_string(),
-                root: self.root.display().to_string(),
-            });
-        }
 
         Ok(resolved)
     }
 }
 
-/// Whether a root is fully qualified under `rules`.
-///
-/// **Not `Path::is_absolute`**, for the reason in [`Destination::with_rules`]: that function
-/// answers for the platform the binary was compiled for, and this module's whole arrangement
-/// depends on being able to ask about the *other* platform's rules from either one.
-///
-/// | rules | fully qualified | not |
-/// |---|---|---|
-/// | POSIX | `/linklet` | `linklet`, `./linklet`, `C:\linklet` |
-/// | Windows | `C:\linklet`, `C:/linklet`, `\\server\share` | `linklet`, `\linklet`, `C:linklet` |
-///
-/// `\linklet` is the interesting refusal on Windows and it matches what `std` already did: it is
-/// *rooted* -- on the current drive -- but not qualified, so it still depends on how the process
-/// was started. `C:linklet` is drive-relative, which is the same trap in the other direction.
-fn is_fully_qualified(root: &str, rules: Rules) -> bool {
+/// Whether a base is fully qualified under the selected platform rules.
+fn is_fully_qualified(base: &str, rules: Rules) -> bool {
     match rules {
-        Rules::Posix => root.starts_with('/'),
+        Rules::Posix => base.starts_with('/'),
         Rules::Windows => {
-            let bytes = root.as_bytes();
+            let bytes = base.as_bytes();
 
-            // A drive and a root directory: `C:\x` or `C:/x`.
+            // A drive and a base directory: `C:\x` or `C:/x`.
             let driven = bytes.len() >= 3
                 && bytes[0].is_ascii_alphabetic()
                 && bytes[1] == b':'
                 && (bytes[2] == b'\\' || bytes[2] == b'/');
 
-            // A share, `\\server\share`. Accepted here and refused by the caller, which has a
-            // more specific sentence for it than "not absolute".
-            let shared = root.starts_with("\\\\") && bytes.len() > 2;
+            // A fully qualified UNC share can also be a base directory.
+            let shared = base.starts_with("\\\\") && bytes.len() > 2;
 
             driven || shared
         }
-    }
-}
-
-/// Whether `candidate` is inside `root`, by components rather than by string.
-///
-/// Component-wise, because a prefix test on the string form would accept `C:\linkletevil`
-/// for the root `C:\linklet`. **And in the case rules of the filesystem**, which is the part
-/// that was wrong: Windows paths are case-insensitive and a comparison that is not would
-/// refuse a path the operating system accepts, while a POSIX path is case-*sensitive* and a
-/// comparison that ignores case accepts `/LINKLET/x` for the root `/linklet` -- a different
-/// directory, so a write outside the root. Both halves are pinned by tests that run on both
-/// platforms now.
-fn within(root: &Path, candidate: &Path, rules: Rules) -> bool {
-    let mut root_parts = root.components().filter_map(plain);
-    let mut candidate_parts = candidate.components().filter_map(plain);
-
-    loop {
-        match (root_parts.next(), candidate_parts.next()) {
-            // The root ran out and the candidate did not: it is inside.
-            (None, _) => return true,
-            // The candidate ran out first: it is the root's parent or the root.
-            (Some(_), None) => return false,
-            (Some(want), Some(got)) => {
-                let same = match rules {
-                    Rules::Windows => want.eq_ignore_ascii_case(&got),
-                    Rules::Posix => want == got,
-                };
-                if !same {
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-/// A component as a comparable string, or `None` for the parts that are not names.
-fn plain(component: Component<'_>) -> Option<String> {
-    match component {
-        Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-        // A prefix carries the drive, which has to match for two absolute paths to
-        // be in the same tree.
-        Component::Prefix(prefix) => Some(prefix.as_os_str().to_string_lossy().into_owned()),
-        Component::RootDir => Some(String::new()),
-        Component::CurDir => None,
-        Component::ParentDir => Some("..".to_string()),
     }
 }
 
@@ -815,7 +598,7 @@ pub fn verify_digest(expected: &str, got: &str) -> Result<(), TransferError> {
 /// agreeing to receive it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Manifest {
-    /// Where the receiving side should put it, relative to its root.
+    /// Where the receiving side should put it, absolute or relative to its base.
     pub path: String,
     /// How many bytes are coming.
     pub bytes: u64,

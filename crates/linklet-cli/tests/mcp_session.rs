@@ -268,55 +268,12 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
 }
 
 #[test]
-fn the_push_tool_refuses_a_local_path_outside_the_working_tree() {
-    // The one decision the transfer tools make in this crate rather than handing to the
-    // agent: which half is local, and that a local half may not name the machine. The
-    // refusal has to arrive as a tool result rather than a protocol fault, because an
-    // agent that gets a transport error retries and one that gets "not that argument"
-    // changes it.
-    let replies = session(&[&request(
-        1,
-        "tools/call",
-        r#"{"name":"push","arguments":{"agent":"127.0.0.1:1","from":"C:\\Windows\\win.ini","to":"x"}}"#,
-    )]);
-
-    let result = reply_for(&replies, 1)
-        .get("result")
-        .expect("a tool result and not a protocol error")
-        .clone();
-
-    assert_eq!(
-        result.get("isError").and_then(Value::as_bool),
-        Some(true),
-        "a refused argument is a failed call: {result:?}"
-    );
-    let text = result
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|entry| entry.get("text").and_then(Value::as_str))
-        .expect("the refusal is text");
-    assert!(
-        text.contains("working tree"),
-        "the refusal should say what is wrong: {text}"
-    );
-}
-
-#[test]
 fn the_testbed_tool_answers_from_a_real_file() {
     // The end-to-end path for the second tool: a specification read from disk by
     // the process, judged against this machine, rendered back down the pipe.
     //
-    // The file is written under the repository's own `target/`, and `session()`
-    // sets the process's working directory to the repository root, so the
-    // relative path below names the file the tool will read. Both halves are
-    // needed: the tool refuses an absolute path on purpose, and `cargo test`
-    // starts the binary in the crate directory unless told otherwise.
-    //
-    // `target/` is gitignored, so a failure that leaves the file behind leaves
-    // nothing tracked. The artifact required is `Cargo.toml`, so the answer on a
-    // healthy checkout is READY -- which also makes this catch being run
-    // somewhere that is not the repository.
+    // The spec is an absolute path outside the server working directory. Its artifact
+    // remains relative to that directory, which session() sets to the repository root.
     let repo_root = repo_root();
     assert!(
         repo_root.join("Cargo.toml").is_file(),
@@ -324,7 +281,8 @@ fn the_testbed_tool_answers_from_a_real_file() {
         repo_root.display()
     );
 
-    let spec_path = repo_root.join("target/session-smoke.testbed");
+    let scratch = Scratch::new(format!("linklet-mcp-spec-{}", std::process::id()));
+    let spec_path = scratch.path().join("session-smoke.testbed");
     std::fs::write(
         &spec_path,
         "name session-smoke\nrequire artifact Cargo.toml present\n",
@@ -334,7 +292,7 @@ fn the_testbed_tool_answers_from_a_real_file() {
     let call = request(
         1,
         "tools/call",
-        r#"{"name":"testbed","arguments":{"spec":"target/session-smoke.testbed","target":"this-machine"}}"#,
+        &serde_json::json!({"name": "testbed", "arguments": {"spec": spec_path, "target": "this-machine"}}).to_string(),
     );
     let replies = session(&[&call]);
 
@@ -357,27 +315,6 @@ fn the_testbed_tool_answers_from_a_real_file() {
         text.ends_with("READY 1 of 1 requirements met"),
         "got {text:?}"
     );
-}
-
-#[test]
-fn a_spec_path_outside_the_tree_is_refused_before_the_filesystem_sees_it() {
-    let call = request(
-        1,
-        "tools/call",
-        r#"{"name":"testbed","arguments":{"spec":"C:\\Windows\\win.ini","target":"box"}}"#,
-    );
-    let replies = session(&[&call]);
-
-    let text = reply_for(&replies, 1)
-        .get("result")
-        .and_then(|r| r.get("content"))
-        .and_then(Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|first| first.get("text").and_then(Value::as_str))
-        .expect("a text block")
-        .to_string();
-
-    assert!(text.contains("outside the working tree"), "got {text:?}");
 }
 
 #[test]
@@ -516,87 +453,123 @@ fn blank_lines_are_ignored_rather_than_answered() {
 }
 
 #[test]
-fn the_push_tool_moves_a_real_file_through_a_real_agent() {
-    // The end of M7 from the surface an AI agent actually calls: a JSON-RPC request on
-    // stdin, a sealed transfer over a socket, and a file on the target. Everything below
-    // this is tested somewhere cheaper; what is only observable here is that the whole
-    // chain is joined up at all.
-    //
-    // The local file has to be inside the working tree, because that is what the tool
-    // refuses to leave -- and `session()` sets the working directory to the repository
-    // root, so `target/...` is where it has to go. `target/` is gitignored, so a failure
-    // that leaves it behind leaves nothing tracked.
+fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
     let token = "test-token-0123456789";
-    let root = Scratch::new(format!("linklet-mcp-transfer-{}", std::process::id()));
-
-    let local = repo_root().join("target/mcp-push-source.bin");
-    std::fs::create_dir_all(local.parent().expect("a parent")).expect("target/ exists");
-    let content = b"a file that crossed two processes";
-    std::fs::write(&local, content).expect("writing the source");
+    let scratch = Scratch::new(format!("linklet-mcp-files-{}", std::process::id()));
+    let work = scratch.path().join("work");
+    std::fs::create_dir(&work).expect("the agent's startup directory");
+    let local = scratch.path().join("source.bin");
+    let content = b"a file that crossed two processes\n";
+    std::fs::write(&local, content).expect("a source outside the MCP working directory");
 
     let mut agent = Command::new(agent_binary())
         .env("LINKLET_TOKEN", token)
         .env_remove("LINKLET_TOKEN_FILE")
-        .arg("--port")
-        .arg("0")
-        .arg("--root")
-        .arg(root.path())
+        .args(["--port", "0"])
+        .current_dir(&work)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("the agent should start");
-
+        .expect("start the agent without --root");
     let port = {
         use std::io::{BufRead, BufReader};
         let mut banner = String::new();
-        BufReader::new(agent.stdout.take().expect("stdout was piped"))
+        BufReader::new(agent.stdout.take().expect("stdout"))
             .read_line(&mut banner)
-            .expect("the agent prints a banner");
+            .expect("a listening banner");
+        assert!(banner.contains("relative paths from"), "{banner}");
         banner
             .split_whitespace()
             .find_map(|word| word.strip_prefix("0.0.0.0:"))
             .and_then(|text| text.parse::<u16>().ok())
-            .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"))
+            .expect("a bound port")
     };
-
-    let call = request(
-        1,
-        "tools/call",
-        &format!(
-            r#"{{"name":"push","arguments":{{"agent":"127.0.0.1:{port}","from":"target/mcp-push-source.bin","to":"landed.bin"}}}}"#
-        ),
-    );
-    let replies = session_with_token(&[&call], Some(token));
-
+    let address = format!("127.0.0.1:{port}");
+    let mut runs = Vec::new();
+    for (index, relative) in [false, true].into_iter().enumerate() {
+        let remote = scratch.path().join(format!("landed-{index}.bin"));
+        let collected = scratch.path().join(format!("collected-{index}.bin"));
+        let output = scratch.path().join(format!("spawned-{index}.log"));
+        let remote_arg = if relative {
+            format!("../landed-{index}.bin")
+        } else {
+            remote.to_string_lossy().into_owned()
+        };
+        let output_arg = if relative {
+            format!("../spawned-{index}.log")
+        } else {
+            output.to_string_lossy().into_owned()
+        };
+        let calls = [
+            (
+                "push",
+                serde_json::json!({"agent": address, "from": local, "to": remote_arg}),
+            ),
+            (
+                "spawn",
+                serde_json::json!({"agent": address, "command": "echo spawned", "output": output_arg}),
+            ),
+            (
+                "pull",
+                serde_json::json!({"agent": address, "from": remote_arg, "to": collected}),
+            ),
+            (
+                "ls",
+                serde_json::json!({"agent": address, "path": remote_arg}),
+            ),
+            (
+                "grep",
+                serde_json::json!({"agent": address, "path": remote_arg, "pattern": "crossed"}),
+            ),
+            (
+                "tail",
+                serde_json::json!({"agent": address, "path": remote_arg}),
+            ),
+        ];
+        let messages: Vec<String> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, (name, arguments))| {
+                request(
+                    (i + 1) as i64,
+                    "tools/call",
+                    &serde_json::json!({"name": name, "arguments": arguments}).to_string(),
+                )
+            })
+            .collect();
+        let messages: Vec<&str> = messages.iter().map(String::as_str).collect();
+        runs.push((
+            calls,
+            session_with_token(&messages, Some(token)),
+            remote,
+            collected,
+            output,
+        ));
+    }
     let _ = agent.kill();
     let _ = agent.wait();
 
-    let result = reply_for(&replies, 1)
-        .get("result")
-        .expect("a tool result")
-        .clone();
-    assert_eq!(result.get("isError").and_then(Value::as_bool), Some(false));
-    let text = result
-        .get("content")
-        .and_then(Value::as_array)
-        .and_then(|content| content.first())
-        .and_then(|entry| entry.get("text").and_then(Value::as_str))
-        .expect("the result is text");
-
-    assert_eq!(
-        std::fs::read(root.path().join("landed.bin")).expect("the file should have landed"),
-        content,
-        "the tool said {text:?}"
-    );
-    assert!(
-        text.contains(&format!("{} bytes", content.len()))
-            && text.contains("sha256 ")
-            && text.contains("(verified)"),
-        "the tool result should say what landed, what it hashes to, and that the digest \
-         was already compared: {text}"
-    );
-
-    let _ = std::fs::remove_file(&local);
+    for (calls, replies, remote, collected, output) in runs {
+        for (i, (tool, _)) in calls.iter().enumerate() {
+            let reply = reply_for(&replies, (i + 1) as i64);
+            let result = reply.get("result").expect("a tool result");
+            assert_eq!(
+                result.get("isError").and_then(Value::as_bool),
+                Some(false),
+                "{tool}: {result}"
+            );
+            let text = result["content"][0]["text"].as_str().expect("text");
+            match *tool {
+                "push" | "pull" => assert!(text.contains("(verified)"), "{text}"),
+                "grep" | "tail" => assert!(text.contains("crossed"), "{text}"),
+                "ls" => assert!(text.contains("1 of 1"), "{text}"),
+                _ => {}
+            }
+        }
+        assert_eq!(std::fs::read(&remote).expect("the remote file"), content);
+        assert_eq!(std::fs::read(&collected).expect("the local copy"), content);
+        assert!(output.is_file(), "spawn output: {}", output.display());
+    }
 }
 
 #[test]

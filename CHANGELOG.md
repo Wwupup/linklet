@@ -11,6 +11,18 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** removed `linklet-agent --root`. File tools use absolute paths directly
+  and resolve relative paths, including `..`, from the startup working directory.
+  Other Windows drives and ordinary UNC shares are allowed under the agent account
+  permissions, matching the authority already available to `exec`. Remove `--root`
+  from launchers; set their working directory to preserve relative path locations.
+- MCP `testbed.spec`, `push.from` and `pull.to` now accept local absolute paths and
+  parent components. Remote file tools share the agent path rules. Device and stream
+  checks, file-type checks, transfer limits and digest verification remain in place.
+  The wire encoding is unchanged; the CLI removal belongs in the next minor release.
+
 ### Fixed
 
 - Successful `ls`, `grep` and `tail` calls no longer fail because a path contains

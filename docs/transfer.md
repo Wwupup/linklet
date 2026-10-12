@@ -157,42 +157,29 @@ The receiver:
 
 ## The ways it goes wrong
 
-**T1. The destination path escapes where it is allowed to write.** The remote path
-is the caller's. `../../Windows/System32/drivers/etc/hosts` is a file write as
-SYSTEM on someone else's machine. **This is the most severe item in the document and
-it is not a framing problem, which is why the framing analysis did not contain
-it.** *Stopped by validating the path against a configured root*: refuse any
-component equal to `..`, refuse an absolute path outside the root, refuse a root
-that is not itself absolute. The check is on the resolved path, not the string.
+**T1. The path names an unsupported filesystem object.** File access uses the agent
+account's OS permissions, as command execution already does. There is no transfer-root
+boundary or `--root` option: absolute paths are used directly, and relative paths are
+joined to the agent's startup directory. Parent components remain for the filesystem to
+resolve, including through existing directories and symlinks; they are not normalized
+lexically. Windows drive roots and ordinary UNC shares are supported.
 
-**And the rules are per filesystem, which this paragraph did not say and a live hole
-proved it had to.** A path rule is a fact about a filesystem, and the two this tool runs
-on disagree about what a path even is:
+The remaining rules reject ambiguous names and special objects rather than limiting
+which directory a caller can use:
 
-| | rule | why |
+| platform | refused shapes | reason |
 |---|---|---|
-| **both** | empty, a NUL byte, a `..` component, an absolute path outside the root | these are about where the write lands, and both filesystems answer the same way |
-| **Windows** | a colon, a leading `\\`, a trailing dot or space, a reserved device name | each is something the Windows filesystem resolves to a *different file* than the name suggests |
-| **POSIX** | a backslash, and case-sensitive comparison | the converse: a backslash is not a separator there, and two names differing in case are two files |
+| both | empty paths and NUL bytes | no usable file path |
+| Windows | device/verbatim namespaces and reserved devices | not ordinary file paths |
+| Windows | alternate streams and drive-relative paths such as `C:file.txt` | not a file relative to the startup directory |
+| Windows | a component ending in a dot or space | Windows strips part of the name |
+| POSIX | a backslash | catches a Windows-shaped path instead of creating an unintended filename |
 
-**The case row was a real escape, and it was found by asking the question this table is
-about.** The comparison that decides "inside the root" was case-insensitive everywhere --
-correct on Windows, and on Linux it accepted `/LINKLET/build.exe` for the root `/linklet`,
-which is *a different directory*. That is T1 itself: a write outside the root, reached by
-nothing more than a capital letter, live on every Linux agent. It is fixed, and the shape of
-the fix is what the table says: the rules are a value, both sets are tested on both
-platforms, and `crates/linklet-core/tests/transfer_paths.rs` runs every rule of both.
-
-**Where the asked-of-the-filesystem part stops, stated rather than implied.** The rules
-decide which *checks* run; **how a string splits into components, and what `join` does with a
-relative path, is `std::path`'s reading and therefore the platform's.** On a Linux build
-`a\b` is one component whatever rules are named, so three of the Windows checks (a
-drive-relative prefix, a trailing dot on a component, a reserved name in a subdirectory) can
-only be exercised where that parsing exists. **In production this never bites**: an agent
-applies the rules of the machine it is running on, so its parsing and its rules belong to the
-same platform. It is written down because it is the seam the bug lived in -- half the decision
-was this module's and half was `std`'s, and the half that was `std`'s was the half nobody
-questioned.
+`Rules` selects the checks; `std::path` parses and joins paths using the build
+platform. Production uses `Rules::here()`. Tests exercise shared string checks on both
+platforms and native component parsing on the matching platform. This supersedes the
+older T1 containment policy: a file-only directory restriction never confined a caller
+that could already use `exec` with the same account.
 
 **T2. The destination is a symlink pointing elsewhere.** Writing to a path that is a
 link writes somewhere the operator did not intend, and the rename would replace the
@@ -271,7 +258,7 @@ transaction. That is written down rather than left for a caller to guess.
 
 **T14. The receiver's refusal never reaches the sender.** The sender has the whole file
 ready, so it streams the body as soon as the manifest is written. A receiver that decides
-at the manifest -- the path is outside its root, the size is over its ceiling -- therefore
+at the manifest -- the path names a device, the size is over its ceiling -- therefore
 writes its refusal while the sender is still sending, and then closes **with the sender's
 unread chunks in its receive queue**. Windows resets a socket closed in that state, and a
 reset discards what the peer had not read yet: the refusal is destroyed in transit. What
@@ -320,11 +307,9 @@ so that a failure has an obvious meaning.
 is indistinguishable from one that is stuck until the deadline. Worth having, not
 worth building before the thing it reports on works.
 
-**Reading a file the root does not contain.** The root bounds a pull exactly as it
-bounds a push, so collecting a log from outside it is not possible. That is the same
-decision as T1 seen from the other side: an agent that could read anywhere would be a
-file server for the machine, and the caller can configure the root to include whatever
-it needs.
+**Operating-system permissions.** File tools cannot read or write what the agent account
+cannot access. Choosing an absolute path does not grant administrative rights; run the
+agent under the intended account and configure filesystem permissions on the target.
 
 ## What this changes in `docs/framing.md`
 

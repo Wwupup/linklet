@@ -1,16 +1,12 @@
 //! The specification for the decisions a transfer makes before it touches anything.
 //!
-//! `docs/transfer.md` T1 is the most severe item in that document: the destination
-//! is the caller's, so a path the caller chooses is a path an attacker chooses if
-//! anything upstream is confused, and the outcome is an arbitrary file write as
-//! SYSTEM on someone else's machine. **It is more severe than anything in the
-//! framing list, because a framing bug is a refusal and this is a write.**
+//! `docs/transfer.md` T1 defines filesystem-wide paths under the agent account.
+//! Relative paths use the startup directory; no directory containment is imposed.
 //!
 //! Every rule in `src/transfer.rs` has a test here: the paths it refuses (T1), the
 //! sizes it refuses before a chunk is read (T3), and the arithmetic it keeps while
 //! the chunks arrive (T4, T5, T6, T7, T11). The Windows-specific path rules get more
-//! than one test each, because they are the ones a reader is most likely to think are
-//! already handled by the `..` check.
+//! than one test each to cover ordinary filenames and special objects.
 //!
 //! What is *not* here is anything that needs a file or a socket: whether the
 //! destination is a symlink, what is on disk, and the rename. Those are
@@ -21,31 +17,24 @@ use linklet_core::transfer::{
     TransferError, verify_digest,
 };
 
-/// A root these tests can use, absolute on whichever platform they run on.
-///
-/// **What is checked is now a parameter** -- see [`Rules`] -- so this file exercises *both* rule
-/// sets on whichever platform it runs on, and only the default is a property of the machine.
-/// That is the fix for the failure this fixture used to hide: the Windows rules were applied
-/// unconditionally, the tests for them only ever ran on Windows, and the Windows
-/// case-insensitive comparison was therefore never asked what it does on Linux -- where it
-/// accepted an absolute path a capital letter outside the root.
+/// An absolute base directory in the native platform syntax.
 #[cfg(windows)]
-const ROOT: &str = r"C:\linklet";
+const BASE: &str = r"C:\linklet";
 #[cfg(not(windows))]
-const ROOT: &str = "/linklet";
+const BASE: &str = "/linklet";
 
-/// The same root spelled for the Windows rules, used by every test that names one of them.
+/// The same base spelled for the Windows rules, used by every test that names one of them.
 ///
-/// A literal rather than `ROOT`, because the Windows rule set has to be exercised *with a
-/// Windows root*: `C:\linklet` is not an absolute path on Linux, so the Windows tests built on
-/// the platform's own root would fail at the fixture instead of at the rule.
-const WINDOWS_ROOT: &str = r"C:\linklet";
+/// A literal rather than `BASE`, because the Windows rule set has to be exercised *with a
+/// Windows base*: `C:\linklet` is not an absolute path on Linux, so the Windows tests built on
+/// the platform's own base would fail at the fixture instead of at the rule.
+const WINDOWS_BASE: &str = r"C:\linklet";
 
 /// The platform's own separator, for building a path that is more than one component.
 ///
 /// Backslash is a separator to `resolve` on Windows and an ordinary character on Linux, so a
 /// test that spells a nested path with one is testing Windows on both -- see the note on
-/// `ROOT`. A test that means "a name with directories in it" has to say so in the syntax of the
+/// `BASE`. A test that means "a name with directories in it" has to say so in the syntax of the
 /// machine it is running on.
 #[cfg(windows)]
 const SEP: char = '\\';
@@ -57,49 +46,29 @@ fn nested(parts: &[&str]) -> String {
     parts.join(&SEP.to_string())
 }
 
-/// A path that tries to leave the root by climbing out of it, in this platform's syntax.
-fn escaping() -> String {
-    nested(&["..", "..", "etc", "hosts"])
-}
-
-/// An absolute path that is not under the root, in this platform's syntax.
+/// An absolute path that is not under the base, in this platform's syntax.
 #[cfg(windows)]
-fn outside_root() -> String {
+fn outside_base() -> String {
     r"C:\Windows\System32\drivers\etc\hosts".to_string()
 }
 #[cfg(not(windows))]
-fn outside_root() -> String {
+fn outside_base() -> String {
     "/etc/hosts".to_string()
-}
-
-/// A directory whose *name* starts with the root's, which is the string-prefix trap.
-fn sibling_of_the_root() -> String {
-    let root = std::path::Path::new(ROOT);
-    let name = format!(
-        "{}evil",
-        root.file_name().unwrap_or_default().to_string_lossy()
-    );
-    let parent = root.parent().unwrap_or(std::path::Path::new("/"));
-    parent
-        .join(name)
-        .join("build.exe")
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// A destination under the rules of the machine this is running on.
 fn destination() -> Destination {
-    Destination::new(ROOT).expect("an absolute root")
+    Destination::new(BASE).expect("an absolute base")
 }
 
 /// A destination under the Windows rules, on any machine.
 fn windows() -> Destination {
-    Destination::with_rules(WINDOWS_ROOT, Rules::Windows).expect("an absolute Windows root")
+    Destination::with_rules(WINDOWS_BASE, Rules::Windows).expect("an absolute Windows base")
 }
 
 /// A destination under the POSIX rules, on any machine.
 fn posix() -> Destination {
-    Destination::with_rules("/linklet", Rules::Posix).expect("an absolute POSIX root")
+    Destination::with_rules("/linklet", Rules::Posix).expect("an absolute POSIX base")
 }
 
 /// Asserts that a request is refused by the platform's own rules.
@@ -112,20 +81,20 @@ fn refused(requested: &str) -> PathError {
 // --- what is allowed ---------------------------------------------------------
 
 #[test]
-fn a_plain_relative_path_lands_under_the_root() {
+fn a_plain_relative_path_lands_under_the_base() {
     let resolved = destination().resolve("build.exe").expect("a plain name");
-    assert_eq!(resolved, std::path::Path::new(ROOT).join("build.exe"));
+    assert_eq!(resolved, std::path::Path::new(BASE).join("build.exe"));
 }
 
 #[test]
-fn a_relative_path_with_directories_lands_under_the_root() {
+fn a_relative_path_with_directories_lands_under_the_base() {
     // Subdirectories are allowed and are the normal case: a build is put somewhere
-    // rather than in the root of whatever the operator configured.
+    // relative to the startup directory.
     let requested = nested(&["artifacts", "latest", "build.exe"]);
     let resolved = destination().resolve(&requested).expect("a nested name");
     assert_eq!(
         resolved,
-        std::path::Path::new(ROOT)
+        std::path::Path::new(BASE)
             .join("artifacts")
             .join("latest")
             .join("build.exe")
@@ -133,94 +102,29 @@ fn a_relative_path_with_directories_lands_under_the_root() {
 }
 
 #[test]
-fn an_absolute_path_inside_the_root_is_allowed() {
-    // Refusing every absolute path would be simpler and would break the case an
-    // operator meets first: they configured the root, so they know where it is and
-    // will type it.
-    let requested = std::path::Path::new(ROOT).join("build.exe");
+fn an_absolute_path_inside_the_base_is_allowed() {
+    // Absolute paths are used directly, even when they happen to be under the base.
+    let requested = std::path::Path::new(BASE).join("build.exe");
     let resolved = destination()
         .resolve(&requested.to_string_lossy())
-        .expect("inside the root");
-    assert_eq!(resolved, std::path::Path::new(ROOT).join("build.exe"));
+        .expect("inside the base");
+    assert_eq!(resolved, std::path::Path::new(BASE).join("build.exe"));
 }
 
-#[test]
-fn the_root_under_the_windows_rules_is_case_insensitive() {
-    // Windows paths are, so a comparison that is not would refuse a path the operating system
-    // would have accepted -- and, worse, the mirror image of that mistake is accepting
-    // `C:\linkletevil` for the root `C:\linklet`.
-    //
-    // Under the *named* rules rather than the platform's, so that this claim about Windows is
-    // tested on Linux too. The pair of tests below is the whole point of `Rules`: the same
-    // comparison has to ignore case on one filesystem and not on the other, and only one of
-    // those two answers was ever checked.
-    windows()
-        .resolve(r"c:\LINKLET\build.exe")
-        .expect("the same directory in another case");
-}
-
-// --- the case rule, which is not the same rule on the two platforms ----------
+// --- absolute path spelling --------------------------------------------------
 
 #[test]
-fn the_posix_root_is_case_sensitive_because_the_filesystem_is() {
-    // **A live escape on Linux, found by asking what the case-insensitive comparison does
-    // there.** `/root` and `/ROOT` are two directories on a POSIX filesystem, so a comparison
-    // that treats them as one accepts an absolute path that is *outside* the configured root
-    // and hands it back to be written. The Windows rule is correct on Windows and is a hole
-    // anywhere else; the difference is the filesystem, not the taste.
-    let error = posix()
-        .resolve("/LINKLET/build.exe")
-        .expect_err("a different directory on a case-sensitive filesystem");
-
-    assert!(
-        matches!(error, PathError::OutsideRoot { .. }),
-        "expected an outside-root refusal, got {error:?}"
-    );
-}
-
-#[test]
-fn the_case_rule_is_about_the_filesystem_and_not_about_ascii() {
-    // The same property one character further out, so that a fix which lowercased both sides
-    // rather than comparing exactly cannot pass: on a POSIX filesystem the bytes have to match.
+fn absolute_paths_preserve_the_callers_case() {
     for requested in [
         "/LINKLET/build.exe",
-        "/Linklet/build.exe",
-        "/linkleT/build.exe",
+        "/linklet/build.exe",
+        "/linkletEvil/build.exe",
     ] {
-        assert!(
-            posix().resolve(requested).is_err(),
-            "{requested:?} is a different directory, and was accepted"
+        assert_eq!(
+            posix().resolve(requested).expect("an absolute path"),
+            std::path::PathBuf::from(requested)
         );
     }
-
-    // And the root's own spelling still works, which is the half that must not break.
-    posix()
-        .resolve("/linklet/build.exe")
-        .expect("the root as it was configured");
-}
-
-#[test]
-fn a_sibling_whose_name_only_differs_in_case_is_not_inside_the_root() {
-    // The `C:\linkletevil` mistake, in the case dimension: the string-prefix trap has a
-    // case-shaped twin, and it is the one the comparison actually hits. Decidable anywhere,
-    // because a `/`-separated path splits the same way on either platform.
-    assert!(
-        posix().resolve("/linkletEvil/build.exe").is_err(),
-        "a sibling directory is not inside the root"
-    );
-}
-
-#[cfg(windows)]
-#[test]
-fn a_windows_sibling_of_the_root_is_not_inside_it() {
-    // The other dimension of the same mistake -- a sibling that differs by more than case --
-    // **gated for the parsing**: on a Linux build `C:\linkletevil\build.exe` is one component
-    // containing a colon, so there is no sibling to compare against. The case dimension above
-    // carries the cross-platform half of the claim.
-    assert!(
-        windows().resolve(r"C:\linkletevil\build.exe").is_err(),
-        "a sibling directory is not inside the root"
-    );
 }
 
 // --- what POSIX allows that Windows does not --------------------------------
@@ -252,7 +156,7 @@ fn a_drive_relative_name_is_a_colon_and_a_filename_on_posix() {
     // `C:build.exe` is drive-relative on Windows -- the same file only if the process happened
     // to start in the same directory on drive C -- and a filename here, because a colon is an
     // ordinary character. What matters is the same thing that matters for every other name: it
-    // lands under the root.
+    // lands under the base.
     //
     // **`cfg(not(windows))` on a test about the POSIX rules, which needs explaining.**
     // [`Rules`] governs the *checks*; which characters separate components is `std::path`'s
@@ -267,7 +171,7 @@ fn a_drive_relative_name_is_a_colon_and_a_filename_on_posix() {
 
     assert!(
         resolved.starts_with(std::path::Path::new("/linklet")),
-        "it has to be inside the root: {}",
+        "it has to be inside the base: {}",
         resolved.display()
     );
 }
@@ -275,21 +179,8 @@ fn a_drive_relative_name_is_a_colon_and_a_filename_on_posix() {
 #[cfg(not(windows))]
 #[test]
 fn a_backslash_is_refused_because_it_means_two_different_things() {
-    // **The one rule POSIX needs that Windows does not, and it is about the `..` that is not
-    // one.** A backslash is the Windows separator and an ordinary character here, so
-    // `..\..\etc\hosts` names a single file *inside* the root on this machine and an escape on
-    // the other. Accepting it writes a file whose name is a path fragment -- never what the
-    // caller meant -- and refusing it is the only answer that is the same on both platforms.
-    //
-    // It is **not** a security rule: nothing escapes. It is the rule against a plausible wrong
-    // answer, which is what this protocol spends most of its refusals on. `/` is the separator
-    // on both platforms, so there is always a portable spelling.
-    //
-    // **Gated, and inherently so.** The rule exists because the same string means two things on
-    // the two platforms, and on a Windows build there is only ever one reading: a backslash
-    // separates components there, so `..\..\etc\hosts` is a climb and is refused as one before
-    // this rule is reached. A test that demanded `Backslash` from a Windows build would be
-    // demanding that the platform parse a path the way the other one does.
+    // Backslashes are ordinary filename characters on POSIX, so a Windows-shaped
+    // path would otherwise name an unintended file.
     let error = posix()
         .resolve(r"..\..\etc\hosts")
         .expect_err("a Windows-shaped path, under the POSIX rules");
@@ -306,83 +197,24 @@ fn a_backslash_is_refused_because_it_means_two_different_things() {
     );
 }
 
-#[test]
-fn the_backslash_rule_does_not_reach_a_path_that_is_otherwise_refused() {
-    // The order of the rules is visible in which one names the problem. A path that climbs out
-    // of the root with this platform's own separator must be reported as the escape it is, not
-    // as a separator problem, because that would send the reader to the wrong fact about their
-    // path.
-    let error = posix()
-        .resolve("../../etc/hosts")
-        .expect_err("a real parent component");
-
-    assert!(
-        matches!(error, PathError::Parent { .. }),
-        "a real parent component is a real escape, got {error:?}"
-    );
-
-    // And a path that is both -- a real climb and a backslash -- is still the climb.
-    let error = posix()
-        .resolve(r"../a\b")
-        .expect_err("a real parent component as well");
-    assert!(
-        matches!(error, PathError::Parent { .. }),
-        "the escape is the more serious fact, got {error:?}"
-    );
-}
-
-// --- T1: the obvious escape --------------------------------------------------
+// --- paths outside the base --------------------------------------------------
 
 #[test]
-fn a_parent_component_is_refused_by_name() {
-    // The headline case from the document. **In this platform's syntax**, because the rule is
-    // "a `..` component" and what counts as a component is the separator: on Linux a backslash
-    // is an ordinary character in a filename, so `..\..\x` is one harmless name rather than an
-    // escape -- and a test that spelled it that way would be asserting a refusal a correct
-    // Linux agent has no reason to give.
-    let error = refused(&escaping());
-    assert!(
-        matches!(error, PathError::Parent { .. }),
-        "expected a parent refusal, got {error:?}"
-    );
-    assert!(error.to_string().contains(".."));
-}
-
-#[test]
-fn a_parent_component_is_refused_anywhere_in_the_path() {
-    // Not just at the front. `a/../.. /b` escapes by the same route.
-    for requested in [
-        nested(&["..", "hosts"]),
-        nested(&["a", "..", "b"]),
-        nested(&["a", "b", "..", "..", "c"]),
-        nested(&["a", "..", "..", "Windows", "hosts"]),
-    ] {
-        let error = refused(&requested);
-        assert!(
-            matches!(error, PathError::Parent { .. }),
-            "{requested:?} gave {error:?}"
+fn parent_components_are_resolved_by_the_filesystem_from_the_base() {
+    for requested in [nested(&["..", "hosts"]), nested(&["a", "..", "b"])] {
+        assert_eq!(
+            destination().resolve(&requested).expect("a relative path"),
+            std::path::Path::new(BASE).join(&requested)
         );
     }
 }
 
 #[test]
-fn an_absolute_path_outside_the_root_is_refused() {
-    let error = refused(&outside_root());
-    assert!(
-        matches!(error, PathError::OutsideRoot { .. }),
-        "expected an outside-root refusal, got {error:?}"
-    );
-}
-
-#[test]
-fn a_root_that_is_a_prefix_of_another_directory_is_not_enough() {
-    // The string-prefix mistake: a sibling directory whose *name* starts with the root's name
-    // would be accepted by a comparison on the string form. Components are compared for this
-    // reason, and this test is the reason that reason is written down.
-    let error = refused(&sibling_of_the_root());
-    assert!(
-        matches!(error, PathError::OutsideRoot { .. }),
-        "expected an outside-root refusal, got {error:?}"
+fn an_absolute_path_outside_the_base_is_used_directly() {
+    let requested = outside_base();
+    assert_eq!(
+        destination().resolve(&requested).expect("an absolute path"),
+        std::path::PathBuf::from(requested)
     );
 }
 
@@ -437,7 +269,7 @@ fn a_stream_on_an_absolute_path_is_refused_too() {
 fn a_drive_relative_path_is_refused() {
     // `C:build.exe` is not `C:\build.exe`. It is build.exe relative to whatever the
     // current directory happens to be on drive C -- a different file depending on
-    // how the process was started, which is exactly the kind of thing a root is
+    // how the process was started, which is exactly the kind of thing a base is
     // supposed to remove.
     //
     // **Gated, and it is the parsing and not the rule.** The check asks whether the first
@@ -452,16 +284,32 @@ fn a_drive_relative_path_is_refused() {
 }
 
 #[test]
-fn a_network_share_is_refused() {
-    // A UNC path writes to another machine entirely, outside any root this process
-    // configured.
-    for requested in [r"\\server\share\build.exe", r"\\?\C:\linklet\build.exe"] {
-        let error = refused_by_windows(requested);
-        assert!(
-            matches!(error, PathError::Network { .. }),
-            "{requested:?} gave {error:?}"
-        );
+fn device_namespaces_are_refused() {
+    for requested in [
+        r"\\?\C:\linklet\build.exe",
+        r"\\.\PhysicalDrive0",
+        "//?/C:/build.exe",
+    ] {
+        assert!(matches!(
+            refused_by_windows(requested),
+            PathError::DevicePath { .. }
+        ));
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn ordinary_network_shares_are_absolute_paths() {
+    let requested = r"\\server\share\build.exe";
+    assert_eq!(
+        windows().resolve(requested).expect("a network file"),
+        std::path::PathBuf::from(requested)
+    );
+    assert!(Destination::new(r"\\server\share").is_ok());
+    assert!(matches!(
+        windows().resolve(r"\\server\share\file:stream"),
+        Err(PathError::Colon { .. })
+    ));
 }
 
 #[cfg(windows)]
@@ -527,36 +375,23 @@ fn an_ordinary_name_that_merely_starts_like_a_device_is_allowed() {
     }
 }
 
-// --- the Windows root, which has the same rules -------------------------------
+// --- the Windows base, which has the same rules -------------------------------
 
 #[test]
-fn a_windows_root_is_refused_when_it_is_a_share_or_carries_a_stream() {
-    // The root's own validation, which is the same rules seen from the other side: a root the
-    // Windows filesystem would not resolve the way it looks is not a root.
-    for root in [r"\\server\share", r"C:\linklet:stream"] {
-        let error =
-            Destination::with_rules(root, Rules::Windows).expect_err("not a root this can use");
-        assert!(
-            matches!(error, PathError::BadRoot { .. } | PathError::Network { .. }),
-            "{root:?} gave {error:?}"
-        );
+fn a_windows_base_cannot_be_a_device_namespace_or_a_stream() {
+    for base in [r"\\?\C:\linklet", r"C:\linklet:stream"] {
+        assert!(matches!(
+            Destination::with_rules(base, Rules::Windows),
+            Err(PathError::BadBase { .. })
+        ));
     }
 }
 
 // --- the property that has to hold whatever the rules say --------------------
 
-/// Every Windows path form is refused under the POSIX rules, and **nothing ever resolves outside
-/// the root** whichever way the decision went.
-///
-/// This started life as the observation that these forms were *not* refused on Linux and could
-/// not escape either -- true, and not good enough: a caller was given no way to tell that its
-/// path had been read as one strange filename. The POSIX rules refuse them now, by name, and this
-/// keeps both halves honest: the refusals happen, and the invariant that made the old behaviour
-/// safe is still checked on the paths that are accepted.
+/// A Windows separator is never silently accepted as part of a POSIX filename.
 #[test]
-fn no_path_form_escapes_the_posix_root_and_the_windows_shapes_are_refused_by_name() {
-    let root = std::path::Path::new("/linklet");
-
+fn windows_path_separators_are_refused_under_posix_rules() {
     for requested in [
         r"..\..\Windows\System32\drivers\etc\hosts",
         r"..\hosts",
@@ -570,44 +405,15 @@ fn no_path_form_escapes_the_posix_root_and_the_windows_shapes_are_refused_by_nam
         // that. What every member of this list has in common is a backslash, which is the one
         // thing that means two different paths on the two platforms.
     ] {
-        // **Refused, by a named rule, and never accepted.** Which rule depends on how the
-        // platform reads the string -- `..\hosts` is a climb on Windows and one filename on
-        // Linux -- so the reason is asserted by the tests above, in the shape each platform can
-        // produce, and what is asserted here is the invariant that holds either way.
+        // The selected rules name the unsupported separator.
         match posix().resolve(requested) {
-            Err(PathError::Backslash { .. } | PathError::Parent { .. }) => {}
+            Err(PathError::Backslash { .. }) => {}
             Err(other) => panic!("{requested:?} was refused as {other:?}, which is unexpected"),
             Ok(resolved) => panic!(
                 "{requested:?} was accepted as {}, which is a file nobody meant to name",
                 resolved.display()
             ),
         }
-    }
-
-    // And the invariant itself, over the paths that *are* accepted: whatever the rules decide,
-    // a resolved path is inside the root. This is T1 in one assertion.
-    //
-    // `C:build.exe` is deliberately not in this list: on a Windows build it carries a drive
-    // prefix, and `join` *replaces* the base with a prefixed path rather than appending to it --
-    // so under the POSIX rules on Windows it resolves to itself and is legitimately outside a
-    // root it was never joined to. That is `std::path`'s reading rather than a rule, and it is
-    // the same boundary the three gated tests above sit on. On Linux the form is one filename
-    // and is covered by `a_drive_relative_name_is_a_colon_and_a_filename_on_posix`.
-    for requested in [
-        "build.exe",
-        "artifacts/latest/build.exe",
-        "/linklet/build.exe",
-        "./build.exe",
-    ] {
-        let resolved = posix()
-            .resolve(requested)
-            .unwrap_or_else(|error| panic!("{requested:?} should be accepted, got {error:?}"));
-        assert!(
-            resolved.starts_with(root),
-            "{requested:?} resolved to {}, which is outside {}",
-            resolved.display(),
-            root.display()
-        );
     }
 }
 
@@ -626,36 +432,35 @@ fn a_path_with_a_nul_byte_is_refused() {
     assert_eq!(refused("build\0.exe"), PathError::NulByte);
 }
 
-// --- the root itself ---------------------------------------------------------
+// --- the base itself ---------------------------------------------------------
 
 #[test]
-fn a_root_that_is_relative_is_refused_at_construction() {
-    // Because then "inside the root" would depend on the working directory, which
-    // is the thing the root exists to remove.
-    for root in ["linklet", r".\linklet", "builds"] {
-        let error = Destination::new(root).expect_err("a relative root");
+fn a_base_that_is_relative_is_refused_at_construction() {
+    // The saved base must resolve relative paths independently of a later cwd change.
+    for base in ["linklet", r".\linklet", "builds"] {
+        let error = Destination::new(base).expect_err("a relative base");
         assert!(
-            matches!(error, PathError::BadRoot { .. }),
-            "{root:?} gave {error:?}"
+            matches!(error, PathError::BadBase { .. }),
+            "{base:?} gave {error:?}"
         );
     }
 }
 
 #[test]
-fn an_unusable_root_is_refused_at_construction() {
+fn an_unusable_base_is_refused_at_construction() {
     // The platform-independent shapes, on any rules.
-    for root in ["", "   "] {
+    for base in ["", "   "] {
         assert!(
-            Destination::new(root).is_err(),
-            "{root:?} should not be a usable root"
+            Destination::new(base).is_err(),
+            "{base:?} should not be a usable base"
         );
     }
 
     // And the two Windows-only ones, under the rules that own them.
-    for root in [r"\\server\share", r"C:\linklet\build.exe:stream"] {
+    for base in [r"\\?\C:\linklet", r"C:\linklet\build.exe:stream"] {
         assert!(
-            Destination::with_rules(root, Rules::Windows).is_err(),
-            "{root:?} should not be a usable Windows root"
+            Destination::with_rules(base, Rules::Windows).is_err(),
+            "{base:?} should not be a usable Windows base"
         );
     }
 }
@@ -682,23 +487,11 @@ fn the_rules_of_this_machine_are_the_rules_of_its_filesystem() {
 
 #[test]
 fn every_refusal_quotes_what_caused_it() {
-    // A caller reading one of these is a person looking at a path that did not
-    // work. "invalid path" would leave them comparing it against a manual.
-    //
-    // Each case names the rule set it belongs to, because the refusals are different refusals on
-    // the two platforms now -- and a test that asked the machine's own rules for all five would
-    // be asserting a different thing depending on where it ran. The one POSIX case that needs a
-    // POSIX *reading* of the string is the separator rule, which is why it is not in this list:
-    // see `a_backslash_is_refused_because_it_means_two_different_things`.
-    let cases: [(PathError, &str); 5] = [
-        (
-            posix().resolve("../../etc/hosts").expect_err("a climb"),
-            "..",
-        ),
+    let cases = [
         (windows().resolve("nul").expect_err("a device"), "device"),
         (
-            windows().resolve(r"\\server\share").expect_err("a share"),
-            "share",
+            windows().resolve(r"\\?\C:\file").expect_err("a namespace"),
+            "namespace",
         ),
         (
             windows().resolve("build.exe:evil").expect_err("a stream"),
@@ -706,13 +499,8 @@ fn every_refusal_quotes_what_caused_it() {
         ),
         (destination().resolve("").expect_err("nothing"), "empty"),
     ];
-
     for (error, expected) in cases {
-        let text = error.to_string();
-        assert!(
-            text.to_lowercase().contains(&expected.to_lowercase()),
-            "{error:?} rendered as {text:?}, which does not mention {expected:?}"
-        );
+        assert!(error.to_string().contains(expected), "{error}");
     }
 }
 
@@ -786,7 +574,7 @@ fn the_chunk_size_leaves_room_under_the_frame_ceiling() {
 const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 #[test]
-fn a_manifest_that_checks_out_resolves_to_a_path_under_the_root() {
+fn a_manifest_that_checks_out_resolves_to_a_path_under_the_base() {
     use linklet_core::transfer::Manifest;
 
     let manifest = Manifest {
@@ -798,7 +586,7 @@ fn a_manifest_that_checks_out_resolves_to_a_path_under_the_root() {
     let resolved = manifest.check(&destination()).expect("a valid manifest");
     assert_eq!(
         resolved,
-        std::path::Path::new(ROOT)
+        std::path::Path::new(BASE)
             .join("artifacts")
             .join("build.exe")
     );
@@ -889,14 +677,14 @@ fn a_manifest_checks_the_path_and_not_only_the_size() {
     use linklet_core::transfer::{Manifest, ManifestError};
 
     let manifest = Manifest {
-        path: escaping(),
+        path: "bad\0name".to_string(),
         bytes: 1024,
         sha256: DIGEST.to_string(),
     };
 
-    let error = manifest.check(&destination()).expect_err("an escape");
+    let error = manifest.check(&destination()).expect_err("a NUL byte");
     assert!(
-        matches!(error, ManifestError::Path(PathError::Parent { .. })),
+        matches!(error, ManifestError::Path(PathError::NulByte)),
         "got {error:?}"
     );
 }
@@ -1148,7 +936,7 @@ fn the_senders_own_check_does_not_look_at_the_path() {
     // else's machine, and this side cannot resolve it. Splitting the check is what
     // stops the two ends from disagreeing about who validates what.
     let manifest = Manifest {
-        path: escaping(),
+        path: "bad\0name".to_string(),
         bytes: 1,
         sha256: DIGEST.to_string(),
     };
@@ -1159,7 +947,7 @@ fn the_senders_own_check_does_not_look_at_the_path() {
     assert!(
         matches!(
             manifest.check(&destination()),
-            Err(ManifestError::Path(PathError::Parent { .. }))
+            Err(ManifestError::Path(PathError::NulByte))
         ),
         "and the receiver still refuses it"
     );
@@ -1167,3 +955,13 @@ fn the_senders_own_check_does_not_look_at_the_path() {
 
 /// One chunk, for the sender tests.
 const CHUNK: u64 = linklet_core::transfer::CHUNK_BYTES;
+
+#[cfg(windows)]
+#[test]
+fn an_absolute_path_on_another_drive_is_used_directly() {
+    let requested = r"D:\logs\build.log";
+    assert_eq!(
+        destination().resolve(requested).expect("another drive"),
+        std::path::PathBuf::from(requested)
+    );
+}

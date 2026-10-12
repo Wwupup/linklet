@@ -256,7 +256,7 @@ fn there_are_exactly_eleven_tools() {
     // The ninth and tenth are `grep` and `tail`, and they are two tools because they are two
     // questions -- "where is the last ERROR" and "what does the end of this log say" -- and
     // folding them would mean a `pattern` argument that is sometimes ignored. What they share
-    // is the reason they exist at all: a pull is digest-verified and root-bounded and it is
+    // is the reason they exist at all: a pull is digest-verified and it is
     // **the wrong tool for a two-gigabyte log**, because the answer is in the file and the
     // cost is moving it.
     //
@@ -634,32 +634,20 @@ fn the_testbed_tool_passes_its_two_arguments_through() {
 }
 
 #[test]
-fn a_spec_path_outside_the_working_tree_is_refused() {
-    // An agent that can read any file on the machine has been handed more than
-    // this tool is for. The refusal names the reason rather than failing later
-    // with a path error from the filesystem.
-    let fake = FakeRun::default();
-
+fn a_spec_accepts_local_absolute_and_parent_paths() {
     for path in [
-        "C:\\Windows\\System32\\config\\SAM",
-        "/etc/passwd",
-        "\\\\server\\share\\spec.testbed",
-        "..\\..\\secret.testbed",
-        "specs/../../secret.testbed",
+        r"D:\specs\build.testbed",
+        "../build.testbed",
+        "/srv/build.testbed",
     ] {
-        let arguments = serde_json::json!({ "spec": path, "target": "box" });
-        let result = dispatch("testbed", &arguments, &fake);
-
-        assert!(
-            matches!(result, Err(ToolError::BadArgument { name: "spec", .. })),
-            "{path:?} should be refused, got {result:?}"
+        let fake = FakeRun::default();
+        let arguments = serde_json::json!({"spec": path, "target": "box"});
+        dispatch("testbed", &arguments, &fake).expect("a local spec path");
+        assert_eq!(
+            fake.testbed_calls(),
+            vec![(path.to_string(), "box".to_string())]
         );
     }
-
-    assert!(
-        fake.testbed_calls().is_empty(),
-        "a refused path must not reach the filesystem"
-    );
 }
 
 #[test]
@@ -904,56 +892,25 @@ fn the_ps_tool_takes_no_path_argument_because_nothing_can_answer_one() {
 }
 
 #[test]
-fn a_transfer_refuses_a_local_path_outside_the_working_tree() {
-    // An agent that can name any file on the machine has been handed more than this
-    // tool is for, and a transfer is where that becomes two-way: copying
-    // `C:\Windows\...` to a target is a read of this machine, and writing over it is a
-    // write to it. Both directions are checked, and on the local side of each.
-    let fake = FakeRun::default();
-
-    for (tool, local_argument) in [("push", "from"), ("pull", "to")] {
-        // The file's own name, rather than the whole path: the refusal quotes the path
-        // with `{:?}`, so backslashes are doubled in it and comparing the raw text would
-        // be asserting on how a debug format escapes things.
-        for (path, name) in [
-            (r"C:\Windows\win.ini", "win.ini"),
-            ("../../secrets.txt", "secrets.txt"),
-            ("/etc/passwd", "passwd"),
-        ] {
-            let arguments = match tool {
-                "push" => serde_json::json!({
-                    "agent": "a:1",
-                    "from": path,
-                    "to": "remote.exe",
-                }),
-                _ => serde_json::json!({
-                    "agent": "a:1",
-                    "from": "remote.log",
-                    "to": path,
-                }),
+fn a_transfer_accepts_local_absolute_and_parent_paths() {
+    for tool in ["push", "pull"] {
+        for path in [r"D:\builds\app.exe", "../build.log", "/var/log/build.log"] {
+            let fake = FakeRun::default();
+            let (from, to) = if tool == "push" {
+                (path, "remote.exe")
+            } else {
+                ("remote.log", path)
             };
-
-            let result = dispatch(tool, &arguments, &fake);
-            match result {
-                Err(ToolError::BadArgument {
-                    name: field,
-                    problem,
-                }) => {
-                    assert_eq!(field, local_argument, "{tool} named the wrong argument");
-                    assert!(
-                        problem.contains(name) && problem.contains("working tree"),
-                        "the refusal should name what it refused: {problem}"
-                    );
-                }
-                other => panic!("{tool} accepted {path:?}: {other:?}"),
-            }
+            let arguments = serde_json::json!({"agent": "a:1", "from": from, "to": to});
+            let outcome = dispatch(tool, &arguments, &fake)
+                .expect("local paths follow filesystem permissions");
+            assert!(!outcome.is_error);
+            assert_eq!(
+                fake.transfer_calls(),
+                vec![("a:1".to_string(), from.to_string(), to.to_string())]
+            );
         }
     }
-
-    assert!(
-        fake.transfer_calls().is_empty(),
-        "a refused path must not reach the machine"
-    );
 }
 
 #[test]

@@ -127,29 +127,22 @@ The tool descriptions carry the same fact before the call rather than after it: 
 are *verified by digest*, so a caller that reads the list has no reason to plan the second
 check.
 
-## Paths are a boundary
+## File paths
 
-Three arguments name something on **this** machine and refuse an absolute path or `..`:
-`testbed`'s `spec`, and the local half of a transfer -- `from` on `push`, `to` on `pull`. An
-agent handed a filesystem-wide read has a capability nobody asked for, and the refusal names the
-argument rather than surfacing later as an operating-system error.
+Local paths -- `testbed.spec`, `push.from` and `pull.to` -- accept absolute paths
+and parent components. Relative paths use the MCP server's working directory, just as
+they do on the CLI. The server account's filesystem permissions apply.
 
-The other half of a transfer belongs to the agent, which resolves it against its own transfer
-root. It is **not** checked here: checking it twice would be two answers to the question
-`docs/transfer.md` T1 asks, and two checks that disagree are worse than one that does not run.
+Remote paths -- `push.to`, `pull.from`, `ls.path`, `grep.path`, `tail.path`
+and `spawn.output` -- are absolute or relative to the agent's startup directory.
+Parent components, other Windows drives and ordinary UNC shares are allowed. The agent
+account's filesystem permissions apply, as they already do to `exec`. The `--root`
+option has been removed; setting the startup directory only selects a relative-path base.
 
-**Every path the agent resolves goes through that root, and `spawn`'s `output` is one of
-them.** It was not, and a real machine exposed the two halves of that during release
-verification. A relative path -- what this schema says it is and what every caller sends --
-resolved against the agent's *working directory*, so the write was refused by a system
-directory or landed where nobody would look; and a `..` in it was never refused, so `spawn`
-started a program whose output file was created anywhere the agent could write. **Both of the
-tests covering `spawn` passed an absolute path built from the root**, which is the one form
-that worked, so neither half was visible.
-
-The rule to take from it is general: **a path that came off the wire goes through
-`Destination::resolve` before it reaches the filesystem** -- and a function below that point
-should take a `&Path`, so it cannot be handed one that did not.
+Remote file paths still pass through `Destination::resolve` for platform-specific
+checks: empty paths, NUL bytes, Windows devices, alternate streams and ambiguous names
+are refused. File-type validation, size limits and digest verification are unchanged.
+See `docs/transfer.md` T1. Authentication and the wire encoding are unchanged.
 
 ## Protocol decisions worth knowing
 

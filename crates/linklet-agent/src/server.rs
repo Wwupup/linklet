@@ -72,7 +72,12 @@ const MESSAGE_BUDGET: Duration = Duration::from_secs(30);
 /// ask for a log. It is threaded through rather than reached for, so that the one place
 /// that decides what a line says (`linklet_core::log`) and the one place that writes it
 /// (`crate::log`) are the only two things involved.
-pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination, log: &RequestLog) {
+pub fn serve_connection(
+    stream: TcpStream,
+    expected: &Token,
+    paths: &Destination,
+    log: &RequestLog,
+) {
     let mut connection = Connection::with_budget(stream, HELLO_BUDGET);
 
     let hello = match connection.read_frame(Kind::Hello) {
@@ -106,7 +111,7 @@ pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination,
     };
 
     connection.set_budget(MESSAGE_BUDGET);
-    answer_one(&mut connection, session, root, log);
+    answer_one(&mut connection, session, paths, log);
 }
 
 /// Reads the one sealed request on a connection and answers it.
@@ -124,7 +129,7 @@ pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination,
 fn answer_one(
     connection: &mut Connection,
     mut session: Box<dyn Sealed>,
-    root: &Destination,
+    paths: &Destination,
     log: &RequestLog,
 ) {
     let Ok(body) = connection.read_frame(Kind::Sealed) else {
@@ -156,7 +161,7 @@ fn answer_one(
     let id = log.taken(named);
     let started = Instant::now();
 
-    let reply = answer(connection, session.as_mut(), &plaintext, root);
+    let reply = answer(connection, session.as_mut(), &plaintext, paths);
 
     // Sealed with the same session, so the command's output -- the part a caller most
     // wants kept -- never crosses the network in the clear. One buffer, reused for
@@ -310,7 +315,7 @@ fn answer(
     connection: &mut Connection,
     session: &mut dyn Sealed,
     plaintext: &[u8],
-    root: &Destination,
+    paths: &Destination,
 ) -> Response {
     let request = wire::parse_body(plaintext).and_then(|value| wire::request_from_json(&value));
 
@@ -321,12 +326,10 @@ fn answer(
         )),
         Ok(Request::Run(run)) => Response::Sealed(run_reply(&crate::execute::run(&run))),
         Ok(Request::Push(manifest)) => {
-            Response::Sealed(receive(connection, session, &manifest, root))
+            Response::Sealed(receive(connection, session, &manifest, paths))
         }
-        Ok(Request::Pull { path }) => send(connection, session, &path, root),
-        // The one request that looks at the machine rather than at the transfer root, and
-        // the only one whose answer is mostly *about the answer*: a listing carries its own
-        // counts and notes, so an empty list is readable as "nothing matched" rather than
+        Ok(Request::Pull { path }) => send(connection, session, &path, paths),
+        // A listing carries its own counts and notes, so an empty list is readable as "nothing matched" rather than
         // as "nothing is running". `linklet_core::process` decides that; the adapter runs
         // `tasklist` and does not fail, reporting a machine it could not ask as a listing
         // with a note rather than as an error.
@@ -356,14 +359,8 @@ fn answer(
         // `ps`'s question -- asked by the caller, a moment later, which is the order the
         // deploy loop actually runs in.
         //
-        // **The output path goes through the root like every other path in this protocol.**
-        // It did not, and that was a defect with two halves: a relative path -- which is what
-        // the schema says this is, and what every caller sends -- resolved against the agent's
-        // working directory instead of the transfer root, and a `..` in it was never checked,
-        // so `spawn` could create a file anywhere the agent could write. Neither half was
-        // visible to the tests, because both of them passed an absolute path built from the
-        // root, which is the one form that worked.
-        Ok(Request::Spawn(spawn)) => Response::Sealed(match root.resolve(&spawn.output) {
+        // Resolve and validate output paths exactly as for every other file tool.
+        Ok(Request::Spawn(spawn)) => Response::Sealed(match paths.resolve(&spawn.output) {
             Ok(output) => match crate::spawn::start(&spawn.command, &output) {
                 Ok(report) => wire::encode_spawn_reply(&report),
                 Err(reason) => wire::reply_refused(&reason),
@@ -381,17 +378,17 @@ fn answer(
         // because an empty result and a failure to look are the two things this must never
         // let a caller confuse.
         Ok(Request::Grep(grep)) => Response::Sealed(wire::encode_search_reply(
-            &linklet_adapters::grep(root, &grep.path, &grep.pattern, grep.limit, grep.direction),
+            &linklet_adapters::grep(paths, &grep.path, &grep.pattern, grep.limit, grep.direction),
         )),
         Ok(Request::Tail(tail)) => Response::Sealed(wire::encode_search_reply(
-            &linklet_adapters::tail(root, &tail.path, tail.count),
+            &linklet_adapters::tail(paths, &tail.path, tail.count),
         )),
         // The request that answers "what is in there" before a caller reads or pulls from it.
         // A directory that is not there is a **listing whose `found` is false**, not an empty
         // one: the two are the same `Vec` and opposite facts, and a caller that confused them
         // would conclude a machine has no logs.
         Ok(Request::Ls(list)) => Response::Sealed(wire::encode_ls_reply(
-            &linklet_adapters::list_directory(root, &list.path),
+            &linklet_adapters::list_directory(paths, &list.path),
         )),
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
@@ -430,9 +427,9 @@ fn run_reply(outcome: &wire::RunOutcome) -> Value {
 /// Receives one pushed file.
 ///
 /// The manifest is checked **in full, before a chunk is read**: the size against the
-/// ceiling (T3, and half of T11), the shape of the digest, and the path against the
-/// configured root (T1, the most severe item in the document). Then the acceptance goes
-/// out -- **before the body** -- and only then does the receiving start.
+/// ceiling (T3, and half of T11), the shape of the digest, and the filesystem path
+/// rules (T1). Then the acceptance goes out -- **before the body** -- and only
+/// then does the receiving start.
 ///
 /// That order is T14, and it was found on a real machine rather than reasoned about: the
 /// sender has the file ready and streams it as soon as the manifest is written, so a
@@ -446,9 +443,9 @@ fn receive(
     connection: &mut Connection,
     session: &mut dyn Sealed,
     manifest: &Manifest,
-    root: &Destination,
+    paths: &Destination,
 ) -> Value {
-    let target = match manifest.check(root) {
+    let target = match manifest.check(paths) {
         Ok(target) => target,
         Err(error) => return wire::reply_refused(&error.to_string()),
     };
@@ -472,12 +469,8 @@ fn receive(
 /// goes out first as a reply and the chunks follow it, and there is nothing left for
 /// `answer_one` to write when this returns.
 ///
-/// The path is resolved against the root **before anything is opened**, and the root is
-/// what makes this a read of a directory rather than a read of the machine: T1 is
-/// written about writes, and the same `..\..\Windows\System32\...` that must not be
-/// written must not be read either. The file is refused if it is not a regular file,
-/// which is the read-side half of T2 -- a directory or a device would otherwise be a
-/// strange failure from `File::open` rather than a named refusal.
+/// The path is resolved before opening it. Absolute paths are used directly and
+/// relative paths use the startup directory. Non-regular files are refused (T2).
 ///
 /// A failure *before* the manifest is a refusal, like every other request's. A failure
 /// **after** it cannot be: the caller has already been told a size and a digest, and
@@ -489,9 +482,9 @@ fn send(
     connection: &mut Connection,
     session: &mut dyn Sealed,
     path: &str,
-    root: &Destination,
+    paths: &Destination,
 ) -> Response {
-    let target = match root.resolve(path) {
+    let target = match paths.resolve(path) {
         Ok(target) => target,
         Err(error) => return Response::Sealed(wire::reply_refused(&error.to_string())),
     };

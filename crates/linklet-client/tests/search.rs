@@ -66,8 +66,7 @@ impl Agent {
             .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
-            .arg("--root")
-            .arg(&root)
+            .current_dir(&root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -481,26 +480,22 @@ fn a_single_file_lists_as_one_entry() {
 }
 
 #[test]
-fn a_listing_outside_the_transfer_root_is_refused() {
-    // T1 of `docs/transfer.md`: a path that must not be written must not be enumerated
-    // either, or a listing becomes a way to map a machine this agent was not given.
+fn a_listing_with_a_nul_path_reports_the_path_error() {
     let agent = Agent::start();
-
     let listing = ls(
         &agent.address,
         &LsRequest {
-            path: r"..\..\Windows".to_string(),
+            path: "bad\0path".to_string(),
         },
     )
     .expect("the agent should answer");
-
     assert!(!listing.found, "{listing:#?}");
     assert!(
         listing
             .problem
             .as_deref()
-            .is_some_and(|problem| problem.contains("..")),
-        "the refusal should name what it refused: {listing:#?}"
+            .is_some_and(|problem| problem.contains("NUL")),
+        "{listing:#?}"
     );
 }
 

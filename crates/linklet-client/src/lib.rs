@@ -374,7 +374,7 @@ pub fn probe(address: &AgentAddress, budget: Duration) -> Result<Liveness, CallE
     }
 }
 
-/// Copies one local file to a path under the agent's transfer root.
+/// Copies one local file to an absolute path or a path relative to the agent startup directory.
 ///
 /// The file is hashed first, and the digest goes in the manifest: the receiving side
 /// compares what it wrote against it before the file is renamed into place, so a
@@ -664,7 +664,7 @@ pub fn kill(
 /// having a number.
 const KILL_ALLOWANCE: Duration = Duration::from_secs(30);
 
-/// Brings one file back from a path under the agent's transfer root.
+/// Brings one file back from an absolute path or a path relative to the agent startup directory.
 ///
 /// The agent describes the file before sending a byte of it: the reply is a manifest,
 /// with the size and the digest, and then the chunks. **The host checks that manifest

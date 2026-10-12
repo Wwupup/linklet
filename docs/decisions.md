@@ -215,3 +215,19 @@ Fixing it needs an ephemeral key exchange, which is a larger and more delicate
 piece of work. It is written here, and in `linklet_core::channel`'s documentation,
 because a reader who assumes encryption gives forward secrecy is worse off than
 one who knows it does not.
+
+## D5. File tools use the process account permissions.
+
+An authenticated caller can already run commands as the agent account. Confining only
+file tools to a transfer root does not confine that caller; it makes ordinary deployment
+and log collection use shell commands instead of the typed tools.
+
+Remove `--root` rather than keeping a second mode. Absolute paths are used directly,
+and relative paths use the startup directory, including parent components. Windows
+drives and ordinary UNC shares are allowed. MCP local paths follow the same convention
+using the server working directory. OS permissions remain the authority; no elevation
+is performed. Special-file checks and verified temporary-file transfers still apply.
+
+This deliberately breaks old launch arguments. Set the launcher working directory to
+preserve relative path locations; there is no compatibility alias or new configuration.
+The wire encoding does not change.

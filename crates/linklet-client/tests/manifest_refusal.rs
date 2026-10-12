@@ -3,7 +3,7 @@
 //! This file exists for one bug, found on a real machine and not on loopback.
 //!
 //! A push sends the manifest and then the file. The receiving agent decides at the
-//! manifest -- the path is outside its root, the size is over its ceiling -- and there is
+//! manifest -- the path names a device, the size is over its ceiling -- and there is
 //! no time for the sender to hear about it if the sender has already started streaming:
 //! the receiver writes its refusal and closes **with the sender's unread chunks still in
 //! its receive queue**, Windows resets a socket closed in that state, and the reset
@@ -167,16 +167,16 @@ fn push_against_a_refusal(reason: &str) -> (Result<wire::TransferOutcome, CallEr
 #[test]
 fn a_manifest_refused_before_the_body_reports_the_reason_and_not_a_broken_connection() {
     // The bug, as one assertion. A refusal is an answer, and the caller has to be able to
-    // read it: "the agent refused the request: ... outside the root" sends whoever pushed
+    // read it: "the agent refused the request: ... names a device" sends whoever pushed
     // the file to the path they typed, and "the agent closed the connection without
     // answering" sends them to the network.
-    let reason = "the path is outside the root this agent may write in";
+    let reason = "the path names a device, not a file";
     let (result, _) = push_against_a_refusal(reason);
     let error = result.expect_err("the agent refused this");
 
     match error {
         CallError::Refused(text) => assert!(
-            text.contains("outside the root"),
+            text.contains("names a device"),
             "the refusal should carry the agent's own words: {text}"
         ),
         other => panic!(

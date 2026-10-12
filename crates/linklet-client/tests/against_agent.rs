@@ -61,11 +61,7 @@ const TEST_TOKEN: &str = "test-token-0123456789";
 struct Agent {
     child: Child,
     address: AgentAddress,
-    /// The one directory this agent's transfers may touch.
-    ///
-    /// Passed with `--root` rather than inferred from the working directory, because a
-    /// test that wrote wherever the agent happened to be started would be writing into
-    /// the repository.
+    /// The startup directory, owned and removed by this test.
     root: PathBuf,
 }
 
@@ -78,8 +74,7 @@ impl Agent {
             .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
-            .arg("--root")
-            .arg(&root)
+            .current_dir(&root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -518,7 +513,7 @@ fn base64_of_zeroes(workspace: &std::path::Path) -> String {
 
 /// A path inside the root whose parent directory does not exist, in this platform's syntax.
 ///
-/// Same reasoning as [`escaping_path`]: the claim is that the agent refuses a destination it
+/// The claim is that the agent refuses a destination it
 /// cannot write and names it, and on Linux the Windows form is one filename rather than
 /// three components, so the parent *does* exist and nothing is refused.
 fn missing_directory_path(name: &str) -> String {
@@ -534,45 +529,13 @@ fn part_of(path: &str) -> String {
     format!("{path}.part")
 }
 
-/// A path that tries to leave the agent's transfer root, in this platform's syntax.
-///
-/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
-/// `..\..\escaped.exe` walks up out of the root, and on Linux a backslash is an ordinary
-/// character in a filename -- so the same string names a safe file *inside* the root and a
-/// test using it would pass while proving nothing.
-fn escaping_path(name: &str) -> String {
-    if cfg!(windows) {
-        format!(r"..\..\{name}")
-    } else {
-        format!("../../{name}")
-    }
-}
-
 #[test]
-fn a_push_that_escapes_the_agents_root_is_refused_by_the_agent() {
-    // T1, end to end, over a real socket: the most severe item in the transfer
-    // document. The path is the caller's, so a caller that is confused about who it is
-    // talking to would otherwise be writing anywhere on someone else's machine.
+fn a_push_with_a_nul_path_is_refused_by_the_agent() {
     let agent = Agent::start();
     let source = agent.local("source.bin", b"payload");
-
-    let error = push(&agent.address, &source, &escaping_path("escaped.exe"))
-        .expect_err("a path outside the root must be refused");
-
+    let error = push(&agent.address, &source, "bad\0path").expect_err("a NUL path");
     assert!(matches!(error, CallError::Refused(_)), "{error:?}");
-    let text = render_call_error(&error);
-    assert!(
-        text.contains("..") || text.contains("escaped"),
-        "the refusal should name what it refused: {text}"
-    );
-    assert!(
-        !agent.root.join("escaped.exe").exists(),
-        "nothing may be written outside the root"
-    );
-    assert!(
-        !agent.root.join(r"..\..\escaped.exe.part").exists(),
-        "and no temporary may be left either"
-    );
+    assert!(error.to_string().contains("NUL"), "{error}");
 }
 
 #[test]
@@ -650,24 +613,13 @@ fn a_pulled_file_larger_than_one_chunk_arrives_intact() {
 }
 
 #[test]
-fn a_pull_of_a_path_outside_the_agents_root_is_refused() {
-    // T1 in the reading direction, over a real socket: without the root, a caller could
-    // read any file on the target, and the agent would be a file server for the machine.
+fn a_pull_with_a_nul_path_is_refused() {
     let agent = Agent::start();
-    let destination = agent.root.join("stolen.txt");
-
-    let error = pull(
-        &agent.address,
-        r"..\..\Windows\System32\drivers\etc\hosts",
-        &destination,
-    )
-    .expect_err("a path outside the root must be refused");
-
+    let destination = agent.root.join("collected.txt");
+    let error = pull(&agent.address, "bad\0path", &destination).expect_err("a NUL path");
     assert!(matches!(error, CallError::Refused(_)), "{error:?}");
-    assert!(
-        !destination.exists(),
-        "nothing may be written for a pull that was refused"
-    );
+    assert!(error.to_string().contains("NUL"), "{error}");
+    assert!(!destination.exists());
 }
 
 #[test]

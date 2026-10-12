@@ -11,6 +11,13 @@ Working rules for this list:
 - **The order is a dependency order, not a preference order.** Skipping ahead
   produces exactly the kind of code this project exists to avoid.
 
+## Current file access policy
+
+File tools use the agent account permissions across the filesystem. Absolute paths are
+used directly; relative paths use the startup directory. `--root` has been removed.
+Earlier containment fixes below record historical behavior, superseded by this policy
+and `docs/transfer.md` T1.
+
 ## M0 -- the skeleton
 
 - [x] workspace, three crates, the dependency-direction rule
@@ -222,8 +229,7 @@ design that fits the channel. What replaced it is
       file to a target over the sealed channel
 - [x] `linklet pull --agent <host:port> --from <remote> --to <local>` brings one
       back, for collecting a log or a result
-      -- both need `--root` on the agent, which is the one directory a transfer may
-      read or write; it defaults to the directory the agent was started in
+      -- absolute paths are used directly; relative paths use the agent startup directory
 - [x] **the framed body carries bytes rather than hex.** It was hex because the
       framing layer was written as text, and that doubled every sealed body. Replacing
       HTTP with frames removed the text body entirely, which is stronger than making
@@ -502,7 +508,7 @@ on everything in this list -- which is why reading it beats designing from scrat
       absolute-inside-the-root.
 - [x] **`ls`, `tail`, `grep`, and an encoding that is reported.** The answer to "look at the
       log" is currently "pull it and grep locally", which is defensible -- the pull is
-      digest-verified and root-bounded -- but it is wrong for a two-gigabyte log and it
+      digest-verified -- but it is wrong for a two-gigabyte log and it
       cannot answer "where is the last ERROR" without moving the whole file. lanlink's
       `grep` is the reference: the pattern goes in as an argument rather than through a
       shell, `first` and `last` modes, context, and four reporting fields (files searched,

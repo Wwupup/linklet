@@ -393,8 +393,8 @@ mod tests {
     #[test]
     fn a_command_line_is_its_arguments_separated_by_spaces() {
         assert_eq!(
-            join_cmdline(b"/usr/bin/linklet-agent\0--port\08787\0--root\0/tmp\0"),
-            "/usr/bin/linklet-agent --port 8787 --root /tmp"
+            join_cmdline(b"/usr/bin/linklet-agent\0--port\08787\0--log\0/tmp/agent.log\0"),
+            "/usr/bin/linklet-agent --port 8787 --log /tmp/agent.log"
         );
     }
 

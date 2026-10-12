@@ -78,8 +78,9 @@ options for check:
   -h, --help              print this
 
 about transfers:
-  A path under the agent's transfer root -- the directory it was started with, or
-  --root on the agent. One file per command, and a directory is your own loop.
+  Remote relative paths use the agent startup directory. Absolute paths are used
+  directly; access follows the agent account permissions. One file per command,
+  and a directory is your own loop.
 
 options for ps:
   --name <text>       keep processes whose image name contains this
@@ -110,7 +111,7 @@ about stopping things:
   request matched is still running.
 
 about reading a file on a target:
-  grep and tail read one file under the agent's transfer root without moving it, which
+  grep and tail read one file on the agent without moving it, which
   is what a two-gigabyte log needs and a pull cannot do. The first line is a summary:
   how many matches, which file, and which encoding the bytes were read as -- because a
   file that could not be read must never look like a file with no matches. Exit 1 means
@@ -522,9 +523,7 @@ impl ToolRunner for LiveRunner {
 
     fn testbed(&self, spec_path: &str, target: &str) -> ToolOutcome {
         let Ok(text) = std::fs::read_to_string(spec_path) else {
-            // The path was already checked to be inside the working tree, so a
-            // failure here is a file that is genuinely not there -- which the
-            // agent fixes by writing it, not by retrying.
+            // Local paths are read with this process's filesystem permissions.
             return ToolOutcome::failed(format!("cannot read {spec_path}"));
         };
 

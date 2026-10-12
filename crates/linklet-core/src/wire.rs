@@ -392,10 +392,9 @@ pub enum Request {
     ///
     /// One path and nothing else: what comes back is a manifest and then the file, so
     /// the answer tells the caller the size and the digest before a byte of it arrives.
-    /// The path is resolved against the agent's transfer root, which is what stops a
-    /// pull from reading the machine rather than the directory it was pointed at.
+    /// Absolute paths are used directly; relative paths use the agent startup directory.
     Pull {
-        /// The file to read, inside the agent's root.
+        /// The file to read, absolute or relative to the agent startup directory.
         path: String,
     },
     /// Ask what is running on the agent's machine.
@@ -424,7 +423,7 @@ pub enum Request {
     /// Search a file on the agent's machine.
     ///
     /// **The answer to "look at the log" without moving it**, which is what
-    /// `docs/ROADMAP.md` M10 asks for: a pull is digest-verified and root-bounded, and it is
+    /// `docs/ROADMAP.md` M10 asks for: a pull is digest-verified, and it is
     /// the wrong tool for a two-gigabyte log whose last ERROR is the question.
     Grep(GrepRequest),
     /// Read the end of a file on the agent's machine.
@@ -437,17 +436,17 @@ pub enum Request {
     Ls(LsRequest),
 }
 
-/// A request to list a path under the agent's transfer root.
+/// A request to list a path on the agent's machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LsRequest {
-    /// The directory, or a single file, resolved against the agent's root.
+    /// The directory, or a single file, absolute or relative to the agent startup directory.
     pub path: String,
 }
 
-/// A request to search a file under the agent's transfer root.
+/// A request to search a file on the agent's machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrepRequest {
-    /// The file, resolved against the agent's root exactly as a pull's path is.
+    /// The file, absolute or relative to the agent startup directory.
     pub path: String,
     /// What to look for.
     pub pattern: crate::search::Pattern,
@@ -457,10 +456,10 @@ pub struct GrepRequest {
     pub limit: crate::search::Limit,
 }
 
-/// A request to read the end of a file under the agent's transfer root.
+/// A request to read the end of a file on the agent's machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailRequest {
-    /// The file, resolved against the agent's root.
+    /// The file, absolute or relative to the agent startup directory.
     pub path: String,
     /// How many lines from the end.
     pub count: usize,

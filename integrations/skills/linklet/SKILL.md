@@ -49,8 +49,8 @@ tool names a machine, and there is no tool that finds one (see below).
    before the push, not after:** Windows will not let a running executable be
    replaced, so a push over one fails with a sharing violation that reads like a
    permissions problem.
-4. **`push`** the new build -- `from` is a local path inside the working tree, `to` is
-   under the agent's transfer root. The receiving side verifies the digest before the
+4. **`push`** the new build -- `from` is a local path and `to` is a target path;
+   both accept absolute paths or paths relative to their process working directory. The receiving side verifies the digest before the
    real path is touched, so a truncated copy fails here rather than confusingly later;
    the reply ends `(verified)`, and there is nothing left to check after that.
 5. **`spawn`** it -- `output` is a file on the target for the program's own output,
@@ -89,9 +89,10 @@ tool names a machine, and there is no tool that finds one (see below).
 - **`isError` means the call could not be made, not that the news is bad.** Every
   machine being down is a successful call carrying bad news. Retrying an `isError`
   about the token or about a path is time spent on the wrong problem.
-- **Every path the agent resolves goes through its transfer root** -- `push`'s `to`,
-  `pull`'s `from`, and `spawn`'s `output` included. An absolute path or a `..` is
-  refused by name rather than resolved, and the refusal names the argument.
+- **File paths use the process account permissions.** Remote absolute paths are used
+  directly; relative paths, including `..`, use the agent startup directory. Local MCP
+  paths use the server working directory. Other Windows drives and ordinary UNC shares
+  are supported; `--root` has been removed.
 - **A `push` or `pull` that succeeded is already byte-verified; do not hash the file
   again.** The receiving side made the comparison before the file went under its real
   name, so a result line is printed only for a transfer that matched -- it ends
@@ -118,8 +119,8 @@ tool names a machine, and there is no tool that finds one (see below).
   of this rule. `docs/machine.md` has the measured Windows forms.
 - **A command runs in the agent's working directory, not yours.** A relative path is
   relative to wherever the agent was started, which is usually why a file "is not
-  there" -- pass absolute paths, and remember that a transfer path is resolved against
-  the agent's root while a *command's* paths are not.
+  there". File tools use the same startup directory for relative paths; absolute paths
+  make the intended location explicit.
 - **A command is written for the target's own shell.** `dir` is not `ls`, and a deployment
   script that runs on both machines is two commands, not one. Ask `ps` or `ls` for what is
   there rather than composing a command that assumes it.
@@ -143,8 +144,8 @@ tool names a machine, and there is no tool that finds one (see below).
    the request that wedged it**, and it is the only evidence that names it. A liveness
    check is not written down at all, so the missing half is never a monitor's ping. The
    file rolls over at a mebibyte and keeps three older ones, so `agent.log.1` is
-   yesterday's if you need it. If the log is under the agent's transfer root, `grep`/
-   `tail` it, or `pull` it.
+   yesterday's if you need it. Use the absolute log path with `grep`, `tail` or `pull`
+   when the agent account can read it.
 3. **Report what you observed, not what you conclude.** The raw reply, the summary
    line and the log tail are the useful part; "it failed" is not.
 

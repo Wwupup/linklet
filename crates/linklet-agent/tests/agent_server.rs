@@ -74,8 +74,7 @@ impl Agent {
             .env_remove("LINKLET_TOKEN_FILE")
             .arg("--port")
             .arg("0")
-            .arg("--root")
-            .arg(&root)
+            .current_dir(&root)
             .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -105,8 +104,7 @@ impl Agent {
             .envs(environment.iter().copied())
             .arg("--port")
             .arg("0")
-            .arg("--root")
-            .arg(&root)
+            .current_dir(&root)
             .args(extra)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -381,17 +379,10 @@ fn a_pull_of_a_file_that_is_not_there_is_refused_by_name() {
 }
 
 #[test]
-fn a_pull_that_escapes_the_root_is_refused_by_name() {
-    // The read side of T1, and it is the same rule: the root is what stops a pull from
-    // reading the machine rather than the directory the agent was pointed at. A path
-    // that must not be written must not be read either.
+fn a_pull_with_a_nul_path_is_refused_by_name() {
     let agent = Agent::start();
-    let reason = refusal(agent.sealed().pull(&escaping_path("hosts")));
-
-    assert!(
-        reason.contains("..") || reason.contains("outside"),
-        "the refusal should name what it refused: {reason}"
-    );
+    let reason = refusal(agent.sealed().pull("bad\0path"));
+    assert!(reason.contains("NUL"), "{reason}");
 }
 
 #[test]
@@ -414,22 +405,6 @@ fn refusal(reply: Reply) -> String {
     match reply {
         Reply::Refused(reason) => reason,
         Reply::Result(value) => panic!("expected a refusal and got a result: {value:?}"),
-    }
-}
-
-/// A path that tries to leave the transfer root, written in this platform's syntax.
-///
-/// The claim is `docs/transfer.md` T1 and it is portable; the syntax is not. On Windows
-/// `..\..\escaped.exe` walks up out of the root. **On Linux a backslash is an ordinary
-/// character in a filename**, so the same string is a perfectly safe name *inside* the root
-/// and the test would pass while proving nothing -- which is what running this suite on
-/// Linux found, reported as "expected a refusal and got a result". The refusal was correct
-/// and the test was asserting the wrong thing.
-fn escaping_path(name: &str) -> String {
-    if cfg!(windows) {
-        format!(r"..\..\{name}")
-    } else {
-        format!("../../{name}")
     }
 }
 
@@ -622,7 +597,7 @@ fn a_request_that_does_something_is_still_recorded_after_the_check_was_silenced(
 fn the_default_log_lands_in_a_logs_directory_beside_the_agent() {
     // **The default is a log, and it is not the working directory.** It used to be the
     // other way round -- no log unless asked -- and the machine that needed one most was
-    // the one where nobody had asked. A working directory would match `--root` and would
+    // the one where nobody had asked. A log in the working directory would
     // land in the scheduler's directory on exactly the unattended machines this is for,
     // so the default is `logs/agent.log` beside the executable.
     let agent = Agent::start();
@@ -673,8 +648,7 @@ fn the_agent_refuses_to_start_with_a_log_it_cannot_open() {
         .env_remove("LINKLET_TOKEN_FILE")
         .arg("--port")
         .arg("0")
-        .arg("--root")
-        .arg(&directory)
+        .current_dir(&directory)
         // A directory where a file was expected: `RequestLog::open` refuses it by name
         // rather than letting the first write fail.
         .arg("--log")
@@ -1023,7 +997,7 @@ fn the_agent_answers_a_push_manifest_before_any_of_the_file_is_sent() {
 
     conversation.send_json(
         &wire::request_to_json(&Request::Push(Manifest {
-            path: escaping_path("escaped.exe"),
+            path: "bad\0path".to_string(),
             bytes: 1024,
             sha256: DIGEST.to_string(),
         }))
@@ -1033,7 +1007,7 @@ fn the_agent_answers_a_push_manifest_before_any_of_the_file_is_sent() {
     let reply = conversation.read_one();
     let reason = refusal(reply);
     assert!(
-        reason.contains("..") || reason.contains("escaped"),
+        reason.contains("NUL"),
         "the refusal should name what it refused: {reason}"
     );
 }
@@ -1071,28 +1045,23 @@ fn a_pushed_file_lands_under_the_root_and_the_agent_reports_its_digest() {
 }
 
 #[test]
-fn a_push_whose_path_escapes_the_root_is_refused_before_a_chunk_is_read() {
-    // T1 at the agent's own layer: the path is checked against the configured root
-    // before the temporary file exists, so a `..` costs nothing and writes nothing.
+fn a_push_with_a_nul_path_is_refused_before_a_chunk_is_read() {
+    // Invalid paths are refused at the manifest before a temporary file is opened.
     let agent = Agent::start();
     let content = b"payload";
     let digest = linklet_adapters::digest_of_file(&write_source(&agent, content))
         .expect("hashing the source");
 
     let manifest = Manifest {
-        path: escaping_path("escaped.exe"),
+        path: "bad\0path".to_string(),
         bytes: content.len() as u64,
         sha256: digest,
     };
 
     let reason = refusal(agent.sealed().push(&manifest, content));
     assert!(
-        reason.contains("..") || reason.contains("escaped"),
+        reason.contains("NUL"),
         "the refusal should name what it refused: {reason}"
-    );
-    assert!(
-        !agent.root.join("escaped.exe").exists(),
-        "nothing may be written outside the root"
     );
 }
 
@@ -1134,62 +1103,34 @@ fn write_source(agent: &Agent, content: &[u8]) -> std::path::PathBuf {
 }
 
 #[test]
-fn the_agent_refuses_to_start_with_a_root_that_is_not_a_directory() {
-    // A configuration error should be loud when it is made, which is the same argument the
-    // token gets one test above. Without this the agent starts happily and **every**
-    // transfer fails later with a filesystem error naming a path nobody typed -- which is
-    // what happened on the first real machine this ran against, where `--root` pointed at
-    // a directory that had not been created yet.
-    //
-    // The wait is bounded rather than `output()`, because the failure being checked for is
-    // "it kept running": a test that blocked on a process which is serving happily would
-    // hang the suite instead of failing it.
-    let missing = std::env::temp_dir().join("linklet-root-that-does-not-exist");
-    let _ = std::fs::remove_dir_all(&missing);
-
+fn the_removed_root_option_is_rejected() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
         .env("LINKLET_TOKEN", TEST_TOKEN)
         .env_remove("LINKLET_TOKEN_FILE")
-        .args(["--port", "0"])
-        .arg("--root")
-        .arg(&missing)
-        .stdout(Stdio::piped())
+        .args(["--port", "0", "--root", "."])
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("the agent should start");
-
+        .expect("start the agent");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("waiting for the agent") {
-            break Some(status);
+    loop {
+        if let Some(status) = child.try_wait().expect("poll the agent") {
+            assert_eq!(status.code(), Some(2));
+            break;
         }
         if std::time::Instant::now() > deadline {
-            break None;
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the removed option was accepted");
         }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    let Some(status) = status else {
-        let _ = child.kill();
-        let _ = child.wait();
-        panic!("the agent started with a root that does not exist, and is still running");
-    };
-
-    assert_eq!(
-        status.code(),
-        Some(2),
-        "expected a refusal to start rather than a running agent"
-    );
-
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let mut stderr = String::new();
-    std::io::Read::read_to_string(
-        child.stderr.as_mut().expect("stderr was piped"),
-        &mut stderr,
-    )
-    .expect("reading stderr");
+    std::io::Read::read_to_string(child.stderr.as_mut().expect("stderr"), &mut stderr)
+        .expect("read stderr");
     assert!(
-        stderr.contains("linklet-root-that-does-not-exist"),
-        "the message should name the root: {stderr}"
+        stderr.contains("unexpected argument") && stderr.contains("--root"),
+        "{stderr}"
     );
 }
 
@@ -1291,7 +1232,7 @@ fn the_token_file_may_be_named_by_the_environment_instead_of_the_flag() {
 
 #[test]
 fn a_token_file_that_cannot_be_read_is_a_refusal_to_start() {
-    // The same rule `--log` and `--root` follow: an operator who asked for
+    // The same rule `--log` follows: an operator who asked for
     // something and silently did not get it has evidence they believe exists and
     // does not. Falling back to the environment here would be worse than that --
     // it would authenticate with a secret nobody named.

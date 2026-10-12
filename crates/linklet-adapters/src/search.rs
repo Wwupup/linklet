@@ -51,12 +51,10 @@ fn unreadable(path: &str, reason: String) -> Search {
     linklet_core::search::could_not_search(path, &reason, Encoding::Utf8)
 }
 
-/// Searches one file under `root` for a pattern.
+/// Searches one file, resolving relative paths against the configured base.
 ///
-/// `path` is resolved against the agent's transfer root, exactly as a pull is: T1 of
-/// `docs/transfer.md` is written about writes, and the same `..\..\Windows\System32\...`
-/// that must not be read by a pull must not be read by a grep. The root is what makes this
-/// a read of a directory rather than a read of the machine.
+/// Absolute paths are used directly; relative paths use the agent startup
+/// directory. The operating system enforces read permissions.
 ///
 /// # Errors
 ///
@@ -65,13 +63,13 @@ fn unreadable(path: &str, reason: String) -> Search {
 /// arranged around -- a caller must be able to tell "this log has no errors" from "I could
 /// not read this log".
 pub fn grep(
-    root: &linklet_core::transfer::Destination,
+    paths: &linklet_core::transfer::Destination,
     path: &str,
     pattern: &Pattern,
     limit: Limit,
     direction: Direction,
 ) -> Search {
-    let target = match root.resolve(path) {
+    let target = match paths.resolve(path) {
         Ok(target) => target,
         Err(error) => return unreadable(path, error.to_string()),
     };
@@ -85,14 +83,14 @@ pub fn grep(
     finish(search, path, with_text)
 }
 
-/// Reads the last `count` lines of one file under `root`.
+/// Reads the last `count` lines of an absolute or base-relative file path.
 ///
 /// The same reading as [`grep`] and the same ceiling, with a pattern that matches
 /// everything -- because "show me the end of the log" is the other half of "look at the
 /// log", and doing it through a pull moves the whole file to answer a question about its
 /// last few lines.
-pub fn tail(root: &linklet_core::transfer::Destination, path: &str, count: usize) -> Search {
-    let target = match root.resolve(path) {
+pub fn tail(paths: &linklet_core::transfer::Destination, path: &str, count: usize) -> Search {
+    let target = match paths.resolve(path) {
         Ok(target) => target,
         Err(error) => return unreadable(path, error.to_string()),
     };

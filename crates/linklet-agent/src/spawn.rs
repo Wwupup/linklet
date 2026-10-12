@@ -37,20 +37,10 @@ use linklet_core::wire::SpawnReport;
 
 /// Starts a command and returns what was started, or why it could not be.
 ///
-/// # Why `output` is a `&Path` and not a `&str`
-///
-/// **It used to take the request's string and open it directly**, so the path resolved against
-/// whatever directory the agent happened to be started in -- and, worse, a `..` in it was never
-/// checked, because that check lives in `Destination::resolve` and this path never went through
-/// it. `spawn` could therefore create a file anywhere the agent could write, in a protocol where
-/// every other write is rooted. Found by driving a release candidate on a real machine: a
-/// relative path was refused with "Access is denied" by a system directory, and the escape was
-/// prevented only by that same accident of permissions. A test on the agent's own machine then
-/// showed `..\escaped.log` being written and a process started.
-///
-/// Taking a `Path` makes the mistake unrepresentable rather than merely fixed: a caller cannot
-/// pass an unresolved request string here, because the only `Path` it can produce has already
-/// been through [`linklet_core::transfer::Destination::resolve`].
+/// The output path has already been resolved and validated by
+/// [`linklet_core::transfer::Destination::resolve`], using the same startup-directory
+/// base and special-file checks as the other file tools. Access follows the
+/// operating-system permissions of the agent process.
 ///
 /// # Errors
 ///

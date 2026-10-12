@@ -140,9 +140,7 @@ pub trait ToolRunner {
     /// Copies one local file to the agent, and reports what landed there.
     ///
     /// `to` is a path on the **agent's** side and is not resolved or checked here: the
-    /// agent owns that root, and a second reading of `docs/transfer.md` T1 on this side
-    /// would be a second answer to the same question -- which is how two checks come to
-    /// disagree about what is allowed.
+    /// agent applies its filesystem rules and operating-system permissions.
     fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome;
 
     /// Copies one file back from the agent.
@@ -272,32 +270,6 @@ fn required_str(arguments: &Value, name: &'static str) -> Result<String, ToolErr
     }
 }
 
-/// A path that stays inside the working tree, by the name the tool calls it.
-///
-/// An agent that can name any file on the machine has been handed more than this tool
-/// is for. "Read the specification at C:\Windows\..." is not a request worth serving,
-/// and neither is "copy C:\Windows\..." to a target or "write this over C:\Windows\...",
-/// which are the two directions a transfer adds. Rejecting the two ways out of the tree
-/// -- an absolute path and a `..` -- is cheaper than reasoning about what a caller meant,
-/// and the refusal names the argument it refused.
-fn relative_local_path(arguments: &Value, name: &'static str) -> Result<String, ToolError> {
-    let path = required_str(arguments, name)?;
-
-    let is_absolute = path.starts_with('/')
-        || path.starts_with('\\')
-        || path.chars().nth(1).is_some_and(|c| c == ':');
-    let climbs_out = path.split(['/', '\\']).any(|part| part == "..");
-
-    if is_absolute || climbs_out {
-        return Err(ToolError::BadArgument {
-            name,
-            problem: format!("{path:?} is outside the working tree; give a path inside it"),
-        });
-    }
-
-    Ok(path)
-}
-
 /// The target list, as the one spec the parser takes.
 ///
 /// MCP sends an array and [`crate::parse_targets`] takes a comma-separated
@@ -423,7 +395,7 @@ pub fn tools() -> Vec<Tool> {
                 "properties": {
                     "spec": {
                         "type": "string",
-                        "description": "path to a testbed file, inside the working tree"
+                        "description": "path to a testbed file, absolute or relative to the server working directory"
                     },
                     "target": {
                         "type": "string",
@@ -478,11 +450,11 @@ pub fn tools() -> Vec<Tool> {
                     },
                     "from": {
                         "type": "string",
-                        "description": "path to the local file, inside the working tree"
+                        "description": "path to the local file, absolute or relative to the server working directory"
                     },
                     "to": {
                         "type": "string",
-                        "description": "a path on the target, under the agent's transfer root"
+                        "description": "a path on the target, absolute or relative to the agent startup directory"
                     }
                 },
                 "required": ["agent", "from", "to"],
@@ -503,11 +475,11 @@ pub fn tools() -> Vec<Tool> {
                     },
                     "from": {
                         "type": "string",
-                        "description": "a path on the target, under the agent's transfer root"
+                        "description": "a path on the target, absolute or relative to the agent startup directory"
                     },
                     "to": {
                         "type": "string",
-                        "description": "where to put it locally, inside the working tree"
+                        "description": "where to put it locally, absolute or relative to the server working directory"
                     }
                 },
                 "required": ["agent", "from", "to"],
@@ -609,7 +581,7 @@ pub fn tools() -> Vec<Tool> {
                     },
                     "output": {
                         "type": "string",
-                        "description": "where on the target the program's output goes"
+                        "description": "output file on the target, absolute or relative to the agent startup directory"
                     }
                 },
                 "required": ["agent", "command", "output"],
@@ -631,7 +603,7 @@ pub fn tools() -> Vec<Tool> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "the file, under the agent's transfer root"
+                        "description": "the file, absolute or relative to the agent startup directory"
                     },
                     "pattern": {
                         "type": "string",
@@ -675,7 +647,7 @@ pub fn tools() -> Vec<Tool> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "the file, under the agent's transfer root"
+                        "description": "the file, absolute or relative to the agent startup directory"
                     },
                     "lines": {
                         "type": "integer",
@@ -703,7 +675,7 @@ pub fn tools() -> Vec<Tool> {
                     },
                     "path": {
                         "type": "string",
-                        "description": "the directory or file, under the agent's transfer root"
+                        "description": "the directory or file, absolute or relative to the agent startup directory"
                     }
                 },
                 "required": ["agent", "path"],
@@ -774,7 +746,7 @@ pub fn dispatch(
         }
         "testbed" => {
             reject_unknown(arguments, &["spec", "target"])?;
-            let spec = relative_local_path(arguments, "spec")?;
+            let spec = required_str(arguments, "spec")?;
             let target = required_str(arguments, "target")?;
             Ok(runner.testbed(&spec, &target))
         }
@@ -803,10 +775,8 @@ pub fn dispatch(
         "push" => {
             reject_unknown(arguments, &["agent", "from", "to"])?;
             let agent = required_str(arguments, "agent")?;
-            // `from` is the file here, so it is the one bounded by the working tree.
-            let from = relative_local_path(arguments, "from")?;
-            // `to` is a path on the agent, which owns that root. Deliberately not
-            // checked here -- see `ToolRunner::push`.
+            let from = required_str(arguments, "from")?;
+            // Remote paths follow the target filesystem rules.
             let to = required_str(arguments, "to")?;
             Ok(runner.push(&agent, &from, &to))
         }
@@ -814,9 +784,7 @@ pub fn dispatch(
             reject_unknown(arguments, &["agent", "from", "to"])?;
             let agent = required_str(arguments, "agent")?;
             let from = required_str(arguments, "from")?;
-            // The mirror of `push`: the local half is `to`, and it is the one that may
-            // not leave the tree.
-            let to = relative_local_path(arguments, "to")?;
+            let to = required_str(arguments, "to")?;
             Ok(runner.pull(&agent, &from, &to))
         }
         "ps" => {

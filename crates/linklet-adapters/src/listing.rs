@@ -16,23 +16,22 @@
 use linklet_core::listing::{Entry, Listing, MAX_ENTRIES, could_not_list, empty, sorted};
 use linklet_core::transfer::Destination;
 
-/// Lists one path under `root`.
+/// Lists one absolute path or a path relative to the configured base.
 ///
 /// **A directory and a file are both legitimate questions.** "What is in this directory" and
 /// "is this file there, and how big is it" are the two things a caller about to read or pull
 /// something needs, and answering the second with "that is not a directory" would make the
 /// caller guess a different command to ask it. A file lists as one entry.
 ///
-/// The path is resolved against the agent's transfer root exactly as a pull's is: T1 of
-/// `docs/transfer.md` is written about writes, and the same `..\..\Windows\System32\...` that
-/// must not be written must not be enumerated either.
+/// Relative paths use the agent startup directory. Absolute paths are used directly;
+/// filesystem permissions decide which directories and files can be read.
 ///
 /// # Errors
 ///
 /// Never returns an error. A path that is not there, or cannot be read, comes back as a
 /// listing whose `found` is false -- see the module comment.
-pub fn list(root: &Destination, path: &str) -> Listing {
-    let target = match root.resolve(path) {
+pub fn list(paths: &Destination, path: &str) -> Listing {
+    let target = match paths.resolve(path) {
         Ok(target) => target,
         Err(error) => return could_not_list(path, &error.to_string()),
     };
