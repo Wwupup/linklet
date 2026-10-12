@@ -143,7 +143,12 @@ fn own_image_name() -> String {
 /// as well as the feature, and stopped meaning anything on the other one.
 fn a_long_running_program(label: &str) -> (String, &'static str, String) {
     if cfg!(windows) {
-        // `ping` prints its first line immediately, which is what the spawn test reads back.
+        // `ping` is the long-running program this platform has, and the marker is the address
+        // it prints -- the same text on every Windows however the machine is localised.
+        // **Its output does not necessarily arrive at once**: about three seconds before the
+        // first flush, measured on one machine, with the shell's own redirect and an
+        // inherited handle alike. Which is why the spawn test waits for the output rather
+        // than reading the file as soon as the program has started.
         (
             "ping -n 600 127.0.0.1".to_string(),
             "PING.EXE",
@@ -609,6 +614,36 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     }
     let pid = spawned.unwrap_or_else(|| panic!("the spawned program never appeared in a listing"));
 
+    // The output file the spawn was told to write, and **the wait for it is part of the
+    // claim**: nothing in `spawn` promises that the program has flushed anything by the time
+    // the call returns, and this machine's `ping` writes nothing for about three seconds
+    // after it starts. Reading the file as soon as the process exists would be asserting
+    // that, which is not what this tool promises -- and reading it right after a *forced*
+    // stop would be worse: the bytes are still in the child's buffer at that moment, and the
+    // kill discards them, so the file reads empty and the tool looks broken.
+    //
+    // The marker is compared **as bytes rather than as a string**: `ping`'s output follows
+    // the machine's display language, so on a Windows that is not English it is not UTF-8 at
+    // all and `read_to_string` would refuse the file this test exists to check.
+    let marker_bytes = marker.as_bytes();
+    let mut found = false;
+    for _ in 0..60 {
+        if let Ok(bytes) = std::fs::read(&output)
+            && bytes
+                .windows(marker_bytes.len())
+                .any(|window| window == marker_bytes)
+        {
+            found = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        found,
+        "the program's own output should be in its own file: {}",
+        output.display()
+    );
+
     // Stop it, so the test leaves nothing behind -- and by the pid the reply gave, which is the
     // shell: a tree kill takes the program it started with it, which is why that is the pid
     // worth returning.
@@ -638,19 +673,16 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
         "the program outlived the shell that was stopped: {after:#?}"
     );
 
-    // The output file the spawn was told to write. It is inside the agent's root, so the
-    // existing `pull` reaches it -- which is why `spawn` needs no new way to read a file.
-    //
-    // Read after the program was stopped, so the file is complete. The program writes its
-    // marker immediately, which is what this asserts is there -- and the marker is the
-    // platform's, because the claim is "the program's own output went to its own file" and not
-    // "ping prints an address".
-    let text = std::fs::read_to_string(&output).unwrap_or_else(|error| {
+    // And stopping it did not take the output with it: what the program already wrote is in
+    // the file, which is the part a caller reads afterwards with the `pull` that already
+    // exists.
+    let text = std::fs::read(&output).unwrap_or_else(|error| {
         panic!("the program's own output file is not there: {error}");
     });
     assert!(
-        text.contains(&marker),
-        "the program's own output should be in its own file: {text:?}"
+        text.windows(marker_bytes.len())
+            .any(|window| window == marker_bytes),
+        "the program's own output should still be in its own file: {text:?}"
     );
 }
 

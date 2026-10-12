@@ -117,3 +117,15 @@ conclusion before it was found.
   complaint did reach the caller, marked lossy, which is the design. The test now asserts that
   the complaint arrived rather than what it says. Any test that quotes a program's expected
   output will have the same fate on a machine with another display language.
+- **`ping` gives a redirected file nothing for about three seconds, and a test that reads it
+  sooner reads an empty file.** Measured three ways on this machine: `cmd /C "ping ... > file"`,
+  a handle inherited from the parent, and `ping.exe` started directly all leave the file at 0
+  bytes until roughly 2.5-3 s after start, and after that it grows a line at a time. So a
+  program's redirected output is *eventually* there, not *immediately* there -- and a **forced**
+  stop before the first flush discards what the program had buffered, so the file stays empty
+  and the tool looks broken. This cost time in the spawn test
+  (`crates/linklet-client/tests/ps.rs`), whose file read happened right after a `taskkill /T /F`:
+  the tool was correct, the test was reading too early. It now waits for the marker and reads
+  the bytes rather than a string, because `ping`'s text here is GBK and `read_to_string` refuses
+  it. If a detached program's output matters and it must appear at once, have the program flush
+  its own file.
