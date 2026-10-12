@@ -387,3 +387,29 @@ fn help_lists_both_transfer_commands() {
     assert!(text.contains("linklet push"), "{text}");
     assert!(text.contains("linklet pull"), "{text}");
 }
+
+#[test]
+fn status_words_in_paths_do_not_change_successful_exit_codes() {
+    let agent = Agent::start();
+    for directory in ["ordinary", "stopped early"] {
+        std::fs::create_dir(agent.under_root(directory)).expect("a directory");
+        let path = format!("{directory}/build.log");
+        std::fs::write(agent.under_root(&path), b"hello\n").expect("a log");
+        for arguments in [
+            vec!["ls", "--from", directory],
+            vec!["grep", "--from", &path, "--pattern", "hello"],
+            vec!["tail", "--from", &path],
+        ] {
+            let mut arguments = arguments;
+            arguments.extend(["--agent", &agent.address]);
+            let output = linklet(&arguments);
+            assert_eq!(
+                code(&output),
+                ExitCode::SUCCESS,
+                "{arguments:?}: {} {}",
+                stdout(&output),
+                stderr(&output)
+            );
+        }
+    }
+}

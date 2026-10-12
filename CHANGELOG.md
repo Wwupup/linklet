@@ -11,6 +11,11 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+### Fixed
+
+- Successful `ls`, `grep` and `tail` calls no longer fail because a path contains
+  status wording such as `stopped early`. CLI status comes from typed results.
+
 ### Changed
 
 - **A transfer's result says the digest was compared, because it was.** The line after a

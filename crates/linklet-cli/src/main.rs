@@ -468,6 +468,33 @@ fn tool_text(reports: &[Report]) -> String {
     out.join("\n")
 }
 
+/// A rendered answer with the CLI status computed from the typed result.
+struct CommandOutcome {
+    tool: ToolOutcome,
+    code: u8,
+}
+
+impl CommandOutcome {
+    fn answered(text: String, code: u8) -> Self {
+        Self {
+            tool: ToolOutcome::ok(text),
+            code,
+        }
+    }
+
+    fn failed(text: String) -> Self {
+        Self {
+            tool: ToolOutcome::failed(text),
+            code: ExitCode::REFUSED,
+        }
+    }
+
+    fn report(self) -> u8 {
+        println!("{}", self.tool.text);
+        self.code
+    }
+}
+
 /// The capabilities, backed by a real machine and a real filesystem.
 ///
 /// The binary's implementation of the core's [`ToolRunner`]. Everything it does
@@ -521,6 +548,7 @@ impl ToolRunner for LiveRunner {
             timeout_seconds,
             token_from_environment().as_ref(),
         )
+        .tool
     }
 
     fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
@@ -544,11 +572,11 @@ impl ToolRunner for LiveRunner {
     }
 
     fn ps(&self, agent: &str, filter: &linklet_core::process::Filter) -> ToolOutcome {
-        ps_on(agent, filter, token_from_environment().as_ref())
+        ps_on(agent, filter, token_from_environment().as_ref()).tool
     }
 
     fn kill(&self, agent: &str, request: &KillRequest) -> ToolOutcome {
-        kill_on(agent, request, token_from_environment().as_ref())
+        kill_on(agent, request, token_from_environment().as_ref()).tool
     }
 
     fn spawn(&self, agent: &str, request: &SpawnRequest) -> ToolOutcome {
@@ -556,15 +584,15 @@ impl ToolRunner for LiveRunner {
     }
 
     fn grep(&self, agent: &str, request: &GrepRequest) -> ToolOutcome {
-        grep_on(agent, request, token_from_environment().as_ref())
+        grep_on(agent, request, token_from_environment().as_ref()).tool
     }
 
     fn tail(&self, agent: &str, request: &TailRequest) -> ToolOutcome {
-        tail_on(agent, request, token_from_environment().as_ref())
+        tail_on(agent, request, token_from_environment().as_ref()).tool
     }
 
     fn ls(&self, agent: &str, request: &LsRequest) -> ToolOutcome {
-        ls_on(agent, request, token_from_environment().as_ref())
+        ls_on(agent, request, token_from_environment().as_ref()).tool
     }
 }
 
@@ -735,10 +763,20 @@ fn run_exec_across(
 /// the one the protocol was built around: a call that could not be made is
 /// `is_error`, and a call that was made and went badly is a result carrying bad
 /// news.
-fn exec_on(agent: &str, command: &str, timeout_seconds: u64, token: Option<&Token>) -> ToolOutcome {
+fn exec_on(
+    agent: &str,
+    command: &str,
+    timeout_seconds: u64,
+    token: Option<&Token>,
+) -> CommandOutcome {
     match exec_at(agent, command, timeout_seconds, token) {
-        Ok(outcome) => ToolOutcome::ok(wire::render_run(&outcome)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(outcome) => CommandOutcome::answered(
+            wire::render_run(&outcome),
+            outcome
+                .exit_code
+                .map_or(ExitCode::NOT_ALL_ALIVE, |code| code.rem_euclid(256) as u8),
+        ),
+        Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
@@ -909,15 +947,7 @@ fn run_exec(arguments: &[String]) -> u8 {
     let command = args.tail();
 
     let outcome = exec_on(agent, &command, timeout, token_from_environment().as_ref());
-    println!("{}", outcome.text);
-
-    if outcome.is_error {
-        // The command never ran, so there is no exit code to pass on, and the
-        // refusal code says so without ambiguity.
-        ExitCode::REFUSED
-    } else {
-        exit_code_from_text(&outcome.text)
-    }
+    outcome.report()
 }
 
 /// Which way a transfer goes.
@@ -1056,37 +1086,7 @@ fn run_ps(arguments: &[String]) -> u8 {
     };
 
     let outcome = ps_on(agent, &filter, token_from_environment().as_ref());
-    println!("{}", outcome.text);
-
-    if outcome.is_error {
-        // The call could not be made, so there is no listing and no count to branch on.
-        // Printed to stdout by the line above because the same text is the tool's whole
-        // answer, and a caller that has to merge two streams to reconstruct one will not.
-        return ExitCode::REFUSED;
-    }
-
-    match complete_from_text(&outcome.text) {
-        true => ExitCode::SUCCESS,
-        false => ExitCode::NOT_ALL_ALIVE,
-    }
-}
-
-/// Whether a rendered listing says the answer is the whole truth.
-///
-/// A small parse of a format this project owns, the same way `exit_code_from_text` is, and
-/// for the same reason: the alternative is threading the [`linklet_core::process::Listing`]
-/// through the renderer as well as through the text, which puts one fact in two parameters.
-/// The format is pinned by tests in `linklet_core::process`, so a change that breaks this
-/// parser breaks those first.
-///
-/// The markers are the two the renderer writes: a summary that could not read the process
-/// list, and a count of lines that could not be read.
-fn complete_from_text(text: &str) -> bool {
-    let summary = text.lines().next().unwrap_or_default();
-
-    !summary.contains("could not be read")
-        && !summary.contains("unreadable")
-        && !text.contains("\nnote: ")
+    outcome.report()
 }
 
 /// Finds machines on the networks this host is on.
@@ -1267,45 +1267,27 @@ fn run_ls(arguments: &[String]) -> u8 {
         },
         token_from_environment().as_ref(),
     );
-    println!("{}", outcome.text);
-
-    if outcome.is_error {
-        return ExitCode::REFUSED;
-    }
-
-    match listing_complete_from_text(&outcome.text) {
-        true => ExitCode::SUCCESS,
-        false => ExitCode::NOT_ALL_ALIVE,
-    }
-}
-
-/// Whether a rendered listing is the whole truth about the directory.
-///
-/// The first line is the summary and it carries both facts: a path that could not be read
-/// starts with "could not list", and a cut list says "stopped early". Read out of the text
-/// for the same reason `search_complete_from_text` is: the alternative is threading one fact
-/// through two parameters.
-fn listing_complete_from_text(text: &str) -> bool {
-    let summary = text.lines().next().unwrap_or_default();
-
-    !summary.starts_with("could not list") && !summary.contains("stopped early")
+    outcome.report()
 }
 
 /// Lists a path on an agent's machine and renders what is there.
 ///
 /// Shared by the command and the tool.
-fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> ToolOutcome {
+fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> CommandOutcome {
     let mut address = match AgentAddress::new(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
 
     match linklet_client::ls(&address, request) {
-        Ok(listing) => ToolOutcome::ok(linklet_core::listing::render(&listing)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(listing) => CommandOutcome::answered(
+            linklet_core::listing::render(&listing),
+            u8::from(!listing.found || listing.truncated),
+        ),
+        Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
@@ -1381,7 +1363,7 @@ fn run_grep(arguments: &[String]) -> u8 {
         limit,
     };
 
-    report_search(grep_on(agent, &request, token_from_environment().as_ref()))
+    grep_on(agent, &request, token_from_environment().as_ref()).report()
 }
 
 /// Reads the last lines of a file on an agent's machine and prints them.
@@ -1413,82 +1395,54 @@ fn run_tail(arguments: &[String]) -> u8 {
         return ExitCode::USAGE;
     };
 
-    report_search(tail_on(
+    tail_on(
         agent,
         &TailRequest {
             path: path.to_string(),
             count,
         },
         token_from_environment().as_ref(),
-    ))
-}
-
-/// Prints a search and returns the exit code that goes with it.
-///
-/// Shared by the two commands and the two tools, so that none of them can disagree about
-/// what a search that did not happen looks like.
-///
-/// **The text goes to stdout even when the search failed**, because it is the answer: a
-/// caller that had to merge two streams to reconstruct one would eventually not bother.
-fn report_search(outcome: ToolOutcome) -> u8 {
-    println!("{}", outcome.text);
-
-    if outcome.is_error {
-        return ExitCode::REFUSED;
-    }
-
-    // An incomplete answer is exit 1: the call was made, the machine answered, and the
-    // answer is not the whole truth. The `searched` line is what the renderer leads with,
-    // so an unreadable file is the first thing a reader sees.
-    match search_complete_from_text(&outcome.text) {
-        true => ExitCode::SUCCESS,
-        false => ExitCode::NOT_ALL_ALIVE,
-    }
-}
-
-/// Whether a rendered search is the whole truth about the file.
-///
-/// The first line is the summary and it carries both facts: a failed search starts with
-/// "could not search", and a stopped one says "stopped early". Read out of the text for the
-/// same reason `kill_complete_from_text` is: the alternative is threading one fact through
-/// two parameters.
-fn search_complete_from_text(text: &str) -> bool {
-    let summary = text.lines().next().unwrap_or_default();
-
-    !summary.starts_with("could not search") && !summary.contains("stopped early")
+    )
+    .report()
 }
 
 /// Searches a file on an agent's machine and renders what it found.
 ///
 /// Shared by the command and the tool.
-fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> ToolOutcome {
+fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> CommandOutcome {
     let mut address = match AgentAddress::new(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
 
     match linklet_client::grep(&address, request) {
-        Ok(search) => ToolOutcome::ok(linklet_core::search::render(&search)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(search) => CommandOutcome::answered(
+            linklet_core::search::render(&search),
+            u8::from(!search.searched || search.truncated),
+        ),
+        Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
 /// Reads the end of a file on an agent's machine and renders it.
-fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> ToolOutcome {
+fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> CommandOutcome {
     let mut address = match AgentAddress::new(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
 
     match linklet_client::tail(&address, request) {
-        Ok(search) => ToolOutcome::ok(linklet_core::search::render(&search)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(search) => CommandOutcome::answered(
+            linklet_core::search::render(&search),
+            u8::from(!search.searched || search.truncated),
+        ),
+        Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
@@ -1643,67 +1597,28 @@ fn run_kill(arguments: &[String]) -> u8 {
     };
 
     let outcome = kill_on(agent, &request, token_from_environment().as_ref());
-    println!("{}", outcome.text);
-
-    if outcome.is_error {
-        return ExitCode::REFUSED;
-    }
-
-    // A report that says something is still there is exit 1: the call was made and the
-    // machine has not done what was asked. `killed 0 of 1` is read by `complete_from_kill`
-    // rather than by counting lines, for the same reason the listing's summary is.
-    match kill_complete_from_text(&outcome.text) {
-        true => ExitCode::SUCCESS,
-        false => ExitCode::NOT_ALL_ALIVE,
-    }
-}
-
-/// Whether a rendered kill says everything it matched is gone.
-///
-/// The first line is `killed <n> of <m>`, so a report where the two numbers differ is a
-/// report about something still running. Read out of the text rather than out of the
-/// [`linklet_core::process::KillReport`], which `kill_on` has already rendered, for the same
-/// reason `exit_code_from_text` is: the alternative is threading one fact through two
-/// parameters.
-fn kill_complete_from_text(text: &str) -> bool {
-    let Some(first) = text.lines().next() else {
-        return false;
-    };
-    let Some(rest) = first.strip_prefix("killed ") else {
-        return false;
-    };
-    let Some((killed, matched)) = rest.split_once(" of ") else {
-        return false;
-    };
-
-    match (
-        killed.trim().parse::<usize>(),
-        matched.trim().parse::<usize>(),
-    ) {
-        // Only when both parsed and agree. An unreadable line is not evidence that
-        // something is gone, so it is exit 1 -- the same direction every other answer in
-        // this tool takes when it cannot tell.
-        (Ok(killed), Ok(matched)) => killed == matched,
-        _ => false,
-    }
+    outcome.report()
 }
 
 /// Stops something on an agent's machine and renders what happened.
 ///
 /// Shared by the command and the tool, like `ps_on`, so that the two cannot disagree about
 /// what a refusal looks like.
-fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> ToolOutcome {
+fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> CommandOutcome {
     let mut address = match AgentAddress::new(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
 
     match linklet_client::kill(&address, request) {
-        Ok(report) => ToolOutcome::ok(linklet_core::process::render_kill(&report)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(report) => CommandOutcome::answered(
+            linklet_core::process::render_kill(&report),
+            u8::from(!report.complete()),
+        ),
+        Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
@@ -1714,18 +1629,21 @@ fn ps_on(
     agent: &str,
     filter: &linklet_core::process::Filter,
     token: Option<&Token>,
-) -> ToolOutcome {
+) -> CommandOutcome {
     let mut address = match AgentAddress::new(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
     if let Some(token) = token {
         address = address.with_token(token.clone());
     }
 
     match linklet_client::ps(&address, filter) {
-        Ok(listing) => ToolOutcome::ok(linklet_core::process::render(&listing)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(listing) => CommandOutcome::answered(
+            linklet_core::process::render(&listing),
+            u8::from(listing.unreadable > 0 || !listing.notes.is_empty()),
+        ),
+        Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
@@ -1829,26 +1747,4 @@ fn token_from_environment() -> Option<Token> {
             None
         }
     }
-}
-
-/// The exit code a rendered run reports, or success when it reports none.
-///
-/// A small parse of a format this project owns, which is normally a smell -- but
-/// the alternative is returning the outcome as well as rendering it, and that
-/// would put the same fact in two parameters. The format is pinned by
-/// `linklet_core::wire`'s tests, so a change that breaks this parser breaks those
-/// first.
-fn exit_code_from_text(text: &str) -> u8 {
-    let Some(first) = text.lines().next() else {
-        return ExitCode::SUCCESS;
-    };
-    let Some(rest) = first.strip_prefix("exit ") else {
-        // "no exit code: <reason>" -- the command was killed, and a killed
-        // command's status is a failure by any reading.
-        return ExitCode::NOT_ALL_ALIVE;
-    };
-    // Truncated to the low byte, because a process exit code is a byte: a command
-    // that exits 256 is a command that exited 0 on this platform, and pretending
-    // otherwise would report a failure the operating system does not.
-    rest.trim().parse::<i32>().unwrap_or(1).rem_euclid(256) as u8
 }
