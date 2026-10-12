@@ -333,18 +333,15 @@ The rule pays for itself in exactly one way, and it is the one that matters:
 files, and no cleanup.** When a test needs a real machine to run, it stops being
 run, and then the behaviour it covered rots.
 
-The rule was originally written as "core depends on no crate", and that was the
-wrong wording -- it is satisfied by a rule rather than a reason, so it stayed in
-force past the point where its reason applied, and a SHA-256 came to be written by
-hand because of it. The rule is now what it always meant: **core depends on no
-crate that does I/O**, enforced by a named allowlist in
-`crates/linklet-core/tests/architecture.rs` where every entry carries a sentence
-saying why. `docs/decisions.md` has the whole of it.
+Core may depend on mature libraries for pure computation. It uses
+`serde_json::Value` directly for JSON. `crates/linklet-core/tests/architecture.rs`
+records each dependency and its use; review must still keep calls to filesystem,
+network, process and environment APIs out of core. An empty dependency list would
+not enforce that boundary, because `std` provides I/O too.
 
-That is also how the cryptography is arranged. `linklet-core` declares what a
-sealed conversation is (`src/channel.rs`); `linklet-adapters` implements it with
-`chacha20poly1305`, `hkdf`, `sha2` and `x25519-dalek`. The core still cannot open a
-socket or a cipher, and the arithmetic is in crates other people have attacked.
+`linklet-core` declares the handshake and sealed-session contracts;
+`linklet-adapters` implements them with `chacha20poly1305`, `hkdf`, `sha2` and
+`x25519-dalek`. The adapter owns the operating system randomness they need.
 
 ### What the channel does
 

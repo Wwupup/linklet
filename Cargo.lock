@@ -214,6 +214,7 @@ dependencies = [
  "getrandom",
  "hkdf",
  "linklet-core",
+ "serde_json",
  "sha2",
  "x25519-dalek",
 ]
@@ -224,6 +225,7 @@ version = "0.3.0"
 dependencies = [
  "linklet-adapters",
  "linklet-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -233,6 +235,7 @@ dependencies = [
  "linklet-adapters",
  "linklet-client",
  "linklet-core",
+ "serde_json",
 ]
 
 [[package]]
@@ -241,6 +244,7 @@ version = "0.3.0"
 dependencies = [
  "linklet-adapters",
  "linklet-core",
+ "serde_json",
 ]
 
 [[package]]

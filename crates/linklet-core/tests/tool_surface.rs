@@ -11,12 +11,11 @@
 use std::cell::RefCell;
 use std::time::Duration;
 
-use linklet_core::json::Json;
-use linklet_core::object;
 use linklet_core::{
     MAX_DESCRIPTION_CHARS, ToolError, ToolOutcome, ToolRunner, dispatch, tool_list_json, tools,
     total_description_chars,
 };
+use serde_json::Value;
 
 /// A stand-in for the machine: records what it was asked, returns fixed bodies.
 ///
@@ -161,17 +160,17 @@ fn the_kill_tool_takes_a_pid_or_a_name_and_says_which_it_took() {
     let fake = FakeRun::default();
     dispatch(
         "kill",
-        &object! { "agent" => Json::str("10.0.0.5:8787"), "pid" => 5144_i64 },
+        &serde_json::json!({ "agent": "10.0.0.5:8787", "pid": 5144_i64 }),
         &fake,
     )
     .expect("a pid is never gated");
     dispatch(
         "kill",
-        &object! {
-            "agent" => Json::str("10.0.0.5:8787"),
-            "name" => Json::str("app.exe"),
-            "confirmed" => true,
-        },
+        &serde_json::json!({
+            "agent": "10.0.0.5:8787",
+            "name": "app.exe",
+            "confirmed": true,
+        }),
         &fake,
     )
     .expect("a name the caller confirmed");
@@ -192,10 +191,10 @@ fn the_kill_tool_refuses_to_guess_between_a_pid_and_a_name() {
 
     for (arguments, expected) in [
         (
-            object! { "agent" => Json::str("a:1"), "pid" => 5144_i64, "name" => Json::str("app.exe") },
+            serde_json::json!({ "agent": "a:1", "pid": 5144_i64, "name": "app.exe" }),
             "name",
         ),
-        (object! { "agent" => Json::str("a:1") }, "pid"),
+        (serde_json::json!({ "agent": "a:1" }), "pid"),
     ] {
         let error = dispatch("kill", &arguments, &fake).expect_err("should be refused");
         assert!(
@@ -213,12 +212,12 @@ fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out()
     let fake = FakeRun::default();
     dispatch(
         "kill",
-        &object! {
-            "agent" => Json::str("a:1"),
-            "name" => Json::str("app.exe"),
-            "confirmed" => true,
-            "candidates_cmdline" => Json::str(r"C:\deploy\app.exe"),
-        },
+        &serde_json::json!({
+            "agent": "a:1",
+            "name": "app.exe",
+            "confirmed": true,
+            "candidates_cmdline": r"C:\deploy\app.exe",
+        }),
         &fake,
     )
     .expect("a valid call");
@@ -369,7 +368,8 @@ fn the_list_and_the_dispatcher_agree_on_the_names() {
         .iter()
         .map(|entry| {
             entry
-                .get_str("name")
+                .get("name")
+                .and_then(Value::as_str)
                 .expect("every entry has a name")
                 .to_string()
         })
@@ -379,7 +379,7 @@ fn the_list_and_the_dispatcher_agree_on_the_names() {
     assert_eq!(listed, known);
 
     for name in &listed {
-        let result = dispatch(name, &object! {}, &FakeRun::default());
+        let result = dispatch(name, &serde_json::json!({}), &FakeRun::default());
         // Bad arguments rather than "no such tool", which is the distinction
         // being checked: the name is recognised.
         assert!(
@@ -392,10 +392,10 @@ fn the_list_and_the_dispatcher_agree_on_the_names() {
 #[test]
 fn each_entry_carries_the_three_fields_mcp_requires() {
     for entry in tool_list_json().as_array().expect("an array") {
-        assert!(entry.get_str("name").is_some());
-        assert!(entry.get_str("description").is_some());
+        assert!(entry.get("name").and_then(Value::as_str).is_some());
+        assert!(entry.get("description").and_then(Value::as_str).is_some());
         let schema = entry.get("inputSchema").expect("a schema");
-        assert_eq!(schema.get_str("type"), Some("object"));
+        assert_eq!(schema.get("type").and_then(Value::as_str), Some("object"));
         assert!(schema.get("properties").is_some());
     }
 }
@@ -409,7 +409,7 @@ fn the_schema_rejects_arguments_the_tool_does_not_take() {
             entry
                 .get("inputSchema")
                 .and_then(|schema| schema.get("additionalProperties"))
-                .and_then(Json::as_bool),
+                .and_then(Value::as_bool),
             Some(false),
             "a schema that allows extra arguments cannot promise anything"
         );
@@ -420,7 +420,7 @@ fn the_schema_rejects_arguments_the_tool_does_not_take() {
 
 #[test]
 fn an_unknown_tool_is_refused_by_name() {
-    let result = dispatch("nope", &object! {}, &FakeRun::default());
+    let result = dispatch("nope", &serde_json::json!({}), &FakeRun::default());
     assert_eq!(result, Err(ToolError::NoSuchTool("nope".to_string())));
     assert!(
         result
@@ -433,7 +433,7 @@ fn an_unknown_tool_is_refused_by_name() {
 #[test]
 fn targets_are_joined_into_the_one_spec_the_parser_takes() {
     let fake = FakeRun::default();
-    let arguments = object! { "targets" => vec![Json::str("a:1"), Json::str("b:2")] };
+    let arguments = serde_json::json!({ "targets": vec!["a:1", "b:2"] });
 
     let outcome = dispatch("check", &arguments, &fake).expect("a valid call");
 
@@ -449,13 +449,13 @@ fn the_timeout_defaults_and_is_passed_through() {
 
     dispatch(
         "check",
-        &object! { "targets" => vec![Json::str("a:1")] },
+        &serde_json::json!({ "targets": vec!["a:1"] }),
         &fake,
     )
     .expect("a valid call");
     dispatch(
         "check",
-        &object! { "targets" => vec![Json::str("a:1")], "timeout" => 9i64 },
+        &serde_json::json!({ "targets": vec!["a:1"], "timeout": 9i64 }),
         &fake,
     )
     .expect("a valid call");
@@ -473,7 +473,7 @@ fn a_timeout_out_of_range_is_refused_rather_than_clamped() {
     for value in [0i64, -1, 11, 100_000] {
         let result = dispatch(
             "check",
-            &object! { "targets" => vec![Json::str("a:1")], "timeout" => value },
+            &serde_json::json!({ "targets": vec!["a:1"], "timeout": value }),
             &fake,
         );
         assert!(
@@ -500,25 +500,25 @@ fn missing_or_misshapen_arguments_are_named() {
     // The argument name is asserted as well as the problem: "something is wrong"
     // without saying which field is not actionable for an agent that has to
     // retry.
-    let cases: Vec<(Json, &str, &str)> = vec![
-        (object! {}, "targets", "missing"),
+    let cases: Vec<(Value, &str, &str)> = vec![
+        (serde_json::json!({}), "targets", "missing"),
         (
-            object! { "targets" => Json::str("a:1") },
+            serde_json::json!({ "targets": "a:1" }),
             "targets",
             "expected an array",
         ),
         (
-            object! { "targets" => vec![Json::Int(1)] },
+            serde_json::json!({ "targets": vec![1] }),
             "targets",
             "rather than a string",
         ),
         (
-            object! { "targets" => Vec::<Json>::new() },
+            serde_json::json!({ "targets": Vec::<Value>::new() }),
             "targets",
             "the list is empty",
         ),
         (
-            object! { "targets" => vec![Json::str("a:1")], "timeout" => Json::str("5") },
+            serde_json::json!({ "targets": vec!["a:1"], "timeout": "5" }),
             "timeout",
             "expected an integer",
         ),
@@ -547,7 +547,7 @@ fn an_unknown_argument_is_refused_rather_than_ignored() {
     let fake = FakeRun::default();
     let result = dispatch(
         "check",
-        &object! { "targets" => vec![Json::str("a:1")], "timout" => 5i64 },
+        &serde_json::json!({ "targets": vec!["a:1"], "timout": 5i64 }),
         &fake,
     );
 
@@ -604,7 +604,7 @@ fn bad_news_is_not_an_error() {
 
     let outcome = dispatch(
         "check",
-        &object! { "targets" => vec![Json::str("a:1")] },
+        &serde_json::json!({ "targets": vec!["a:1"] }),
         &Down,
     )
     .expect("a valid call");
@@ -618,8 +618,7 @@ fn bad_news_is_not_an_error() {
 #[test]
 fn the_testbed_tool_passes_its_two_arguments_through() {
     let fake = FakeRun::default();
-    let arguments =
-        object! { "spec" => Json::str("specs/launch.testbed"), "target" => Json::str("box-a") };
+    let arguments = serde_json::json!({ "spec": "specs/launch.testbed", "target": "box-a" });
 
     let outcome = dispatch("testbed", &arguments, &fake).expect("a valid call");
 
@@ -648,7 +647,7 @@ fn a_spec_path_outside_the_working_tree_is_refused() {
         "..\\..\\secret.testbed",
         "specs/../../secret.testbed",
     ] {
-        let arguments = object! { "spec" => Json::str(path), "target" => Json::str("box") };
+        let arguments = serde_json::json!({ "spec": path, "target": "box" });
         let result = dispatch("testbed", &arguments, &fake);
 
         assert!(
@@ -672,7 +671,7 @@ fn a_relative_spec_path_is_accepted() {
         "specs\\a.testbed",
         "./a.testbed",
     ] {
-        let arguments = object! { "spec" => Json::str(path), "target" => Json::str("box") };
+        let arguments = serde_json::json!({ "spec": path, "target": "box" });
         let result = dispatch("testbed", &arguments, &fake);
         assert!(
             result.is_ok(),
@@ -685,13 +684,13 @@ fn a_relative_spec_path_is_accepted() {
 fn the_testbed_tool_needs_both_of_its_arguments() {
     let fake = FakeRun::default();
 
-    let no_spec = object! { "target" => Json::str("box") };
+    let no_spec = serde_json::json!({ "target": "box" });
     assert!(matches!(
         dispatch("testbed", &no_spec, &fake),
         Err(ToolError::BadArgument { name: "spec", .. })
     ));
 
-    let no_target = object! { "spec" => Json::str("a.testbed") };
+    let no_target = serde_json::json!({ "spec": "a.testbed" });
     assert!(matches!(
         dispatch("testbed", &no_target, &fake),
         Err(ToolError::BadArgument { name: "target", .. })
@@ -707,7 +706,7 @@ fn the_reply_is_the_text_the_runner_produced() {
     let fake = FakeRun::default();
     let outcome = dispatch(
         "check",
-        &object! { "targets" => vec![Json::str("a:1")] },
+        &serde_json::json!({ "targets": vec!["a:1"] }),
         &fake,
     )
     .expect("a valid call");
@@ -723,11 +722,11 @@ fn the_reply_is_the_text_the_runner_produced() {
 #[test]
 fn the_exec_tool_passes_its_three_arguments_through() {
     let fake = FakeRun::default();
-    let arguments = object! {
-        "agent" => Json::str("10.0.0.5:8787"),
-        "command" => Json::str("build.cmd --release"),
-        "timeout" => 120i64,
-    };
+    let arguments = serde_json::json!({
+        "agent": "10.0.0.5:8787",
+        "command": "build.cmd --release",
+        "timeout": 120i64,
+    });
 
     let outcome = dispatch("exec", &arguments, &fake).expect("a valid call");
 
@@ -755,7 +754,7 @@ fn the_exec_timeout_defaults_and_is_refused_outside_the_protocol_range() {
 
     dispatch(
         "exec",
-        &object! { "agent" => Json::str("a:1"), "command" => Json::str("x") },
+        &serde_json::json!({ "agent": "a:1", "command": "x" }),
         &fake,
     )
     .expect("a valid call");
@@ -771,7 +770,7 @@ fn the_exec_timeout_defaults_and_is_refused_outside_the_protocol_range() {
     ] {
         let result = dispatch(
             "exec",
-            &object! { "agent" => Json::str("a:1"), "command" => Json::str("x"), "timeout" => value },
+            &serde_json::json!({ "agent": "a:1", "command": "x", "timeout": value }),
             &fake,
         );
         assert!(
@@ -792,11 +791,11 @@ fn the_exec_timeout_defaults_and_is_refused_outside_the_protocol_range() {
 #[test]
 fn the_push_tool_passes_its_three_arguments_through() {
     let fake = FakeRun::default();
-    let arguments = object! {
-        "agent" => Json::str("10.0.0.5:8787"),
-        "from" => Json::str("dist/app.exe"),
-        "to" => Json::str("app.exe"),
-    };
+    let arguments = serde_json::json!({
+        "agent": "10.0.0.5:8787",
+        "from": "dist/app.exe",
+        "to": "app.exe",
+    });
 
     let outcome = dispatch("push", &arguments, &fake).expect("a valid call");
 
@@ -818,11 +817,11 @@ fn the_push_tool_passes_its_three_arguments_through() {
 #[test]
 fn the_pull_tool_passes_its_three_arguments_through() {
     let fake = FakeRun::default();
-    let arguments = object! {
-        "agent" => Json::str("10.0.0.5:8787"),
-        "from" => Json::str("build.log"),
-        "to" => Json::str("logs/build.log"),
-    };
+    let arguments = serde_json::json!({
+        "agent": "10.0.0.5:8787",
+        "from": "build.log",
+        "to": "logs/build.log",
+    });
 
     dispatch("pull", &arguments, &fake).expect("a valid call");
 
@@ -844,17 +843,17 @@ fn the_ps_tool_passes_its_filter_through_and_needs_only_an_agent() {
 
     dispatch(
         "ps",
-        &object! { "agent" => Json::str("10.0.0.5:8787") },
+        &serde_json::json!({ "agent": "10.0.0.5:8787" }),
         &fake,
     )
     .expect("a valid call");
     dispatch(
         "ps",
-        &object! {
-            "agent" => Json::str("10.0.0.5:8787"),
-            "name" => Json::str("linklet-agent"),
-            "exclude" => Json::str("test"),
-        },
+        &serde_json::json!({
+            "agent": "10.0.0.5:8787",
+            "name": "linklet-agent",
+            "exclude": "test",
+        }),
         &fake,
     )
     .expect("a valid call");
@@ -879,7 +878,7 @@ fn the_ps_tool_refuses_an_argument_that_is_not_even_a_string() {
     let fake = FakeRun::default();
     let error = dispatch(
         "ps",
-        &object! { "agent" => Json::str("a:1"), "name" => 5i64 },
+        &serde_json::json!({ "agent": "a:1", "name": 5i64 }),
         &fake,
     )
     .expect_err("a number is not a filter");
@@ -896,7 +895,7 @@ fn the_ps_tool_takes_no_path_argument_because_nothing_can_answer_one() {
     let fake = FakeRun::default();
     let error = dispatch(
         "ps",
-        &object! { "agent" => Json::str("a:1"), "path" => Json::str("bin") },
+        &serde_json::json!({ "agent": "a:1", "path": "bin" }),
         &fake,
     )
     .expect_err("this surface does not take a path filter");
@@ -922,16 +921,16 @@ fn a_transfer_refuses_a_local_path_outside_the_working_tree() {
             ("/etc/passwd", "passwd"),
         ] {
             let arguments = match tool {
-                "push" => object! {
-                    "agent" => Json::str("a:1"),
-                    "from" => Json::str(path),
-                    "to" => Json::str("remote.exe"),
-                },
-                _ => object! {
-                    "agent" => Json::str("a:1"),
-                    "from" => Json::str("remote.log"),
-                    "to" => Json::str(path),
-                },
+                "push" => serde_json::json!({
+                    "agent": "a:1",
+                    "from": path,
+                    "to": "remote.exe",
+                }),
+                _ => serde_json::json!({
+                    "agent": "a:1",
+                    "from": "remote.log",
+                    "to": path,
+                }),
             };
 
             let result = dispatch(tool, &arguments, &fake);
@@ -968,11 +967,11 @@ fn a_transfer_does_not_check_the_other_side_path() {
     // refusing it here would refuse a request the agent would have served.
     dispatch(
         "push",
-        &object! {
-            "agent" => Json::str("a:1"),
-            "from" => Json::str("app.exe"),
-            "to" => Json::str(r"C:\linklet\app.exe"),
-        },
+        &serde_json::json!({
+            "agent": "a:1",
+            "from": "app.exe",
+            "to": r"C:\linklet\app.exe",
+        }),
         &fake,
     )
     .expect("the target's own root decides this, and it is not this side's to check");
@@ -985,18 +984,9 @@ fn a_transfer_needs_all_three_arguments() {
     let fake = FakeRun::default();
 
     for (arguments, expected) in [
-        (
-            object! { "from" => Json::str("a"), "to" => Json::str("b") },
-            "agent",
-        ),
-        (
-            object! { "agent" => Json::str("a:1"), "to" => Json::str("b") },
-            "from",
-        ),
-        (
-            object! { "agent" => Json::str("a:1"), "from" => Json::str("a") },
-            "to",
-        ),
+        (serde_json::json!({ "from": "a", "to": "b" }), "agent"),
+        (serde_json::json!({ "agent": "a:1", "to": "b" }), "from"),
+        (serde_json::json!({ "agent": "a:1", "from": "a" }), "to"),
     ] {
         assert!(
             matches!(
@@ -1013,11 +1003,11 @@ fn the_exec_tool_needs_an_agent_and_a_non_empty_command() {
     let fake = FakeRun::default();
 
     assert!(matches!(
-        dispatch("exec", &object! { "command" => Json::str("x") }, &fake),
+        dispatch("exec", &serde_json::json!({ "command": "x" }), &fake),
         Err(ToolError::BadArgument { name: "agent", .. })
     ));
     assert!(matches!(
-        dispatch("exec", &object! { "agent" => Json::str("a:1") }, &fake),
+        dispatch("exec", &serde_json::json!({ "agent": "a:1" }), &fake),
         Err(ToolError::BadArgument {
             name: "command",
             ..
@@ -1026,7 +1016,7 @@ fn the_exec_tool_needs_an_agent_and_a_non_empty_command() {
     assert!(matches!(
         dispatch(
             "exec",
-            &object! { "agent" => Json::str("a:1"), "command" => Json::str("   ") },
+            &serde_json::json!({ "agent": "a:1", "command": "   " }),
             &fake
         ),
         Err(ToolError::BadArgument {

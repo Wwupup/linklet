@@ -14,13 +14,12 @@
 //! Everything else here is shape: JSON is a place where a missing field and a
 //! null field look similar in prose and are different in meaning.
 
-use linklet_core::json::{self, Json};
-use linklet_core::object;
 use linklet_core::transfer::Manifest;
 use linklet_core::wire::{
     self, KILLED_BY_DEADLINE, MAX_TIMEOUT_SECONDS, Reply, Request, RunOutcome, RunRequest, Text,
     WireError,
 };
+use serde_json::Value;
 /// A digest of the right shape, for the messages that carry one.
 ///
 /// Deliberately not all zeros: digits have no case, so a digest made of them cannot be
@@ -35,7 +34,7 @@ const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789
 /// outcome. A single function returning an outcome would have to fold a refusal
 /// into a shape that carries an exit code, which is the mistake this file is about.
 fn run_outcome_from_body(body: &str) -> Result<RunOutcome, WireError> {
-    let reply = wire::reply_from_json(&json::parse(body).expect("valid JSON"))?;
+    let reply = wire::reply_from_json(&serde_json::from_str::<Value>(body).expect("valid JSON"))?;
     wire::run_outcome_from_reply(&reply)
 }
 
@@ -52,7 +51,7 @@ fn a_command_that_ran_and_failed_is_an_outcome_and_not_an_error() {
         reason: None,
     };
 
-    let encoded = json::write(&wire::encode_run_reply(&outcome));
+    let encoded = wire::encode_run_reply(&outcome).to_string();
     let decoded = run_outcome_from_body(&encoded).expect("its own output should decode");
 
     assert_eq!(decoded, outcome);
@@ -77,7 +76,7 @@ fn a_command_that_never_started_has_no_exit_code_and_says_why() {
     };
 
     let decoded =
-        run_outcome_from_body(&json::write(&wire::encode_run_reply(&outcome))).expect("decodes");
+        run_outcome_from_body(&wire::encode_run_reply(&outcome).to_string()).expect("decodes");
 
     assert_eq!(decoded, outcome);
     assert_ne!(
@@ -102,7 +101,7 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
     };
 
     let decoded =
-        run_outcome_from_body(&json::write(&wire::encode_run_reply(&outcome))).expect("decodes");
+        run_outcome_from_body(&wire::encode_run_reply(&outcome).to_string()).expect("decodes");
 
     assert_eq!(decoded.reason.as_deref(), Some(KILLED_BY_DEADLINE));
     assert_eq!(
@@ -116,13 +115,13 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
 fn a_null_exit_code_and_a_missing_one_are_different_messages() {
     // In prose these read the same. They are not: `null` is "the agent looked and
     // there is no code", missing is "this is not the shape I sent".
-    let with_null = object! {
-        "exit_code" => Json::Null,
-        "stdout" => Json::str(""),
-        "stderr" => Json::str(""),
-        "duration_ms" => 0i64,
-        "reason" => Json::str("failed to start"),
-    };
+    let with_null = serde_json::json!({
+        "exit_code": Value::Null,
+        "stdout": "",
+        "stderr": "",
+        "duration_ms": 0i64,
+        "reason": "failed to start",
+    });
     assert_eq!(
         wire::run_outcome_from_json(&with_null)
             .expect("null is a valid exit code")
@@ -130,12 +129,12 @@ fn a_null_exit_code_and_a_missing_one_are_different_messages() {
         None
     );
 
-    let without = object! {
-        "stdout" => Json::str(""),
-        "stderr" => Json::str(""),
-        "duration_ms" => 0i64,
-        "reason" => Json::Null,
-    };
+    let without = serde_json::json!({
+        "stdout": "",
+        "stderr": "",
+        "duration_ms": 0i64,
+        "reason": Value::Null,
+    });
     let error =
         wire::run_outcome_from_json(&without).expect_err("a missing field is not a null one");
     assert!(error.to_string().contains("exit_code"), "{error}");
@@ -149,31 +148,32 @@ fn a_request_round_trips() {
         command: "build.cmd --release".to_string(),
         timeout_seconds: 900 % MAX_TIMEOUT_SECONDS,
     };
-    let encoded = json::write(&wire::run_request_to_json(&request));
-    let decoded = wire::run_request_from_json(&json::parse(&encoded).expect("valid JSON"))
-        .expect("its own output should decode");
+    let encoded = wire::run_request_to_json(&request).to_string();
+    let decoded =
+        wire::run_request_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("its own output should decode");
     assert_eq!(decoded, request);
 }
 
 #[test]
 fn a_request_without_a_usable_command_is_refused_with_the_field() {
-    let cases: Vec<(Json, &str)> = vec![
-        (object! { "timeout_seconds" => 5i64 }, "command"),
+    let cases: Vec<(Value, &str)> = vec![
+        (serde_json::json!({ "timeout_seconds": 5i64 }), "command"),
         (
-            object! { "command" => Json::Int(1), "timeout_seconds" => 5i64 },
+            serde_json::json!({ "command": 1, "timeout_seconds": 5i64 }),
             "command",
         ),
         (
-            object! { "command" => Json::str("   "), "timeout_seconds" => 5i64 },
+            serde_json::json!({ "command": "   ", "timeout_seconds": 5i64 }),
             "empty",
         ),
-        (object! { "command" => Json::str("x") }, "timeout_seconds"),
+        (serde_json::json!({ "command": "x" }), "timeout_seconds"),
         (
-            object! { "command" => Json::str("x"), "timeout_seconds" => Json::str("5") },
+            serde_json::json!({ "command": "x", "timeout_seconds": "5" }),
             "not a number",
         ),
         (
-            object! { "command" => Json::str("x"), "timeout_seconds" => 0i64 },
+            serde_json::json!({ "command": "x", "timeout_seconds": 0i64 }),
             "outside",
         ),
     ];
@@ -192,7 +192,8 @@ fn a_request_without_a_usable_command_is_refused_with_the_field() {
 fn an_insane_timeout_is_refused_rather_than_clamped() {
     // An agent that accepts an unbounded timeout from the network has been handed
     // a way to be occupied forever.
-    let too_long = object! { "command" => Json::str("x"), "timeout_seconds" => (MAX_TIMEOUT_SECONDS + 1) as i64 };
+    let too_long =
+        serde_json::json!({ "command": "x", "timeout_seconds": (MAX_TIMEOUT_SECONDS + 1) as i64 });
     let error = wire::run_request_from_json(&too_long).expect_err("should be refused");
     assert!(
         matches!(&error, WireError::BadRequest(field) if field.contains("timeout_seconds")),
@@ -200,7 +201,7 @@ fn an_insane_timeout_is_refused_rather_than_clamped() {
     );
 
     let at_the_limit =
-        object! { "command" => Json::str("x"), "timeout_seconds" => MAX_TIMEOUT_SECONDS as i64 };
+        serde_json::json!({ "command": "x", "timeout_seconds": MAX_TIMEOUT_SECONDS as i64 });
     assert!(
         wire::run_request_from_json(&at_the_limit).is_ok(),
         "the limit itself is allowed"
@@ -216,10 +217,9 @@ fn a_refusal_carries_the_reason_and_no_result() {
     // told apart by `ok` rather than by which fields happen to be present, because
     // two shapes distinguished by their fields are two shapes that eventually
     // overlap.
-    let body = json::write(&wire::reply_refused(
-        "timeout_seconds: 0 is outside 1..=600",
-    ));
-    let reply = wire::reply_from_json(&json::parse(&body).expect("valid JSON")).expect("a reply");
+    let body = wire::reply_refused("timeout_seconds: 0 is outside 1..=600").to_string();
+    let reply = wire::reply_from_json(&serde_json::from_str::<Value>(&body).expect("valid JSON"))
+        .expect("a reply");
 
     match reply {
         Reply::Refused(reason) => assert!(reason.contains("timeout_seconds"), "{reason}"),
@@ -240,8 +240,9 @@ fn a_result_that_holds_bad_news_is_still_a_result() {
         reason: None,
     };
 
-    let body = json::write(&wire::encode_run_reply(&outcome));
-    let reply = wire::reply_from_json(&json::parse(&body).expect("valid JSON")).expect("a reply");
+    let body = wire::encode_run_reply(&outcome).to_string();
+    let reply = wire::reply_from_json(&serde_json::from_str::<Value>(&body).expect("valid JSON"))
+        .expect("a reply");
 
     assert!(
         matches!(reply, Reply::Result(_)),
@@ -264,7 +265,7 @@ fn a_reply_that_says_neither_is_refused_rather_than_guessed_at() {
         (r#"{"ok": true}"#, "result"),
         (r#"{"ok": false}"#, "error"),
     ] {
-        let value = json::parse(body).expect("valid JSON");
+        let value = serde_json::from_str::<Value>(body).expect("valid JSON");
         let error = wire::reply_from_json(&value).expect_err("should be refused");
         assert!(
             error.to_string().contains(expected),
@@ -305,9 +306,10 @@ fn every_request_round_trips_through_the_wire() {
     ];
 
     for request in requests {
-        let encoded = json::write(&wire::request_to_json(&request));
-        let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
-            .expect("its own output should decode");
+        let encoded = wire::request_to_json(&request).to_string();
+        let decoded =
+            wire::request_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+                .expect("its own output should decode");
         assert_eq!(decoded, request);
     }
 }
@@ -319,11 +321,12 @@ fn a_push_request_is_the_manifest_with_the_operation_flattened_into_it() {
     // than wrapping them in a second object. Pinned by value, because the two ends
     // agreeing about a nesting level is exactly the sort of thing that is obvious until
     // it is not.
-    let encoded = json::write(&wire::request_to_json(&Request::Push(Manifest {
+    let encoded = wire::request_to_json(&Request::Push(Manifest {
         path: "build.exe".to_string(),
         bytes: 3,
         sha256: DIGEST.to_string(),
-    })));
+    }))
+    .to_string();
 
     assert_eq!(
         encoded,
@@ -334,24 +337,24 @@ fn a_push_request_is_the_manifest_with_the_operation_flattened_into_it() {
 #[test]
 fn a_manifest_field_that_is_missing_or_impossible_is_refused_by_name() {
     let digest = DIGEST.to_string();
-    let cases: [(Json, &str); 5] = [
+    let cases: [(Value, &str); 5] = [
         (
-            object! { "bytes" => 1i64, "sha256" => digest.clone() },
+            serde_json::json!({ "bytes": 1i64, "sha256": digest.clone() }),
             "path",
         ),
         (
-            object! { "path" => "a", "sha256" => digest.clone() },
+            serde_json::json!({ "path": "a", "sha256": digest.clone() }),
             "bytes",
         ),
         (
-            object! { "path" => "a", "bytes" => 0i64, "sha256" => digest.clone() },
+            serde_json::json!({ "path": "a", "bytes": 0i64, "sha256": digest.clone() }),
             "positive",
         ),
         (
-            object! { "path" => "a", "bytes" => -1i64, "sha256" => digest.clone() },
+            serde_json::json!({ "path": "a", "bytes": -1i64, "sha256": digest.clone() }),
             "positive",
         ),
-        (object! { "path" => "a", "bytes" => 1i64 }, "sha256"),
+        (serde_json::json!({ "path": "a", "bytes": 1i64 }), "sha256"),
     ];
 
     for (value, expected) in cases {
@@ -368,11 +371,11 @@ fn a_manifest_does_not_check_the_path_because_the_path_is_not_its_business() {
     // A digest and a size are facts about this message. Whether a path may be written
     // to is a question for the machine that owns the directory, and it is asked by
     // `Manifest::check`, which is why the two are separate functions.
-    let value = object! {
-        "path" => r"..\..\Windows\System32\drivers\etc\hosts",
-        "bytes" => 1i64,
-        "sha256" => DIGEST,
-    };
+    let value = serde_json::json!({
+        "path": r"..\..\Windows\System32\drivers\etc\hosts",
+        "bytes": 1i64,
+        "sha256": DIGEST,
+    });
 
     let manifest = wire::manifest_from_json(&value).expect("a readable manifest");
     assert_eq!(manifest.path, r"..\..\Windows\System32\drivers\etc\hosts");
@@ -412,20 +415,22 @@ fn the_op_values_are_pinned_by_value() {
     // that cannot talk, and the failure is easier to read as a byte-level fact than
     // as a `.contains("identity")` that passes for the wrong reason.
     assert_eq!(
-        json::write(&wire::request_to_json(&Request::Identity)),
+        wire::request_to_json(&Request::Identity).to_string(),
         r#"{"op":"identity"}"#
     );
     assert_eq!(
-        json::write(&wire::request_to_json(&Request::Run(RunRequest {
+        wire::request_to_json(&Request::Run(RunRequest {
             command: "echo hi".to_string(),
             timeout_seconds: 5,
-        }))),
+        }))
+        .to_string(),
         r#"{"command":"echo hi","op":"run","timeout_seconds":5}"#
     );
     assert_eq!(
-        json::write(&wire::request_to_json(&Request::Pull {
+        wire::request_to_json(&Request::Pull {
             path: r"logs\build.log".to_string(),
-        })),
+        })
+        .to_string(),
         r#"{"op":"pull","path":"logs\\build.log"}"#
     );
 }
@@ -434,7 +439,7 @@ fn the_op_values_are_pinned_by_value() {
 fn an_unknown_op_is_refused_with_the_ones_this_version_knows() {
     // A version skew is a list rather than a puzzle: the caller sent an op this
     // build does not have, and the refusal names the ones it does.
-    let value = object! { "op" => "install" };
+    let value = serde_json::json!({ "op": "install" });
     let error = wire::request_from_json(&value).expect_err("not an op this version has");
     let text = error.to_string();
     assert!(text.contains("install"), "{text}");
@@ -450,8 +455,8 @@ fn an_unknown_op_is_refused_with_the_ones_this_version_knows() {
 fn a_pull_with_no_path_is_refused_by_name() {
     // One field, and therefore one way to be wrong. A pull that defaulted its path
     // would be a read of whatever the agent felt like reading.
-    let error =
-        wire::request_from_json(&object! { "op" => "pull" }).expect_err("a pull needs a path");
+    let error = wire::request_from_json(&serde_json::json!({ "op": "pull" }))
+        .expect_err("a pull needs a path");
     assert!(error.to_string().contains("path"), "{error}");
 }
 
@@ -459,7 +464,7 @@ fn a_pull_with_no_path_is_refused_by_name() {
 fn a_request_with_no_op_says_so_rather_than_assuming_one() {
     // The field is required. A missing `op` that defaulted to "run" would turn a
     // broken client into a command the agent tries to execute.
-    let error = wire::request_from_json(&object! { "command" => "echo hi" })
+    let error = wire::request_from_json(&serde_json::json!({ "command": "echo hi" }))
         .expect_err("an op is required");
     assert!(error.to_string().contains("op"), "{error}");
 }
@@ -499,8 +504,11 @@ fn a_reply_that_fills_the_ceiling_can_still_be_framed() {
     // window -- the sort of cost a test in this layer exists to avoid. That the real
     // number is the ceiling the protocol uses is asserted next to the constant, in
     // `wire`'s own tests, and end to end by `against_agent.rs` with 21 MB of output.
-    let size_of_reply_with =
-        |padding: usize| json::write(&wire::encode_run_reply(&outcome_of_stdout(padding))).len();
+    let size_of_reply_with = |padding: usize| {
+        wire::encode_run_reply(&outcome_of_stdout(padding))
+            .to_string()
+            .len()
+    };
 
     let ceiling = 4096;
     let (mut fits, mut too_large) = (0usize, ceiling);
@@ -655,7 +663,7 @@ fn a_run_whose_output_was_not_utf8_says_so_after_the_trip() {
         reason: None,
     };
 
-    let decoded = run_outcome_from_body(&json::write(&wire::encode_run_reply(&outcome)))
+    let decoded = run_outcome_from_body(&wire::encode_run_reply(&outcome).to_string())
         .expect("its own output should decode");
 
     assert!(
@@ -675,13 +683,13 @@ fn a_reply_from_before_this_field_existed_still_decodes() {
     // flag. An agent older than this change sends exactly this, and refusing it
     // would be a version skew that breaks a working pair for a field it does not
     // need.
-    let older = object! {
-        "exit_code" => 0i64,
-        "stdout" => Json::str("ok"),
-        "stderr" => Json::str(""),
-        "duration_ms" => 1i64,
-        "reason" => Json::Null,
-    };
+    let older = serde_json::json!({
+        "exit_code": 0i64,
+        "stdout": "ok",
+        "stderr": "",
+        "duration_ms": 1i64,
+        "reason": Value::Null,
+    });
 
     let outcome = wire::run_outcome_from_json(&older).expect("a reply this version understands");
     assert_eq!(outcome.stdout.as_str(), "ok");
@@ -720,9 +728,10 @@ fn a_listing_round_trips_with_every_field_a_reader_needs() {
     // has to be able to tell "nothing matched" from "nothing was asked" from "the machine
     // could not be read", and two of those three are not lists at all.
     let listing = a_listing();
-    let encoded = json::write(&wire::encode_ps_reply(&listing));
+    let encoded = wire::encode_ps_reply(&listing).to_string();
     let decoded = wire::ps_listing_from_reply(
-        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+        &wire::reply_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("a reply"),
     )
     .expect("its own output should decode");
 
@@ -732,7 +741,10 @@ fn a_listing_round_trips_with_every_field_a_reader_needs() {
     assert_eq!(decoded.total, 2, "the total is before the filter");
     assert_eq!(decoded.unreadable, 2);
     assert!(!decoded.truncated);
-    assert_eq!(decoded.applied.get_str("name"), Some("agent"));
+    assert_eq!(
+        decoded.applied.get("name").and_then(Value::as_str),
+        Some("agent")
+    );
     assert!(!decoded.notes.is_empty(), "{decoded:#?}");
 }
 
@@ -743,13 +755,14 @@ fn an_empty_filter_comes_back_as_an_empty_object_and_not_as_nothing() {
     use linklet_core::process::{Filter, apply};
 
     let listing = apply(Vec::new(), &Filter::any(), 0);
-    let encoded = json::write(&wire::encode_ps_reply(&listing));
+    let encoded = wire::encode_ps_reply(&listing).to_string();
     let decoded = wire::ps_listing_from_reply(
-        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+        &wire::reply_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("a reply"),
     )
     .expect("decodes");
 
-    assert_eq!(decoded.applied, Json::Object(Default::default()));
+    assert_eq!(decoded.applied, Value::Object(Default::default()));
     assert_eq!(decoded.count(), 0);
 }
 
@@ -766,9 +779,10 @@ fn every_part_of_a_process_filter_survives_the_wire() {
     };
 
     let request = Request::Ps(filter.clone());
-    let encoded = json::write(&wire::request_to_json(&request));
-    let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
-        .expect("its own output should decode");
+    let encoded = wire::request_to_json(&request).to_string();
+    let decoded =
+        wire::request_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("its own output should decode");
 
     assert_eq!(decoded, request, "{encoded}");
     let Request::Ps(decoded) = decoded else {
@@ -780,14 +794,15 @@ fn every_part_of_a_process_filter_survives_the_wire() {
 #[test]
 fn a_ps_request_with_no_arguments_is_a_listing_of_everything() {
     let request = Request::Ps(linklet_core::process::Filter::any());
-    let encoded = json::write(&wire::request_to_json(&request));
+    let encoded = wire::request_to_json(&request).to_string();
 
     assert_eq!(
         encoded, r#"{"op":"ps"}"#,
         "an empty filter is not written out"
     );
     assert_eq!(
-        wire::request_from_json(&json::parse(&encoded).expect("valid JSON")).expect("decodes"),
+        wire::request_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("decodes"),
         request
     );
 }
@@ -800,8 +815,9 @@ fn a_filter_field_of_the_wrong_shape_is_refused_by_name() {
         (r#"{"op":"ps","name":5}"#, "name"),
         (r#"{"op":"ps","exclude":true}"#, "exclude"),
     ] {
-        let error = wire::request_from_json(&json::parse(body).expect("valid JSON"))
-            .expect_err("this filter should have been refused");
+        let error =
+            wire::request_from_json(&serde_json::from_str::<Value>(body).expect("valid JSON"))
+                .expect_err("this filter should have been refused");
         assert!(
             error.to_string().contains(expected),
             "for {body}, expected {expected:?} in {error}"
@@ -820,9 +836,10 @@ fn a_spawn_request_carries_the_command_and_where_its_output_goes() {
         output: r"logs\app.log".to_string(),
     });
 
-    let encoded = json::write(&wire::request_to_json(&request));
-    let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
-        .expect("its own output should decode");
+    let encoded = wire::request_to_json(&request).to_string();
+    let decoded =
+        wire::request_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("its own output should decode");
 
     assert_eq!(decoded, request, "{encoded}");
     assert!(
@@ -844,7 +861,7 @@ fn a_spawn_reply_carries_the_pid_and_not_a_promise() {
     };
 
     assert_eq!(
-        json::write(&wire::spawn_report_to_json(&report)),
+        wire::spawn_report_to_json(&report).to_string(),
         r#"{"command":"app.exe --serve","pid":5144}"#
     );
 }
@@ -859,8 +876,9 @@ fn a_spawn_request_without_a_command_or_an_output_file_is_refused_by_name() {
             "command",
         ),
     ] {
-        let error = wire::request_from_json(&json::parse(body).expect("valid JSON"))
-            .expect_err("this spawn should have been refused");
+        let error =
+            wire::request_from_json(&serde_json::from_str::<Value>(body).expect("valid JSON"))
+                .expect_err("this spawn should have been refused");
         assert!(
             error.to_string().contains(expected),
             "for {body}, expected {expected:?} in {error}"
@@ -905,7 +923,7 @@ fn a_second_unnamed_encoding_is_a_new_tag_rather_than_a_wider_old_one() {
     let mut search = a_search();
     search.encoding = linklet_core::search::Encoding::Latin1;
 
-    let encoded = json::write(&wire::encode_search_reply(&search));
+    let encoded = wire::encode_search_reply(&search).to_string();
     assert!(
         encoded.contains("\"latin-1\""),
         "the tag has to be on the wire: {encoded}"
@@ -916,7 +934,8 @@ fn a_second_unnamed_encoding_is_a_new_tag_rather_than_a_wider_old_one() {
     );
 
     let decoded = wire::search_from_reply(
-        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+        &wire::reply_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("a reply"),
     )
     .expect("its own output should decode");
     assert_eq!(decoded.encoding, linklet_core::search::Encoding::Latin1);
@@ -929,9 +948,10 @@ fn a_search_round_trips_with_everything_a_reader_needs_to_judge_it() {
     // answers a different question, and a reply that lost one would still look like a
     // plausible list of lines.
     let search = a_search();
-    let encoded = json::write(&wire::encode_search_reply(&search));
+    let encoded = wire::encode_search_reply(&search).to_string();
     let decoded = wire::search_from_reply(
-        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+        &wire::reply_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("a reply"),
     )
     .expect("its own output should decode");
 
@@ -958,9 +978,10 @@ fn a_search_that_did_not_happen_round_trips_as_one_that_did_not() {
         linklet_core::search::Encoding::Utf8,
     );
 
-    let encoded = json::write(&wire::encode_search_reply(&search));
+    let encoded = wire::encode_search_reply(&search).to_string();
     let decoded = wire::search_from_reply(
-        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+        &wire::reply_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("a reply"),
     )
     .expect("decodes");
 
@@ -987,12 +1008,13 @@ fn stopped_early_crosses_the_wire_as_a_null_count_and_not_a_zero() {
         Direction::Last,
     );
 
-    let encoded = json::write(&wire::encode_search_reply(&search));
+    let encoded = wire::encode_search_reply(&search).to_string();
     assert!(encoded.contains(r#""total":null"#), "{encoded}");
     assert!(encoded.contains(r#""truncated":true"#), "{encoded}");
 
     let decoded = wire::search_from_reply(
-        &wire::reply_from_json(&json::parse(&encoded).expect("valid JSON")).expect("a reply"),
+        &wire::reply_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("a reply"),
     )
     .expect("decodes");
     assert_eq!(decoded.total, None);
@@ -1013,7 +1035,7 @@ fn a_grep_request_carries_the_pattern_the_mode_and_the_limit() {
         },
     });
 
-    let encoded = json::write(&wire::request_to_json(&request));
+    let encoded = wire::request_to_json(&request).to_string();
     assert!(encoded.contains(r#""op":"grep""#), "{encoded}");
     assert!(encoded.contains(r#""mode":"last""#), "{encoded}");
     assert!(
@@ -1021,8 +1043,9 @@ fn a_grep_request_carries_the_pattern_the_mode_and_the_limit() {
         "the case rule is the request's, not a default each end assumes: {encoded}"
     );
 
-    let decoded = wire::request_from_json(&json::parse(&encoded).expect("valid JSON"))
-        .expect("its own output should decode");
+    let decoded =
+        wire::request_from_json(&serde_json::from_str::<Value>(&encoded).expect("valid JSON"))
+            .expect("its own output should decode");
     assert_eq!(decoded, request);
 }
 
@@ -1032,8 +1055,10 @@ fn a_grep_whose_mode_is_not_a_mode_is_refused_by_name() {
     // sentence: guessing `first` for a caller that meant `last` answers about the wrong end
     // of the file, and reads exactly like an answer.
     let error = wire::request_from_json(
-        &json::parse(r#"{"op":"grep","path":"a.log","pattern":"x","mode":"middle"}"#)
-            .expect("valid JSON"),
+        &serde_json::from_str::<Value>(
+            r#"{"op":"grep","path":"a.log","pattern":"x","mode":"middle"}"#,
+        )
+        .expect("valid JSON"),
     )
     .expect_err("that is not a mode");
 
@@ -1045,14 +1070,16 @@ fn a_tail_count_past_the_ceiling_is_refused_rather_than_clamped() {
     // The same argument as an out-of-range timeout: a caller that asked for ten thousand
     // lines and got two thousand would not know it had.
     let error = wire::request_from_json(
-        &json::parse(r#"{"op":"tail","path":"a.log","count":100000}"#).expect("valid JSON"),
+        &serde_json::from_str::<Value>(r#"{"op":"tail","path":"a.log","count":100000}"#)
+            .expect("valid JSON"),
     )
     .expect_err("past the ceiling");
 
     assert!(error.to_string().contains("count"), "{error}");
 
     let ok = wire::request_from_json(
-        &json::parse(r#"{"op":"tail","path":"a.log","count":50}"#).expect("valid JSON"),
+        &serde_json::from_str::<Value>(r#"{"op":"tail","path":"a.log","count":50}"#)
+            .expect("valid JSON"),
     )
     .expect("a count within the ceiling");
     assert_eq!(

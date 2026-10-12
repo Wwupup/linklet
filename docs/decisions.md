@@ -6,42 +6,21 @@ by the next person, usually in the other direction.
 
 ---
 
-## D1. `linklet-core` depends on no crate that does I/O.
+## D1. Core performs no I/O and may use mature libraries.
 
-**Decided at the skeleton, narrowed twice since.**
+The original dependency-free rule was too broad. Core now uses
+`serde_json::Value` directly, without a project-specific JSON enum or codec.
+The dependency allowlist records each library and its pure use; it cannot prove
+that code never calls I/O APIs. Even an empty manifest still permits `std` I/O.
 
-Originally: `linklet-core` depends on no crate at all. It now allows
-`serde_json`, and the rule was rewritten rather than quietly broken.
+Keep filesystem, network, process and environment access in adapters behind core
+traits. Prefer mature libraries for general-purpose computation. The crypto
+adapter also owns the randomness needed by the handshake.
 
-What the rule was always protecting is that core does no I/O -- its tests need no
-network, no files and no cleanup, so they run in milliseconds and cannot fail for a
-reason outside the code. A crate that parses JSON and touches nothing does not
-threaten that.
-
-What was wrong was the wording. "Depends on nothing" is satisfied by a rule rather
-than a reason, so it stayed in force past the point where its reason applied. The
-gate now takes a named allowlist where every entry carries a sentence explaining
-why that crate does no I/O, and a second test checks the list actually matches the
-manifest -- an allowlist that matches nothing looks green and admits everything.
-
-The core is where the decisions live, and a decision that links against a library
-is a decision that cannot be tested without that library. `linklet-core` having an
-empty `[dependencies]` section is what makes its 200-odd tests run in
-milliseconds with no network, no temp files and no cleanup. That property has
-paid for itself repeatedly, and it is enforced by the compiler rather than by
-anyone remembering.
-
-**But it is a rule about the core, not a rule about the project**, and it was
-being read the second way. `linklet-adapters` already depended on `linklet-core`;
-adding a cipher there changes nothing about the core's promise. `AGENTS.md` rule 1
-had the answer from the beginning -- "something in `core` needs I/O? It belongs in
-`adapters`, behind a trait `core` defines" -- and cryptography is the same shape as
-I/O.
-
-`linklet_core::channel` declares what a sealed conversation is.
-`linklet-adapters/src/channel.rs` implements it with `chacha20poly1305`, `hkdf`
-and `sha2`. The core still has no dependencies; the arithmetic is in crates other
-people have attacked.
+The sections below retain the history of the earlier JSON and crypto decisions.
+The remaining JSON wrapper was subsequently removed because it added conversions
+and rounded large unsigned request IDs. Protocol tests now cover those boundaries;
+tests of the removed codec and its error wording were removed with it.
 
 ### What the JSON swap cost, stated rather than glossed
 
@@ -86,7 +65,7 @@ affected tools that read git's configuration -- which cargo does, because of
 
 | component | hand-written | why it is defensible, or not |
 |---|---|---|
-| JSON codec | **was**, 672 lines; now 345 delegating to `serde_json` | It was correct and tested, and it was still the wrong call: it parsed untrusted input from the network, and a hand-written parser in that position is the classic remote-vulnerability shape. The 345 lines that remain are the domain enum and the two conversions between it and `serde_json`, not a parser. |
+| JSON codec | **deleted**, including its later wrapper | Uses `serde_json::Value`, parsing and serialization directly. Keep tests at the MCP and wire boundaries. |
 | HTTP (client and server) | **deleted at M7** | ~300 lines each, and the argument for keeping them was that only `Content-Length` framing was involved in a protocol this project owns both ends of. It was defensible and it was still not the right call -- see D4, which had already written down what would replace it. |
 | Framing (client and server) | yes, ~250 lines including tests | The replacement for HTTP, and a smaller surface: a magic byte, a kind byte, a 32-bit length. `crates/linklet-core/src/frame.rs` lists the ten ways it can go wrong and where each defence lives, six inline and four in the connection. Unlike a request parser, it has no grammar to be right about -- and everything it carries goes into an AEAD that refuses a message it did not authenticate. |
 | MCP framing | yes, ~240 lines | Newline-delimited JSON-RPC, no batching, no negotiation. Defensible. |

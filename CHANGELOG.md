@@ -15,6 +15,7 @@ to answer one question: **what can I do now that I could not do before?**
 
 - Successful `ls`, `grep` and `tail` calls no longer fail because a path contains
   status wording such as `stopped early`. CLI status comes from typed results.
+- MCP replies preserve unsigned integer request IDs without rounding.
 
 ### Changed
 

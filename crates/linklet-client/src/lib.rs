@@ -26,7 +26,6 @@ use linklet_adapters::{
 use linklet_core::auth::Token;
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
-use linklet_core::json;
 use linklet_core::transfer::TransferError;
 use linklet_core::wire::{
     self, GrepRequest, KillRequest, LsRequest, Reply, Request, RunOutcome, RunRequest,
@@ -798,7 +797,7 @@ fn begin(
     let (ours, pending) = HkdfChannel
         .propose(token.expose().as_bytes())
         .map_err(|error| CallError::Protocol(format!("cannot begin a handshake: {error}")))?;
-    let hello = json::write(&wire::handshake_to_json(ours.as_bytes()));
+    let hello = wire::handshake_to_json(ours.as_bytes()).to_string();
     connection
         .write_frame(Kind::Hello, hello.as_bytes())
         .map_err(transport)?;
@@ -861,7 +860,7 @@ fn send_request(
     session: &mut dyn Sealed,
     request: &Request,
 ) -> Result<(), CallError> {
-    let body = json::write(&wire::request_to_json(request));
+    let body = wire::request_to_json(request).to_string();
 
     let mut sealed = Vec::new();
     session

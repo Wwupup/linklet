@@ -30,7 +30,6 @@ use linklet_client::{AgentAddress, CallError, push};
 use linklet_core::auth::Token;
 use linklet_core::channel::{EphemeralPublic, Handshake};
 use linklet_core::frame::Kind;
-use linklet_core::json;
 use linklet_core::wire::{self, Request};
 
 /// The token both ends use.
@@ -94,9 +93,7 @@ fn refuse_the_manifest(listener: TcpListener, reason: &str) -> bool {
     let (ours, mut session) = HkdfChannel
         .accept(TEST_TOKEN.as_bytes(), &peer)
         .expect("accepting the handshake");
-    let reply = json::write(&wire::reply_result(wire::handshake_to_json(
-        ours.as_bytes(),
-    )));
+    let reply = wire::reply_result(wire::handshake_to_json(ours.as_bytes())).to_string();
     connection
         .write_frame(Kind::Hello, reply.as_bytes())
         .expect("the hello reply");
@@ -117,7 +114,7 @@ fn refuse_the_manifest(listener: TcpListener, reason: &str) -> bool {
     // reading it is the point**: this fake agent does not drain, so whatever the client
     // sent is still in the queue when the connection closes -- and that is what makes the
     // close a reset, which is what destroys the refusal on the client's side.
-    let refusal = json::write(&wire::reply_refused(reason));
+    let refusal = wire::reply_refused(reason).to_string();
     let mut sealed = Vec::new();
     session
         .seal_into(refusal.as_bytes(), &mut sealed)

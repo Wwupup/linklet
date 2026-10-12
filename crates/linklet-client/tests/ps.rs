@@ -232,7 +232,10 @@ fn a_listing_finds_this_test_process_by_name() {
         "the total is how many were examined and cannot be smaller than the answer"
     );
     assert_eq!(
-        listing.applied.get_str("name"),
+        listing
+            .applied
+            .get("name")
+            .and_then(serde_json::Value::as_str),
         Some(name.as_str()),
         "the filter has to come back with the answer"
     );
@@ -265,7 +268,10 @@ fn a_filter_that_matches_nothing_still_says_what_it_looked_at() {
         "and this machine has processes, which is the fact that matters: {listing:#?}"
     );
     assert_eq!(
-        listing.applied.get_str("name"),
+        listing
+            .applied
+            .get("name")
+            .and_then(serde_json::Value::as_str),
         Some("no-such-process-anywhere.exe"),
         "the filter has to come back, or the empty list means nothing"
     );

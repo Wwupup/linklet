@@ -96,7 +96,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 
 | path | state | what it is |
 |---|---|---|
-| `crates/linklet-core/` | done | decisions. No I/O; `serde_json` is the only dependency, and it computes |
+| `crates/linklet-core/` | done | decisions without I/O; JSON uses `serde_json::Value` directly |
 | `crates/linklet-adapters/` | done | sockets and crypto: the only place either happens |
 | `crates/linklet-agent/` | done | the target side: binds a port, runs commands |
 | `crates/linklet-client/` | done | the host side of the agent protocol |
@@ -122,7 +122,6 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/discover.rs` | which networks this host is on, which addresses a scan would try, what it leaves out, and how both platforms spell a network |
 | `crates/linklet-core/src/fanout.rs` | one operation across several machines: the order, the fates, and the panics that do not take the report with them |
 | `crates/linklet-core/src/log.rs` | the agent's request log: what a line says, the pair that names a request that never finished, and when the file rolls over |
-| `crates/linklet-core/src/json.rs` | the domain enum, and the conversions to `serde_json` |
 | `crates/linklet-adapters/src/tcp.rs` | the real probe, and the Windows measurements behind it |
 | `crates/linklet-adapters/src/connection.rs` | the framed connection: a timeout on every read, no read-ahead, a message budget |
 | `crates/linklet-adapters/src/transfer.rs` | moving a file: the `.part`, the running total, the digest, the rename |

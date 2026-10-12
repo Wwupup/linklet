@@ -9,8 +9,9 @@
 //! touching a real machine is a decision that stops being tested the first
 //! time the machine is unavailable, and it is wrong by then.
 //!
-//! The crate has no dependencies, so this is enforced by the compiler rather
-//! than by convention. See `AGENTS.md`, rule 1.
+//! Mature libraries such as `serde_json` handle general-purpose computation.
+//! Dependency review and tests support this boundary; the compiler alone cannot
+//! prevent calls to I/O APIs in `std` or a dependency. See `AGENTS.md`, rule 1.
 //!
 //! # How it asks for what it cannot do
 //!
@@ -30,7 +31,6 @@ pub mod discover;
 mod error;
 pub mod fanout;
 pub mod frame;
-pub mod json;
 pub mod listing;
 pub mod log;
 mod outcome;

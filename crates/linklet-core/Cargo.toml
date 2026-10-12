@@ -6,18 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 description = "Pure decision logic for linklet: parsing, validation, policy. No I/O."
 
-# ---------------------------------------------------------------------------
-# This section is intentionally empty and must stay empty.
-#
-# It is not a style preference. Because core cannot link against anything, it
-# *cannot* open a socket, read a file, or ask the OS anything -- so the rule
-# "decisions are testable without a machine" is enforced by the compiler
-# instead of by memory.
-#
-# The test in `tests/architecture.rs` fails if a dependency appears here.
-# ---------------------------------------------------------------------------
+# Mature libraries are allowed for pure computation. See tests/architecture.rs.
 [dependencies]
-serde_json = "1.0.151"
+serde_json.workspace = true
 
 [lints]
 workspace = true

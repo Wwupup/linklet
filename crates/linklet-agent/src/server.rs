@@ -34,10 +34,10 @@ use linklet_adapters::{
 use linklet_core::auth::{self, Token};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::{FrameError, Kind};
-use linklet_core::json::{self, Json};
 use linklet_core::log::{Operation, Outcome};
 use linklet_core::transfer::{Destination, Manifest};
 use linklet_core::wire::{self, Request, WireError};
+use serde_json::Value;
 
 use crate::log::RequestLog;
 
@@ -86,7 +86,7 @@ pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination,
     let session = match begin_session(&hello, expected) {
         Ok((reply, session)) => {
             if connection
-                .write_frame(Kind::Hello, json::write(&reply).as_bytes())
+                .write_frame(Kind::Hello, reply.to_string().as_bytes())
                 .is_err()
             {
                 return;
@@ -99,7 +99,7 @@ pub fn serve_connection(stream: TcpStream, expected: &Token, root: &Destination,
             // cannot be**: the session that would seal it is what failed to exist.
             // Nothing in it is worth protecting -- it is one sentence about a public
             // key that did not parse.
-            let refusal = json::write(&wire::reply_refused(&reason));
+            let refusal = wire::reply_refused(&reason).to_string();
             let _ = connection.write_frame(Kind::Hello, refusal.as_bytes());
             return;
         }
@@ -145,7 +145,7 @@ fn answer_one(
         // Nothing is logged here either, and for the same reason there is nothing to
         // name: a message that will not open is not a request, and guessing an
         // operation from bytes that failed authentication would be inventing evidence.
-        let refusal = json::write(&wire::reply_refused(auth::unauthorized_reason()));
+        let refusal = wire::reply_refused(auth::unauthorized_reason()).to_string();
         let _ = connection.write_frame(Kind::Sealed, refusal.as_bytes());
         return;
     }
@@ -207,8 +207,8 @@ fn answer_one(
 /// The refusal shape is `wire`'s own (`{"ok": false, "error": ...}`) and it is read back
 /// here rather than carried alongside the reply, because a second field on every reply
 /// would be a second thing to keep in step with the first.
-fn refused(reply: &Json) -> bool {
-    reply.get("ok").and_then(Json::as_bool) == Some(false)
+fn refused(reply: &Value) -> bool {
+    reply.get("ok").and_then(Value::as_bool) == Some(false)
 }
 
 /// Closes the write side, then reads whatever the peer had already sent.
@@ -237,8 +237,11 @@ fn settle(connection: &mut Connection) {
 /// Absent rather than invented when the field is not there: a refusal with no `error` is a
 /// reply this version would not have sent, and a log line is not the place to guess at
 /// what it meant.
-fn refusal_reason(reply: &Json) -> Option<String> {
-    reply.get_str("error").map(str::to_string)
+fn refusal_reason(reply: &Value) -> Option<String> {
+    reply
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 /// Which operation a sealed body names, for the log.
@@ -254,7 +257,7 @@ fn refusal_reason(reply: &Json) -> Option<String> {
 fn named_operation(plaintext: &[u8]) -> Operation {
     wire::parse_body(plaintext)
         .ok()
-        .and_then(|value| value.get_str("op").map(str::to_string))
+        .and_then(|value| value.get("op").and_then(Value::as_str).map(str::to_string))
         .and_then(|name| Operation::named(&name))
         .unwrap_or(Operation::Unknown)
 }
@@ -269,10 +272,10 @@ fn elapsed_ms(started: Instant) -> u64 {
 /// One place for the seal-and-write, because three callers do it and each has to get the
 /// same two things right: one buffer reused rather than allocated per message (T10), and
 /// both results checked (`docs/framing.md` item 4).
-fn write_reply(connection: &mut Connection, session: &mut dyn Sealed, reply: &Json) -> bool {
+fn write_reply(connection: &mut Connection, session: &mut dyn Sealed, reply: &Value) -> bool {
     let mut sealed = Vec::new();
     if session
-        .seal_into(json::write(reply).as_bytes(), &mut sealed)
+        .seal_into((reply).to_string().as_bytes(), &mut sealed)
         .is_err()
     {
         return false;
@@ -282,13 +285,13 @@ fn write_reply(connection: &mut Connection, session: &mut dyn Sealed, reply: &Js
 
 /// What an answered request leaves to be sent.
 ///
-/// An enum rather than an `Option<Json>` because the two cases are different facts and
+/// An enum rather than an `Option<Value>` because the two cases are different facts and
 /// not presence and absence: a transfer's reply may already be on the wire, and a
 /// reader who saw `None` would have to guess whether that meant "nothing to say" or
 /// "already said".
 enum Response {
     /// Seal this reply and write it.
-    Sealed(Json),
+    Sealed(Value),
     /// Nothing more to send: the request was answered as it was handled.
     AlreadySent,
 }
@@ -413,7 +416,7 @@ fn answer(
 /// Both branches are sealed and framed the same way by the caller, so there is no
 /// second send path here -- an agent with two ways to send a reply has a way for
 /// them to disagree.
-fn run_reply(outcome: &wire::RunOutcome) -> Json {
+fn run_reply(outcome: &wire::RunOutcome) -> Value {
     let ceiling = wire::reply_ceiling();
     let reply = wire::encode_run_reply(outcome);
 
@@ -444,7 +447,7 @@ fn receive(
     session: &mut dyn Sealed,
     manifest: &Manifest,
     root: &Destination,
-) -> Json {
+) -> Value {
     let target = match manifest.check(root) {
         Ok(target) => target,
         Err(error) => return wire::reply_refused(&error.to_string()),
@@ -503,7 +506,7 @@ fn send(
     };
 
     let mut sealed = Vec::new();
-    let reply = json::write(&wire::manifest_reply(&manifest));
+    let reply = wire::manifest_reply(&manifest).to_string();
     if session.seal_into(reply.as_bytes(), &mut sealed).is_err()
         || connection.write_frame(Kind::Sealed, &sealed).is_err()
     {
@@ -554,7 +557,7 @@ fn refuse_unreadable(connection: &mut Connection, error: &ConnectionError) {
     };
 
     if speaks_frames {
-        let refusal = json::write(&wire::reply_refused(&error.to_string()));
+        let refusal = wire::reply_refused(&error.to_string()).to_string();
         let _ = connection.write_frame(Kind::Hello, refusal.as_bytes());
     }
 }
@@ -576,7 +579,7 @@ fn refuse_unreadable(connection: &mut Connection, error: &ConnectionError) {
 /// The reason a refusal would carry: a body that is not a hello, or a public key this
 /// build cannot use. Returned as a sentence rather than a type because the caller
 /// does one thing with either.
-fn begin_session(hello: &[u8], expected: &Token) -> Result<(Json, Box<dyn Sealed>), String> {
+fn begin_session(hello: &[u8], expected: &Token) -> Result<(Value, Box<dyn Sealed>), String> {
     let value = wire::parse_body(hello).map_err(|error| refusal_text(&error))?;
     let peer = wire::handshake_public_from_json(&value).map_err(|error| refusal_text(&error))?;
     let peer = EphemeralPublic::from_bytes(peer).map_err(|error| error.to_string())?;

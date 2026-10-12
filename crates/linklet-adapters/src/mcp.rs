@@ -1,7 +1,7 @@
 //! The MCP server: newline-delimited JSON-RPC over stdio.
 //!
 //! MCP's stdio transport is one JSON message per line, so this file is a loop
-//! and a `match`. The interesting parts are all elsewhere: [`linklet_core::json`]
+//! and a `match`. The interesting parts are all elsewhere: [`serde_json`]
 //! reads and writes the messages, and [`linklet_core::tool`] decides what a call
 //! means. What is left here is the protocol plumbing, and plumbing is the part
 //! that should be boring enough to read in one sitting.
@@ -21,8 +21,8 @@
 
 use std::io::{BufRead, Write};
 
-use linklet_core::json::{self, Json};
-use linklet_core::{ToolError, dispatch, tool_list_json};
+use linklet_core::{dispatch, tool_list_json};
+use serde_json::Value;
 
 /// The protocol version this server replies with when the client did not say.
 ///
@@ -40,7 +40,7 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Send this reply.
-    Reply(Json),
+    Reply(Value),
     /// Send nothing. A notification, or a request the client cancelled.
     Ignore,
 }
@@ -62,12 +62,12 @@ pub type RunTool<'a> = dyn linklet_core::ToolRunner + 'a;
 /// testable without a client -- the integration test drives a real process, but
 /// the cases that matter (a notification gets no reply, a bad request gets the
 /// right error code) are checked here in microseconds.
-pub fn handle(message: &Json, run_tool: &RunTool<'_>) -> Action {
+pub fn handle(message: &Value, run_tool: &RunTool<'_>) -> Action {
     // A notification has no id, and JSON-RPC forbids replying to one. Getting
     // this wrong earns a client that logs "unexpected response id: null" once
     // per notification.
     let id = message.get("id").cloned();
-    let Some(method) = message.get_str("method") else {
+    let Some(method) = message.get("method").and_then(Value::as_str) else {
         return id.map_or(Action::Ignore, |id| {
             Action::Reply(error_reply(&id, -32600, "a request needs a \"method\""))
         });
@@ -79,70 +79,41 @@ pub fn handle(message: &Json, run_tool: &RunTool<'_>) -> Action {
         return Action::Ignore;
     };
 
-    let params = message.get("params").cloned().unwrap_or(Json::Null);
+    let params = message.get("params").cloned().unwrap_or(Value::Null);
 
     match method {
         "initialize" => Action::Reply(reply(
             &id,
-            json::parse(&format!(
-                r#"{{
-                    "protocolVersion": {},
-                    "capabilities": {{"tools": {{"listChanged": false}}}},
-                    "serverInfo": {{"name": {}, "version": {}}}
-                }}"#,
-                json::write(
-                    &params
-                        .get_str("protocolVersion")
-                        .map_or_else(|| Json::str(FALLBACK_PROTOCOL_VERSION), Json::str)
-                ),
-                json::write(&Json::str(SERVER_NAME)),
-                json::write(&Json::str(SERVER_VERSION)),
-            ))
-            .expect("the template above is a literal and parses"),
+            serde_json::json!({
+                "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or(FALLBACK_PROTOCOL_VERSION),
+                "capabilities": {"tools": {"listChanged": false}},
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}
+            }),
         )),
-
-        "tools/list" => Action::Reply(reply(
-            &id,
-            json::parse(&format!(
-                r#"{{"tools": {}}}"#,
-                json::write(&tool_list_json())
-            ))
-            .expect("a literal"),
-        )),
+        "tools/list" => Action::Reply(reply(&id, serde_json::json!({"tools": tool_list_json()}))),
 
         "tools/call" => {
-            let name = params.get_str("name").unwrap_or("");
+            let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let arguments = params
                 .get("arguments")
                 .cloned()
-                .unwrap_or_else(|| Json::Object(std::collections::BTreeMap::new()));
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
-            match dispatch(name, &arguments, run_tool) {
-                Ok(outcome) => Action::Reply(reply(
-                    &id,
-                    json::parse(&format!(
-                        r#"{{"content": [{{"type": "text", "text": {}}}], "isError": {}}}"#,
-                        json::write(&Json::str(outcome.text)),
-                        outcome.is_error
-                    ))
-                    .expect("a literal"),
-                )),
-                // A dispatch failure is a *tool* failure, not a protocol one:
-                // the request was well formed and the answer is "you called it
-                // wrong". It goes back as a result with `isError`, so the agent
-                // sees a message it can act on rather than a transport fault.
-                Err(error) => Action::Reply(reply(
-                    &id,
-                    json::parse(&format!(
-                        r#"{{"content": [{{"type": "text", "text": {}}}], "isError": true}}"#,
-                        json::write(&Json::str(error_message(&error)))
-                    ))
-                    .expect("a literal"),
-                )),
-            }
+            let (text, is_error) = match dispatch(name, &arguments, run_tool) {
+                Ok(outcome) => (outcome.text, outcome.is_error),
+                // Dispatch failures belong to the tool result, not the transport.
+                Err(error) => (error.to_string(), true),
+            };
+            Action::Reply(reply(
+                &id,
+                serde_json::json!({
+                    "content": [{"type": "text", "text": text}],
+                    "isError": is_error
+                }),
+            ))
         }
 
-        "ping" => Action::Reply(reply(&id, Json::Object(Default::default()))),
+        "ping" => Action::Reply(reply(&id, Value::Object(Default::default()))),
 
         other => Action::Reply(error_reply(
             &id,
@@ -152,46 +123,12 @@ pub fn handle(message: &Json, run_tool: &RunTool<'_>) -> Action {
     }
 }
 
-/// What the agent is told when a call could not be dispatched.
-///
-/// The message names the field, because an agent retrying has to change
-/// something and "invalid arguments" gives it nothing to change.
-fn error_message(error: &ToolError) -> String {
-    error.to_string()
+fn reply(id: &Value, result: Value) -> Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
 
-fn reply(id: &Json, result: Json) -> Json {
-    Json::Object(
-        [
-            ("jsonrpc".to_string(), Json::str("2.0")),
-            ("id".to_string(), id.clone()),
-            ("result".to_string(), result),
-        ]
-        .into_iter()
-        .collect(),
-    )
-}
-
-fn error_reply(id: &Json, code: i64, message: &str) -> Json {
-    Json::Object(
-        [
-            ("jsonrpc".to_string(), Json::str("2.0")),
-            ("id".to_string(), id.clone()),
-            (
-                "error".to_string(),
-                Json::Object(
-                    [
-                        ("code".to_string(), Json::Int(code)),
-                        ("message".to_string(), Json::str(message)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    )
+fn error_reply(id: &Value, code: i64, message: &str) -> Value {
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 
 /// Reads messages from `input`, writes replies to `output`, until input ends.
@@ -217,13 +154,13 @@ pub fn serve<R: BufRead, W: Write>(
             continue;
         }
 
-        let action = match json::parse(&line) {
+        let action = match serde_json::from_str::<Value>(&line) {
             Ok(message) => handle(&message, run_tool),
             // The id is not known because the message did not parse, so the
             // error carries a null id -- which is what JSON-RPC specifies for
             // exactly this case.
             Err(error) => Action::Reply(error_reply(
-                &Json::Null,
+                &Value::Null,
                 -32700,
                 &format!("invalid JSON: {error}"),
             )),
@@ -231,9 +168,7 @@ pub fn serve<R: BufRead, W: Write>(
 
         if let Action::Reply(message) = action {
             // One message per line, and the newline is what makes it a message.
-            // Writing it separately from the body is why `json::write` promises
-            // no trailing newline of its own.
-            writeln!(output, "{}", json::write(&message))?;
+            writeln!(output, "{message}")?;
             output.flush()?;
         }
 

@@ -3,10 +3,8 @@
 # the crates one shared target/ directory and one Cargo.lock, and (b) hold the
 # rules that every crate inherits.
 #
-# Why a workspace and not one crate: the layer rule this project is built on --
-# "the core never does I/O" -- is enforced by the compiler only if the core is
-# a separate crate. A rule that a reviewer has to remember is not a rule; a
-# rule that fails `cargo build` is.
+# Separate crates make dependency direction explicit; Cargo rejects cycles.
+# Keeping I/O out of core also requires review of std and dependency API usage.
 # ---------------------------------------------------------------------------
 [workspace]
 resolver = "3"
@@ -17,6 +15,9 @@ members = [
     "crates/linklet-agent",
     "crates/linklet-client",
 ]
+
+[workspace.dependencies]
+serde_json = "1.0.151"
 
 [workspace.package]
 version = "0.3.0"

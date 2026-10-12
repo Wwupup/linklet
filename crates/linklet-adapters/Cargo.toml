@@ -7,6 +7,7 @@ license.workspace = true
 description = "The edges: sockets, processes, files. Thin, and easy to replace."
 
 [dependencies]
+serde_json.workspace = true
 chacha20poly1305 = "0.11.0"
 getrandom = "0.4.3"
 hkdf = "0.13.0"

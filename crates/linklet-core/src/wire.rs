@@ -29,10 +29,9 @@
 //! either a result or a refusal, and a result that says "the program exited 1" is
 //! the first of those.
 
-use crate::json::{self, Json};
-use crate::object;
 use crate::transfer::Manifest;
-use std::collections::BTreeMap;
+use serde_json::Map;
+use serde_json::Value;
 
 /// The request that asks which agent is there.
 ///
@@ -128,8 +127,8 @@ pub fn from_hex(text: &str) -> Result<Vec<u8>, WireError> {
 /// the same thing -- "here is my public key for this handshake" -- and giving them
 /// different field names would be a chance for the two sides to disagree about
 /// which is which.
-pub fn handshake_to_json(public: &[u8]) -> Json {
-    object! { "ephemeral_public" => to_hex(public), "protocol" => PROTOCOL_VERSION }
+pub fn handshake_to_json(public: &[u8]) -> Value {
+    serde_json::json!({ "ephemeral_public": to_hex(public), "protocol": PROTOCOL_VERSION })
 }
 
 /// The protocol this build speaks, as a whole number.
@@ -146,9 +145,8 @@ pub fn handshake_to_json(public: &[u8]) -> Json {
 /// predates the field, and calling it 0 would put it outside the range of things this scheme
 /// can talk about.
 ///
-/// `i64` rather than `u64` because the JSON layer's integers are `i64` -- see
-/// [`crate::json::Json::as_int`]. A protocol number is a small positive count and will never
-/// approach the difference.
+/// Protocol versions are small positive integers, read with
+/// [`serde_json::Value::as_i64`].
 ///
 /// `docs/VERSIONING.md` is the whole policy. `docs/decisions.md` D2 records the cost of the
 /// version this replaces, which did not negotiate at all.
@@ -177,10 +175,10 @@ pub const OLDEST_PROTOCOL: i64 = 1;
 /// # Errors
 ///
 /// [`WireError::BadRequest`] when the key is present and is not a whole number.
-pub fn handshake_protocol_from_json(value: &Json) -> Result<i64, WireError> {
+pub fn handshake_protocol_from_json(value: &Value) -> Result<i64, WireError> {
     match value.get("protocol") {
         None => Ok(OLDEST_PROTOCOL),
-        Some(field) => field.as_int().ok_or_else(|| {
+        Some(field) => field.as_i64().ok_or_else(|| {
             WireError::BadRequest("a handshake protocol must be a number".to_string())
         }),
     }
@@ -197,10 +195,13 @@ pub fn handshake_protocol_from_json(value: &Json) -> Result<i64, WireError> {
 /// # Errors
 ///
 /// [`WireError::BadRequest`] when the field is absent, not text, or not hex.
-pub fn handshake_public_from_json(value: &Json) -> Result<Vec<u8>, WireError> {
-    let text = value.get_str("ephemeral_public").ok_or_else(|| {
-        WireError::BadRequest("a handshake needs an ephemeral_public hex string".to_string())
-    })?;
+pub fn handshake_public_from_json(value: &Value) -> Result<Vec<u8>, WireError> {
+    let text = value
+        .get("ephemeral_public")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            WireError::BadRequest("a handshake needs an ephemeral_public hex string".to_string())
+        })?;
     from_hex(text)
 }
 
@@ -305,13 +306,14 @@ impl std::fmt::Display for Text {
 /// this change sends neither, and a host that demanded them would refuse a reply it can
 /// read perfectly well -- the count falls back to the text's own length, which is exact
 /// when the text is not lossy and is the only thing left to say when it is.
-fn text_from_json(value: &Json, field: &str) -> Result<Text, WireError> {
+fn text_from_json(value: &Value, field: &str) -> Result<Text, WireError> {
     let text = value
-        .get_str(field)
+        .get(field)
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not a string")))?;
 
-    let byte_count = match value.get(&format!("{field}_bytes")) {
-        Some(Json::Int(bytes)) if *bytes >= 0 => *bytes as usize,
+    let byte_count = match value.get(format!("{field}_bytes")).map(Value::as_i64) {
+        Some(Some(bytes)) if bytes >= 0 => bytes as usize,
         Some(_) => {
             return Err(WireError::BadRequest(format!(
                 "{field}_bytes: not a count of bytes"
@@ -320,8 +322,8 @@ fn text_from_json(value: &Json, field: &str) -> Result<Text, WireError> {
         None => text.len(),
     };
 
-    let lossy = match value.get(&format!("{field}_not_utf8")) {
-        Some(Json::Bool(lossy)) => *lossy,
+    let lossy = match value.get(format!("{field}_not_utf8")) {
+        Some(Value::Bool(lossy)) => *lossy,
         Some(_) => {
             return Err(WireError::BadRequest(format!(
                 "{field}_not_utf8: not true or false"
@@ -530,7 +532,7 @@ pub enum Reply {
     /// The payload is free-form JSON because the answer to "which agent is this" and
     /// the answer to "run this" are different shapes, and forcing them into one
     /// would mean a struct with half its fields empty for every caller.
-    Result(Json),
+    Result(Value),
     /// The request arrived and could not be answered, and this is why.
     ///
     /// **Not a transport failure.** The message arrived, was understood, and says
@@ -578,35 +580,35 @@ pub const KILLED_BY_DEADLINE: &str = "killed by the deadline";
 pub const MAX_TIMEOUT_SECONDS: u64 = 600;
 
 /// A request as JSON.
-pub fn request_to_json(request: &Request) -> Json {
+pub fn request_to_json(request: &Request) -> Value {
     match request {
-        Request::Identity => object! { "op" => OP_IDENTITY },
-        Request::Run(run) => object! {
-            "op" => OP_RUN,
-            "command" => run.command,
-            "timeout_seconds" => run.timeout_seconds as i64,
-        },
+        Request::Identity => serde_json::json!({ "op": OP_IDENTITY }),
+        Request::Run(run) => serde_json::json!({
+            "op": OP_RUN,
+            "command": run.command,
+            "timeout_seconds": run.timeout_seconds as i64,
+        }),
         Request::Push(manifest) => {
             let mut entries = manifest_fields(manifest);
-            entries.insert("op".to_string(), Json::str(OP_PUSH));
-            Json::Object(entries)
+            entries.insert("op".to_string(), serde_json::json!(OP_PUSH));
+            Value::Object(entries)
         }
-        Request::Pull { path } => object! { "op" => OP_PULL, "path" => path },
+        Request::Pull { path } => serde_json::json!({ "op": OP_PULL, "path": path }),
         Request::Ps(filter) => {
             // **An empty filter adds no fields at all**, which is why the pinned bytes of a
             // bare `ps` are `{"op":"ps"}`: absent and empty are the same request, so there
             // is no reason for two spellings of it on the wire.
             let mut entries = match filter_to_json(filter) {
-                Json::Object(entries) => entries,
-                _ => BTreeMap::new(),
+                Value::Object(entries) => entries,
+                _ => Map::new(),
             };
-            entries.insert("op".to_string(), Json::str(OP_PS));
-            Json::Object(entries)
+            entries.insert("op".to_string(), serde_json::json!(OP_PS));
+            Value::Object(entries)
         }
         Request::Kill(kill) => {
             let mut entries = match filter_to_json(&kill.candidates) {
-                Json::Object(entries) => entries,
-                _ => BTreeMap::new(),
+                Value::Object(entries) => entries,
+                _ => Map::new(),
             };
 
             // **`kill` is a tagged field rather than two optional ones.** A request that
@@ -614,48 +616,48 @@ pub fn request_to_json(request: &Request) -> Json {
             // is the kind of thing that is discovered while reading a diff rather than
             // while writing one.
             let (kind, what) = match &kill.to_kill {
-                crate::process::ToKill::Pid(pid) => ("pid", Json::Int(i64::from(*pid))),
-                crate::process::ToKill::Name(name) => ("name", Json::str(name)),
+                crate::process::ToKill::Pid(pid) => ("pid", serde_json::json!(i64::from(*pid))),
+                crate::process::ToKill::Name(name) => ("name", serde_json::json!(name)),
                 crate::process::ToKill::Matching(text) => {
-                    entries.insert("contains".to_string(), Json::Bool(true));
-                    ("name", Json::str(text))
+                    entries.insert("contains".to_string(), Value::Bool(true));
+                    ("name", serde_json::json!(text))
                 }
             };
-            entries.insert("kill".to_string(), Json::str(kind));
+            entries.insert("kill".to_string(), serde_json::json!(kind));
             entries.insert(kind.to_string(), what);
-            entries.insert("force".to_string(), Json::Bool(kill.force));
+            entries.insert("force".to_string(), Value::Bool(kill.force));
             if let Some(exclude) = &kill.exclude {
-                entries.insert("exclude_name".to_string(), Json::str(exclude));
+                entries.insert("exclude_name".to_string(), serde_json::json!(exclude));
             }
-            entries.insert("op".to_string(), Json::str(OP_KILL));
-            Json::Object(entries)
+            entries.insert("op".to_string(), serde_json::json!(OP_KILL));
+            Value::Object(entries)
         }
-        Request::Spawn(spawn) => object! {
-            "op" => OP_SPAWN,
-            "command" => spawn.command,
-            "output" => spawn.output,
-        },
-        Request::Grep(grep) => object! {
-            "op" => OP_GREP,
-            "path" => grep.path,
-            "pattern" => grep.pattern.text,
-            "case_sensitive" => grep.pattern.case_sensitive,
-            "mode" => match grep.direction {
+        Request::Spawn(spawn) => serde_json::json!({
+            "op": OP_SPAWN,
+            "command": spawn.command,
+            "output": spawn.output,
+        }),
+        Request::Grep(grep) => serde_json::json!({
+            "op": OP_GREP,
+            "path": grep.path,
+            "pattern": grep.pattern.text,
+            "case_sensitive": grep.pattern.case_sensitive,
+            "mode": match grep.direction {
                 crate::search::Direction::First => "first",
                 crate::search::Direction::Last => "last",
             },
-            "max_matches" => grep.limit.max_matches as i64,
-            "context" => grep.limit.context as i64,
-        },
-        Request::Tail(tail) => object! {
-            "op" => OP_TAIL,
-            "path" => tail.path,
-            "count" => tail.count as i64,
-        },
-        Request::Ls(list) => object! {
-            "op" => OP_LS,
-            "path" => list.path,
-        },
+            "max_matches": grep.limit.max_matches as i64,
+            "context": grep.limit.context as i64,
+        }),
+        Request::Tail(tail) => serde_json::json!({
+            "op": OP_TAIL,
+            "path": tail.path,
+            "count": tail.count as i64,
+        }),
+        Request::Ls(list) => serde_json::json!({
+            "op": OP_LS,
+            "path": list.path,
+        }),
     }
 }
 
@@ -667,8 +669,8 @@ pub fn request_to_json(request: &Request) -> Json {
 /// the other end of a socket and "invalid body" gives whoever is debugging it
 /// nothing to look at. An `op` this version does not know is refused with the ones
 /// it does, so a version skew is a list rather than a puzzle.
-pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
-    let op = value.get_str("op").ok_or_else(|| {
+pub fn request_from_json(value: &Value) -> Result<Request, WireError> {
+    let op = value.get("op").and_then(Value::as_str).ok_or_else(|| {
         WireError::BadRequest(format!(
             "op: missing or not a string; one of {KNOWN_OPS} is required"
         ))
@@ -682,7 +684,8 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
         OP_PUSH => Ok(Request::Push(manifest_from_json(value)?)),
         OP_PULL => Ok(Request::Pull {
             path: value
-                .get_str("path")
+                .get("path")
+                .and_then(Value::as_str)
                 .ok_or_else(|| WireError::BadRequest("path: missing or not a string".to_string()))?
                 .to_string(),
         }),
@@ -702,18 +705,21 @@ pub fn request_from_json(value: &Json) -> Result<Request, WireError> {
 
 /// The three fields of a manifest, as JSON.
 ///
-/// A map rather than a [`Json`] because two messages carry a manifest and only one of
+/// A map rather than a [`Value`] because two messages carry a manifest and only one of
 /// them also carries an operation: a push request is the manifest with `op` flattened
 /// into it, and the reply to a pull is the manifest alone. Returning the map is what
 /// lets those two share one writer of the field names.
 ///
-/// `bytes` is an `i64` because JSON numbers are, and it is safe here rather than by
-/// luck: a manifest is refused above four gibibytes before it is ever encoded.
-fn manifest_fields(manifest: &Manifest) -> BTreeMap<String, Json> {
-    let mut entries = BTreeMap::new();
-    entries.insert("path".to_string(), Json::str(&manifest.path));
-    entries.insert("bytes".to_string(), Json::Int(manifest.bytes as i64));
-    entries.insert("sha256".to_string(), Json::str(&manifest.sha256));
+/// The wire accepts signed counts. A manifest is capped at four gibibytes, well
+/// within that range.
+fn manifest_fields(manifest: &Manifest) -> Map<String, Value> {
+    let mut entries = Map::new();
+    entries.insert("path".to_string(), serde_json::json!(&manifest.path));
+    entries.insert(
+        "bytes".to_string(),
+        serde_json::json!(manifest.bytes as i64),
+    );
+    entries.insert("sha256".to_string(), serde_json::json!(&manifest.sha256));
     entries
 }
 
@@ -728,15 +734,16 @@ fn manifest_fields(manifest: &Manifest) -> BTreeMap<String, Json> {
 /// # Errors
 ///
 /// [`WireError::BadRequest`] naming the field that is wrong or missing.
-pub fn manifest_from_json(value: &Json) -> Result<Manifest, WireError> {
+pub fn manifest_from_json(value: &Value) -> Result<Manifest, WireError> {
     let path = value
-        .get_str("path")
+        .get("path")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("path: missing or not a string".to_string()))?
         .to_string();
 
-    let bytes = match value.get("bytes") {
-        Some(Json::Int(bytes)) if *bytes > 0 => *bytes as u64,
-        Some(Json::Int(bytes)) => {
+    let bytes = match value.get("bytes").map(Value::as_i64) {
+        Some(Some(bytes)) if bytes > 0 => bytes as u64,
+        Some(Some(bytes)) => {
             return Err(WireError::BadRequest(format!(
                 "bytes: {bytes} is not a positive number of bytes"
             )));
@@ -746,7 +753,8 @@ pub fn manifest_from_json(value: &Json) -> Result<Manifest, WireError> {
     };
 
     let sha256 = value
-        .get_str("sha256")
+        .get("sha256")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("sha256: missing or not a string".to_string()))?
         .to_string();
 
@@ -774,11 +782,11 @@ pub struct TransferOutcome {
 }
 
 /// A transfer result as JSON.
-pub fn transfer_outcome_to_json(outcome: &TransferOutcome) -> Json {
-    object! {
-        "bytes" => outcome.bytes as i64,
-        "sha256" => outcome.sha256,
-    }
+pub fn transfer_outcome_to_json(outcome: &TransferOutcome) -> Value {
+    serde_json::json!({
+        "bytes": outcome.bytes as i64,
+        "sha256": outcome.sha256,
+    })
 }
 
 /// A transfer result from JSON.
@@ -786,9 +794,9 @@ pub fn transfer_outcome_to_json(outcome: &TransferOutcome) -> Json {
 /// # Errors
 ///
 /// [`WireError::BadRequest`] naming the field that is wrong or missing.
-pub fn transfer_outcome_from_json(value: &Json) -> Result<TransferOutcome, WireError> {
-    let bytes = match value.get("bytes") {
-        Some(Json::Int(bytes)) if *bytes >= 0 => *bytes as u64,
+pub fn transfer_outcome_from_json(value: &Value) -> Result<TransferOutcome, WireError> {
+    let bytes = match value.get("bytes").map(Value::as_i64) {
+        Some(Some(bytes)) if bytes >= 0 => bytes as u64,
         Some(_) => {
             return Err(WireError::BadRequest(
                 "bytes: missing or negative".to_string(),
@@ -797,7 +805,8 @@ pub fn transfer_outcome_from_json(value: &Json) -> Result<TransferOutcome, WireE
         None => return Err(WireError::BadRequest("bytes: missing".to_string())),
     };
     let sha256 = value
-        .get_str("sha256")
+        .get("sha256")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("sha256: missing or not a string".to_string()))?
         .to_string();
 
@@ -805,7 +814,7 @@ pub fn transfer_outcome_from_json(value: &Json) -> Result<TransferOutcome, WireE
 }
 
 /// The result of a transfer, wrapped as a reply.
-pub fn encode_transfer_reply(outcome: &TransferOutcome) -> Json {
+pub fn encode_transfer_reply(outcome: &TransferOutcome) -> Value {
     reply_result(transfer_outcome_to_json(outcome))
 }
 
@@ -829,8 +838,8 @@ pub fn transfer_outcome_from_reply(reply: &Reply) -> Result<TransferOutcome, Wir
 /// receiver needs it before the first chunk so it knows how many to expect. A push does
 /// **not** use it -- an accepted push is answered with [`manifest_accepted`], which is a
 /// different shape on purpose.
-pub fn manifest_reply(manifest: &Manifest) -> Json {
-    reply_result(Json::Object(manifest_fields(manifest)))
+pub fn manifest_reply(manifest: &Manifest) -> Value {
+    reply_result(Value::Object(manifest_fields(manifest)))
 }
 
 /// The receiver's answer to a push's manifest: that it has read it, and what it will take.
@@ -850,8 +859,8 @@ pub fn manifest_reply(manifest: &Manifest) -> Json {
 /// **Deliberately not a [`TransferOutcome`].** An acceptance carries `accepted` and no
 /// `sha256`; a result carries `sha256` and no `accepted`. Two reply shapes overlapping on
 /// `bytes` alone is how a client comes to read an acceptance as an outcome.
-pub fn manifest_accepted(manifest: &Manifest) -> Json {
-    reply_result(object! { "accepted" => true, "bytes" => manifest.bytes as i64 })
+pub fn manifest_accepted(manifest: &Manifest) -> Value {
+    reply_result(serde_json::json!({ "accepted": true, "bytes": manifest.bytes as i64 }))
 }
 
 /// The size a receiver said it would take, out of its answer to a manifest.
@@ -866,13 +875,13 @@ pub fn accepted_bytes_from_reply(reply: &Reply) -> Result<u64, WireError> {
             "the manifest was refused".to_string(),
         ));
     };
-    if value.get("accepted").and_then(Json::as_bool) != Some(true) {
+    if value.get("accepted").and_then(Value::as_bool) != Some(true) {
         return Err(WireError::BadRequest(
             "the reply is not an acceptance of the manifest".to_string(),
         ));
     }
-    match value.get("bytes") {
-        Some(Json::Int(bytes)) if *bytes >= 0 => Ok(*bytes as u64),
+    match value.get("bytes").map(Value::as_i64) {
+        Some(Some(bytes)) if bytes >= 0 => Ok(bytes as u64),
         _ => Err(WireError::BadRequest(
             "an acceptance needs a byte count".to_string(),
         )),
@@ -880,13 +889,13 @@ pub fn accepted_bytes_from_reply(reply: &Reply) -> Result<u64, WireError> {
 }
 
 /// A reply that carries an answer.
-pub fn reply_result(result: Json) -> Json {
-    object! { "ok" => true, "result" => result }
+pub fn reply_result(result: Value) -> Value {
+    serde_json::json!({ "ok": true, "result": result })
 }
 
 /// A reply that says the request could not be answered.
-pub fn reply_refused(reason: &str) -> Json {
-    object! { "ok" => false, "error" => reason }
+pub fn reply_refused(reason: &str) -> Value {
+    serde_json::json!({ "ok": false, "error": reason })
 }
 
 /// A reply from JSON.
@@ -897,8 +906,8 @@ pub fn reply_refused(reason: &str) -> Json {
 /// a result and a refusal is carried by `ok` and not inferred from which fields are
 /// present, because two shapes that are told apart by their fields are two shapes
 /// that eventually overlap.
-pub fn reply_from_json(value: &Json) -> Result<Reply, WireError> {
-    let ok = value.get("ok").and_then(Json::as_bool).ok_or_else(|| {
+pub fn reply_from_json(value: &Value) -> Result<Reply, WireError> {
+    let ok = value.get("ok").and_then(Value::as_bool).ok_or_else(|| {
         WireError::BadRequest("a reply needs an ok field with true or false".to_string())
     })?;
 
@@ -912,7 +921,7 @@ pub fn reply_from_json(value: &Json) -> Result<Reply, WireError> {
     }
 
     match value.get("error") {
-        Some(Json::Str(reason)) => Ok(Reply::Refused(reason.clone())),
+        Some(Value::String(reason)) => Ok(Reply::Refused(reason.clone())),
         Some(_) => Err(WireError::BadRequest(
             "a refusal needs error to be a string".to_string(),
         )),
@@ -923,11 +932,11 @@ pub fn reply_from_json(value: &Json) -> Result<Reply, WireError> {
 }
 
 /// The request as JSON.
-pub fn run_request_to_json(request: &RunRequest) -> Json {
-    object! {
-        "command" => request.command,
-        "timeout_seconds" => request.timeout_seconds as i64,
-    }
+pub fn run_request_to_json(request: &RunRequest) -> Value {
+    serde_json::json!({
+        "command": request.command,
+        "timeout_seconds": request.timeout_seconds as i64,
+    })
 }
 
 /// A request from JSON.
@@ -937,9 +946,10 @@ pub fn run_request_to_json(request: &RunRequest) -> Json {
 /// [`WireError::BadRequest`] naming the field, because the caller is a program
 /// on the other end of a socket and "invalid body" gives whoever is debugging it
 /// nothing to look at.
-pub fn run_request_from_json(value: &Json) -> Result<RunRequest, WireError> {
+pub fn run_request_from_json(value: &Value) -> Result<RunRequest, WireError> {
     let command = value
-        .get_str("command")
+        .get("command")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
         .to_string();
 
@@ -947,16 +957,16 @@ pub fn run_request_from_json(value: &Json) -> Result<RunRequest, WireError> {
         return Err(WireError::BadRequest("command: empty".to_string()));
     }
 
-    let timeout_seconds = match value.get("timeout_seconds") {
+    let timeout_seconds = match value.get("timeout_seconds").map(Value::as_i64) {
         None => {
             return Err(WireError::BadRequest(
                 "timeout_seconds: missing".to_string(),
             ));
         }
-        Some(Json::Int(seconds)) if *seconds >= 1 && (*seconds as u64) <= MAX_TIMEOUT_SECONDS => {
-            *seconds as u64
+        Some(Some(seconds)) if seconds >= 1 && (seconds as u64) <= MAX_TIMEOUT_SECONDS => {
+            seconds as u64
         }
-        Some(Json::Int(seconds)) => {
+        Some(Some(seconds)) => {
             return Err(WireError::BadRequest(format!(
                 "timeout_seconds: {seconds} is outside 1..={MAX_TIMEOUT_SECONDS}"
             )));
@@ -984,35 +994,35 @@ pub fn run_request_from_json(value: &Json) -> Result<RunRequest, WireError> {
 /// **They are optional on the reading side**, because an agent older than this change
 /// sends only the text. A reply that can be read is not refused for a field that was not
 /// invented when it was written.
-pub fn run_outcome_to_json(outcome: &RunOutcome) -> Json {
-    let mut entries = BTreeMap::new();
+pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
+    let mut entries = Map::new();
     entries.insert(
         "exit_code".to_string(),
         match outcome.exit_code {
-            Some(code) => Json::Int(i64::from(code)),
-            None => Json::Null,
+            Some(code) => serde_json::json!(i64::from(code)),
+            None => Value::Null,
         },
     );
     for (field, text) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
-        entries.insert(field.to_string(), Json::str(text.as_str()));
+        entries.insert(field.to_string(), serde_json::json!(text.as_str()));
         entries.insert(
             format!("{field}_bytes"),
-            Json::Int(text.byte_count() as i64),
+            serde_json::json!(text.byte_count() as i64),
         );
-        entries.insert(format!("{field}_not_utf8"), Json::Bool(text.is_lossy()));
+        entries.insert(format!("{field}_not_utf8"), Value::Bool(text.is_lossy()));
     }
     entries.insert(
         "duration_ms".to_string(),
-        Json::Int(outcome.duration_ms as i64),
+        serde_json::json!(outcome.duration_ms as i64),
     );
     entries.insert(
         "reason".to_string(),
         match &outcome.reason {
-            Some(reason) => Json::str(reason),
-            None => Json::Null,
+            Some(reason) => serde_json::json!(reason),
+            None => Value::Null,
         },
     );
-    Json::Object(entries)
+    Value::Object(entries)
 }
 
 /// An outcome from JSON.
@@ -1025,23 +1035,24 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Json {
 /// `stdout` and `stderr` carry a byte count and a loss flag that an older agent does
 /// not send. A reply that can be read is not refused for a field that did not exist
 /// when it was written, so those two default to the text's own length and to "clean".
-pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
+pub fn run_outcome_from_json(value: &Value) -> Result<RunOutcome, WireError> {
     let exit_code = match value.get("exit_code") {
         None => {
             return Err(WireError::BadRequest("exit_code: missing".to_string()));
         }
-        Some(Json::Null) => None,
-        Some(Json::Int(code)) => Some(*code as i32),
-        Some(_) => {
-            return Err(WireError::BadRequest("exit_code: not a number".to_string()));
-        }
+        Some(Value::Null) => None,
+        Some(code) => Some(
+            code.as_i64()
+                .ok_or_else(|| WireError::BadRequest("exit_code: not a number".to_string()))?
+                as i32,
+        ),
     };
 
     let stdout = text_from_json(value, "stdout")?;
     let stderr = text_from_json(value, "stderr")?;
 
-    let duration_ms = match value.get("duration_ms") {
-        Some(Json::Int(ms)) if *ms >= 0 => *ms as u64,
+    let duration_ms = match value.get("duration_ms").map(Value::as_i64) {
+        Some(Some(ms)) if ms >= 0 => ms as u64,
         _ => {
             return Err(WireError::BadRequest(
                 "duration_ms: missing or negative".to_string(),
@@ -1051,8 +1062,8 @@ pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
 
     let reason = match value.get("reason") {
         None => return Err(WireError::BadRequest("reason: missing".to_string())),
-        Some(Json::Null) => None,
-        Some(Json::Str(text)) => Some(text.clone()),
+        Some(Value::Null) => None,
+        Some(Value::String(text)) => Some(text.clone()),
         Some(_) => {
             return Err(WireError::BadRequest("reason: not a string".to_string()));
         }
@@ -1071,7 +1082,7 @@ pub fn run_outcome_from_json(value: &Json) -> Result<RunOutcome, WireError> {
 ///
 /// The whole of the agent's side of a run, in one call, so that the shape cannot be
 /// assembled differently in two places.
-pub fn encode_run_reply(outcome: &RunOutcome) -> Json {
+pub fn encode_run_reply(outcome: &RunOutcome) -> Value {
     reply_result(run_outcome_to_json(outcome))
 }
 
@@ -1083,8 +1094,8 @@ pub fn encode_run_reply(outcome: &RunOutcome) -> Json {
 ///
 /// An empty filter is an empty object rather than `null`: a ps request always carries one,
 /// and a shape that was sometimes absent would need two readings of the same message.
-pub fn filter_to_json(filter: &crate::process::Filter) -> Json {
-    let mut entries = BTreeMap::new();
+pub fn filter_to_json(filter: &crate::process::Filter) -> Value {
+    let mut entries = Map::new();
     for (key, value) in [
         ("name", &filter.name),
         ("path", &filter.path),
@@ -1093,10 +1104,10 @@ pub fn filter_to_json(filter: &crate::process::Filter) -> Json {
         ("exclude", &filter.exclude),
     ] {
         if let Some(value) = value {
-            entries.insert(key.to_string(), Json::str(value));
+            entries.insert(key.to_string(), serde_json::json!(value));
         }
     }
-    Json::Object(entries)
+    Value::Object(entries)
 }
 
 /// A process filter from JSON.
@@ -1106,10 +1117,10 @@ pub fn filter_to_json(filter: &crate::process::Filter) -> Json {
 /// [`WireError::BadRequest`] naming the field that is not a string. A field that is simply
 /// absent is not an error: it means the caller did not filter on it, which is the ordinary
 /// case for four of the five.
-pub fn filter_from_json(value: &Json) -> Result<crate::process::Filter, WireError> {
+pub fn filter_from_json(value: &Value) -> Result<crate::process::Filter, WireError> {
     let text = |field: &str| -> Result<Option<String>, WireError> {
         match value.get(field) {
-            Some(Json::Str(text)) => Ok(Some(text.clone())),
+            Some(Value::String(text)) => Ok(Some(text.clone())),
             Some(_) => Err(WireError::BadRequest(format!(
                 "{field}: not a string, and a filter is text"
             ))),
@@ -1133,43 +1144,47 @@ pub fn filter_from_json(value: &Json) -> Result<crate::process::Filter, WireErro
 /// whether the list was cut short, what filter was applied, and what the machine could not
 /// say. Leaving one out is how an empty list becomes indistinguishable from a machine that
 /// could not be read -- `docs/ROADMAP.md` M10.
-pub fn ps_listing_to_json(listing: &crate::process::Listing) -> Json {
-    let processes: Vec<Json> = listing
+pub fn ps_listing_to_json(listing: &crate::process::Listing) -> Value {
+    let processes: Vec<Value> = listing
         .processes
         .iter()
         .map(|process| {
-            let mut entries = BTreeMap::new();
-            entries.insert("pid".to_string(), Json::Int(i64::from(process.pid)));
-            entries.insert("name".to_string(), Json::str(&process.name));
+            let mut entries = Map::new();
+            entries.insert("pid".to_string(), serde_json::json!(i64::from(process.pid)));
+            entries.insert("name".to_string(), serde_json::json!(&process.name));
             // Absent rather than null for a field the machine could not supply: `null`
             // would be a fourth state to interpret, and the reader already has the notes.
             if let Some(path) = &process.path {
-                entries.insert("path".to_string(), Json::str(path));
+                entries.insert("path".to_string(), serde_json::json!(path));
             }
             if let Some(cmdline) = &process.cmdline {
-                entries.insert("cmdline".to_string(), Json::str(cmdline));
+                entries.insert("cmdline".to_string(), serde_json::json!(cmdline));
             }
-            Json::Object(entries)
+            Value::Object(entries)
         })
         .collect();
 
-    let notes: Vec<Json> = listing.notes.iter().map(Json::str).collect();
+    let notes: Vec<Value> = listing
+        .notes
+        .iter()
+        .map(|value| serde_json::json!(value))
+        .collect();
     let complete = match listing.incomplete() {
         crate::process::Incomplete::No => "no",
         crate::process::Incomplete::UnreadableLines => "unreadable-lines",
         crate::process::Incomplete::NotEnumerated => "not-enumerated",
     };
 
-    object! {
-        "processes" => Json::Array(processes),
-        "count" => listing.processes.len() as i64,
-        "total" => listing.total as i64,
-        "unreadable" => listing.unreadable as i64,
-        "truncated" => listing.truncated,
-        "complete" => complete,
-        "applied" => listing.applied.clone(),
-        "notes" => Json::Array(notes),
-    }
+    serde_json::json!({
+        "processes": Value::Array(processes),
+        "count": listing.processes.len() as i64,
+        "total": listing.total as i64,
+        "unreadable": listing.unreadable as i64,
+        "truncated": listing.truncated,
+        "complete": complete,
+        "applied": listing.applied.clone(),
+        "notes": Value::Array(notes),
+    })
 }
 
 /// A listing out of a `ps` reply.
@@ -1190,32 +1205,39 @@ pub fn ps_listing_from_reply(reply: &Reply) -> Result<crate::process::Listing, W
 
     let processes_value = value
         .get("processes")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .ok_or_else(|| WireError::BadRequest("processes: missing or not an array".to_string()))?;
 
     let mut processes = Vec::new();
     for entry in processes_value {
-        let pid = match entry.get("pid") {
-            Some(Json::Int(pid)) if *pid >= 0 => *pid as u32,
+        let pid = match entry.get("pid").map(Value::as_i64) {
+            Some(Some(pid)) if pid >= 0 => pid as u32,
             _ => {
                 return Err(WireError::BadRequest("a process needs a pid".to_string()));
             }
         };
         let name = entry
-            .get_str("name")
+            .get("name")
+            .and_then(Value::as_str)
             .ok_or_else(|| WireError::BadRequest("a process needs a name".to_string()))?
             .to_string();
         processes.push(crate::process::Process {
             pid,
             name,
-            path: entry.get_str("path").map(str::to_string),
-            cmdline: entry.get_str("cmdline").map(str::to_string),
+            path: entry
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            cmdline: entry
+                .get("cmdline")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         });
     }
 
     let number = |field: &str| -> Result<usize, WireError> {
-        match value.get(field) {
-            Some(Json::Int(number)) if *number >= 0 => Ok(*number as usize),
+        match value.get(field).map(Value::as_i64) {
+            Some(Some(number)) if number >= 0 => Ok(number as usize),
             Some(_) => Err(WireError::BadRequest(format!("{field}: not a count"))),
             None => Err(WireError::BadRequest(format!("{field}: missing"))),
         }
@@ -1223,11 +1245,11 @@ pub fn ps_listing_from_reply(reply: &Reply) -> Result<crate::process::Listing, W
 
     let notes = value
         .get("notes")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .map(|notes| {
             notes
                 .iter()
-                .filter_map(Json::as_str)
+                .filter_map(Value::as_str)
                 .map(str::to_string)
                 .collect()
         })
@@ -1237,17 +1259,17 @@ pub fn ps_listing_from_reply(reply: &Reply) -> Result<crate::process::Listing, W
         processes,
         total: number("total")?,
         unreadable: number("unreadable")?,
-        truncated: value.get("truncated").and_then(Json::as_bool) == Some(true),
+        truncated: value.get("truncated").and_then(Value::as_bool) == Some(true),
         applied: value
             .get("applied")
             .cloned()
-            .unwrap_or(Json::Object(BTreeMap::new())),
+            .unwrap_or(Value::Object(Map::new())),
         notes,
     })
 }
 
 /// A listing, wrapped as a reply.
-pub fn encode_ps_reply(listing: &crate::process::Listing) -> Json {
+pub fn encode_ps_reply(listing: &crate::process::Listing) -> Value {
     reply_result(ps_listing_to_json(listing))
 }
 
@@ -1260,15 +1282,15 @@ pub fn encode_ps_reply(listing: &crate::process::Listing) -> Json {
 /// have to work out why nothing happened. A request that names **neither** a pid nor a name
 /// is refused rather than defaulted -- a kill with no target is not a request to do nothing,
 /// it is a message that arrived wrong.
-pub fn kill_request_from_json(value: &Json) -> Result<KillRequest, WireError> {
-    let kind = value.get_str("kill").ok_or_else(|| {
+pub fn kill_request_from_json(value: &Value) -> Result<KillRequest, WireError> {
+    let kind = value.get("kill").and_then(Value::as_str).ok_or_else(|| {
         WireError::BadRequest("kill: missing; one of \"pid\" or \"name\" is required".to_string())
     })?;
 
     let to_kill = match kind {
-        "pid" => match value.get("pid") {
-            Some(Json::Int(pid)) if *pid > 0 => crate::process::ToKill::Pid(*pid as u32),
-            Some(Json::Int(pid)) => {
+        "pid" => match value.get("pid").map(Value::as_i64) {
+            Some(Some(pid)) if pid > 0 => crate::process::ToKill::Pid(pid as u32),
+            Some(Some(pid)) => {
                 return Err(WireError::BadRequest(format!(
                     "pid: {pid} is not a process identifier"
                 )));
@@ -1281,10 +1303,11 @@ pub fn kill_request_from_json(value: &Json) -> Result<KillRequest, WireError> {
         },
         "name" => {
             let name = value
-                .get_str("name")
+                .get("name")
+                .and_then(Value::as_str)
                 .ok_or_else(|| WireError::BadRequest("name: missing or not a string".to_string()))?
                 .to_string();
-            if value.get("contains").and_then(Json::as_bool) == Some(true) {
+            if value.get("contains").and_then(Value::as_bool) == Some(true) {
                 crate::process::ToKill::Matching(name)
             } else {
                 crate::process::ToKill::Name(name)
@@ -1297,9 +1320,9 @@ pub fn kill_request_from_json(value: &Json) -> Result<KillRequest, WireError> {
         }
     };
 
-    let force = value.get("force").and_then(Json::as_bool) == Some(true);
+    let force = value.get("force").and_then(Value::as_bool) == Some(true);
     let exclude = match value.get("exclude_name") {
-        Some(Json::Str(text)) => Some(text.clone()),
+        Some(Value::String(text)) => Some(text.clone()),
         Some(_) => {
             return Err(WireError::BadRequest(
                 "exclude_name: not a string".to_string(),
@@ -1320,31 +1343,35 @@ pub fn kill_request_from_json(value: &Json) -> Result<KillRequest, WireError> {
 ///
 /// `matched` is written even when it is zero, because it is the number that keeps an empty
 /// list from being read as a clean machine -- the same argument as [`ps_listing_to_json`].
-pub fn kill_report_to_json(report: &crate::process::KillReport) -> Json {
-    let targets = |targets: &[crate::process::Target]| -> Json {
-        Json::Array(
+pub fn kill_report_to_json(report: &crate::process::KillReport) -> Value {
+    let targets = |targets: &[crate::process::Target]| -> Value {
+        Value::Array(
             targets
                 .iter()
                 .map(|target| {
-                    object! {
-                        "pid" => i64::from(target.pid),
-                        "name" => target.name,
-                    }
+                    serde_json::json!({
+                        "pid": i64::from(target.pid),
+                        "name": target.name,
+                    })
                 })
                 .collect(),
         )
     };
 
-    let notes: Vec<Json> = report.notes.iter().map(Json::str).collect();
+    let notes: Vec<Value> = report
+        .notes
+        .iter()
+        .map(|value| serde_json::json!(value))
+        .collect();
 
-    object! {
-        "matched" => report.matched as i64,
-        "killed" => targets(&report.killed),
-        "excluded" => targets(&report.excluded),
-        "failed" => targets(&report.failed),
-        "complete" => report.complete(),
-        "notes" => Json::Array(notes),
-    }
+    serde_json::json!({
+        "matched": report.matched as i64,
+        "killed": targets(&report.killed),
+        "excluded": targets(&report.excluded),
+        "failed": targets(&report.failed),
+        "complete": report.complete(),
+        "notes": Value::Array(notes),
+    })
 }
 
 /// A kill report out of a reply.
@@ -1363,8 +1390,8 @@ pub fn kill_report_from_reply(reply: &Reply) -> Result<crate::process::KillRepor
         ));
     };
 
-    let matched = match value.get("matched") {
-        Some(Json::Int(number)) if *number >= 0 => *number as usize,
+    let matched = match value.get("matched").map(Value::as_i64) {
+        Some(Some(number)) if number >= 0 => number as usize,
         _ => {
             return Err(WireError::BadRequest(
                 "matched: missing or not a count".to_string(),
@@ -1375,18 +1402,19 @@ pub fn kill_report_from_reply(reply: &Reply) -> Result<crate::process::KillRepor
     let targets = |field: &str| -> Result<Vec<crate::process::Target>, WireError> {
         let entries = value
             .get(field)
-            .and_then(Json::as_array)
+            .and_then(Value::as_array)
             .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not an array")))?;
 
         entries
             .iter()
             .map(|entry| {
-                let pid = match entry.get("pid") {
-                    Some(Json::Int(pid)) if *pid >= 0 => *pid as u32,
+                let pid = match entry.get("pid").map(Value::as_i64) {
+                    Some(Some(pid)) if pid >= 0 => pid as u32,
                     _ => return Err(WireError::BadRequest("a target needs a pid".to_string())),
                 };
                 let name = entry
-                    .get_str("name")
+                    .get("name")
+                    .and_then(Value::as_str)
                     .ok_or_else(|| WireError::BadRequest("a target needs a name".to_string()))?
                     .to_string();
                 Ok(crate::process::Target { pid, name })
@@ -1396,11 +1424,11 @@ pub fn kill_report_from_reply(reply: &Reply) -> Result<crate::process::KillRepor
 
     let notes = value
         .get("notes")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .map(|notes| {
             notes
                 .iter()
-                .filter_map(Json::as_str)
+                .filter_map(Value::as_str)
                 .map(str::to_string)
                 .collect()
         })
@@ -1416,7 +1444,7 @@ pub fn kill_report_from_reply(reply: &Reply) -> Result<crate::process::KillRepor
 }
 
 /// A kill report, wrapped as a reply.
-pub fn encode_kill_reply(report: &crate::process::KillReport) -> Json {
+pub fn encode_kill_reply(report: &crate::process::KillReport) -> Value {
     reply_result(kill_report_to_json(report))
 }
 
@@ -1427,9 +1455,10 @@ pub fn encode_kill_reply(report: &crate::process::KillReport) -> Json {
 /// [`WireError::BadRequest`] naming the field. **Both fields are required**, and the output
 /// path is not optional for the reason [`SpawnRequest::output`] gives: a child with the
 /// agent's pipes keeps them open, which is the trap this request exists to avoid.
-pub fn spawn_request_from_json(value: &Json) -> Result<SpawnRequest, WireError> {
+pub fn spawn_request_from_json(value: &Value) -> Result<SpawnRequest, WireError> {
     let command = value
-        .get_str("command")
+        .get("command")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
         .to_string();
     if command.trim().is_empty() {
@@ -1437,7 +1466,8 @@ pub fn spawn_request_from_json(value: &Json) -> Result<SpawnRequest, WireError> 
     }
 
     let output = value
-        .get_str("output")
+        .get("output")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("output: missing or not a string".to_string()))?
         .to_string();
     if output.trim().is_empty() {
@@ -1448,11 +1478,11 @@ pub fn spawn_request_from_json(value: &Json) -> Result<SpawnRequest, WireError> 
 }
 
 /// A spawn report as JSON.
-pub fn spawn_report_to_json(report: &SpawnReport) -> Json {
-    object! {
-        "pid" => i64::from(report.pid),
-        "command" => report.command,
-    }
+pub fn spawn_report_to_json(report: &SpawnReport) -> Value {
+    serde_json::json!({
+        "pid": i64::from(report.pid),
+        "command": report.command,
+    })
 }
 
 /// A spawn report out of a reply.
@@ -1469,8 +1499,8 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
         ));
     };
 
-    let pid = match value.get("pid") {
-        Some(Json::Int(pid)) if *pid > 0 => *pid as u32,
+    let pid = match value.get("pid").map(Value::as_i64) {
+        Some(Some(pid)) if pid > 0 => pid as u32,
         _ => {
             return Err(WireError::BadRequest(
                 "pid: missing, or not a process identifier".to_string(),
@@ -1481,7 +1511,8 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
     // The command is echoed back rather than assumed: a caller that has just started
     // something has to be able to tell which of two spawns this reply is about.
     let command = value
-        .get_str("command")
+        .get("command")
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
         .to_string();
 
@@ -1489,7 +1520,7 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
 }
 
 /// A spawn report, wrapped as a reply.
-pub fn encode_spawn_reply(report: &SpawnReport) -> Json {
+pub fn encode_spawn_reply(report: &SpawnReport) -> Value {
     reply_result(spawn_report_to_json(report))
 }
 
@@ -1500,18 +1531,22 @@ pub fn encode_spawn_reply(report: &SpawnReport) -> Json {
 /// [`WireError::BadRequest`] naming the field. **The pattern may be empty** -- that means
 /// every line, which is how `tail` is spelled and is a legitimate thing to ask for -- and
 /// the path may not, because a search with no file is not a request to do nothing.
-pub fn grep_request_from_json(value: &Json) -> Result<GrepRequest, WireError> {
+pub fn grep_request_from_json(value: &Value) -> Result<GrepRequest, WireError> {
     let path = required_text(value, "path")?;
-    let pattern = value.get_str("pattern").unwrap_or_default().to_string();
+    let pattern = value
+        .get("pattern")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
 
     // Absent means case-sensitive, which is what a person searching a log for `ERROR`
     // expects; a caller that wants the other reading says so.
     let case_sensitive = value
         .get("case_sensitive")
-        .and_then(Json::as_bool)
+        .and_then(Value::as_bool)
         .unwrap_or(true);
 
-    let direction = match value.get_str("mode") {
+    let direction = match value.get("mode").and_then(Value::as_str) {
         Some("last") => crate::search::Direction::Last,
         Some("first") | None => crate::search::Direction::First,
         Some(other) => {
@@ -1522,11 +1557,9 @@ pub fn grep_request_from_json(value: &Json) -> Result<GrepRequest, WireError> {
     };
 
     let number = |field: &str, default: usize, most: usize| -> Result<usize, WireError> {
-        match value.get(field) {
-            Some(Json::Int(number)) if *number >= 0 && (*number as usize) <= most => {
-                Ok(*number as usize)
-            }
-            Some(Json::Int(number)) => Err(WireError::BadRequest(format!(
+        match value.get(field).map(Value::as_i64) {
+            Some(Some(number)) if number >= 0 && (number as usize) <= most => Ok(number as usize),
+            Some(Some(number)) => Err(WireError::BadRequest(format!(
                 "{field}: {number} is outside 0..={most}"
             ))),
             Some(_) => Err(WireError::BadRequest(format!("{field}: not a number"))),
@@ -1561,14 +1594,12 @@ pub const MAX_SEARCH_CONTEXT: usize = 20;
 /// [`WireError::BadRequest`] naming the field, and for a count past [`MAX_TAIL_LINES`] --
 /// refused rather than clamped, the same way an out-of-range timeout is: a caller that asked
 /// for ten thousand lines and got two thousand would not know it had.
-pub fn tail_request_from_json(value: &Json) -> Result<TailRequest, WireError> {
+pub fn tail_request_from_json(value: &Value) -> Result<TailRequest, WireError> {
     let path = required_text(value, "path")?;
 
-    let count = match value.get("count") {
-        Some(Json::Int(count)) if *count > 0 && (*count as usize) <= MAX_TAIL_LINES => {
-            *count as usize
-        }
-        Some(Json::Int(count)) => {
+    let count = match value.get("count").map(Value::as_i64) {
+        Some(Some(count)) if count > 0 && (count as usize) <= MAX_TAIL_LINES => count as usize,
+        Some(Some(count)) => {
             return Err(WireError::BadRequest(format!(
                 "count: {count} is outside 1..={MAX_TAIL_LINES}"
             )));
@@ -1581,9 +1612,10 @@ pub fn tail_request_from_json(value: &Json) -> Result<TailRequest, WireError> {
 }
 
 /// A required string field, refused by name when it is missing or empty.
-fn required_text(value: &Json, field: &'static str) -> Result<String, WireError> {
+fn required_text(value: &Value, field: &'static str) -> Result<String, WireError> {
     let text = value
-        .get_str(field)
+        .get(field)
+        .and_then(Value::as_str)
         .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not a string")))?
         .to_string();
     if text.trim().is_empty() {
@@ -1598,49 +1630,50 @@ fn required_text(value: &Json, field: &'static str) -> Result<String, WireError>
 /// failed search from reading as "no matches" -- `docs/ROADMAP.md` M10's first lesson, and
 /// the reason this is not just a list of lines. `total` is written as `null` when the scan
 /// stopped early, which is the difference between "there are none" and "there may be more".
-pub fn search_to_json(search: &crate::search::Search) -> Json {
-    let lines: Vec<Json> = search
+pub fn search_to_json(search: &crate::search::Search) -> Value {
+    let lines: Vec<Value> = search
         .lines
         .iter()
         .map(|found| {
-            let context =
-                |lines: &[String]| -> Json { Json::Array(lines.iter().map(Json::str).collect()) };
-            object! {
-                "number" => found.number as i64,
-                "text" => found.text,
-                "before" => context(&found.before),
-                "after" => context(&found.after),
-            }
+            let context = |lines: &[String]| -> Value {
+                Value::Array(lines.iter().map(|value| serde_json::json!(value)).collect())
+            };
+            serde_json::json!({
+                "number": found.number as i64,
+                "text": found.text,
+                "before": context(&found.before),
+                "after": context(&found.after),
+            })
         })
         .collect();
 
-    object! {
-        "path" => search.path,
-        "lines" => Json::Array(lines),
-        "total" => match search.total {
-            Some(total) => Json::Int(total as i64),
-            None => Json::Null,
+    serde_json::json!({
+        "path": search.path,
+        "lines": Value::Array(lines),
+        "total": match search.total {
+            Some(total) => serde_json::json!(total as i64),
+            None => Value::Null,
         },
-        "searched" => search.searched,
-        "problem" => match &search.problem {
-            Some(problem) => Json::str(problem),
-            None => Json::Null,
+        "searched": search.searched,
+        "problem": match &search.problem {
+            Some(problem) => serde_json::json!(problem),
+            None => Value::Null,
         },
-        "truncated" => search.truncated,
-        "bytes_read" => search.bytes_read as i64,
-        "file_bytes" => match search.file_bytes {
-            Some(bytes) => Json::Int(bytes as i64),
-            None => Json::Null,
+        "truncated": search.truncated,
+        "bytes_read": search.bytes_read as i64,
+        "file_bytes": match search.file_bytes {
+            Some(bytes) => serde_json::json!(bytes as i64),
+            None => Value::Null,
         },
-        "encoding" => search.encoding.tag(),
+        "encoding": search.encoding.tag(),
         // What the count counts, so that a `tail` does not report itself as a search:
         // `more than 2 matches` for a request that asked for the last two lines is the kind
         // of small untruth a reader stops trusting the rest of the line over.
-        "noun" => match search.noun {
+        "noun": match search.noun {
             crate::search::Noun::Matches => "matches",
             crate::search::Noun::Lines => "lines",
         },
-    }
+    })
 }
 
 /// A search result out of a reply.
@@ -1657,36 +1690,40 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
 
     let searched = value
         .get("searched")
-        .and_then(Json::as_bool)
+        .and_then(Value::as_bool)
         .ok_or_else(|| {
             WireError::BadRequest("searched: missing, or not true or false".to_string())
         })?;
 
     let problem = match value.get("problem") {
-        Some(Json::Null) | None => None,
-        Some(Json::Str(problem)) => Some(problem.clone()),
+        Some(Value::Null) | None => None,
+        Some(Value::String(problem)) => Some(problem.clone()),
         Some(_) => return Err(WireError::BadRequest("problem: not a string".to_string())),
     };
 
-    let total = match value.get("total") {
-        Some(Json::Null) | None => None,
-        Some(Json::Int(total)) if *total >= 0 => Some(*total as usize),
+    let total = match value
+        .get("total")
+        .filter(|value| !value.is_null())
+        .map(Value::as_i64)
+    {
+        None => None,
+        Some(Some(total)) if total >= 0 => Some(total as usize),
         Some(_) => return Err(WireError::BadRequest("total: not a count".to_string())),
     };
 
     let entries = value
         .get("lines")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .ok_or_else(|| WireError::BadRequest("lines: missing or not an array".to_string()))?;
 
-    let context = |entry: &Json, field: &str| -> Vec<String> {
+    let context = |entry: &Value, field: &str| -> Vec<String> {
         entry
             .get(field)
-            .and_then(Json::as_array)
+            .and_then(Value::as_array)
             .map(|lines| {
                 lines
                     .iter()
-                    .filter_map(Json::as_str)
+                    .filter_map(Value::as_str)
                     .map(str::to_string)
                     .collect()
             })
@@ -1695,8 +1732,8 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
 
     let mut lines = Vec::new();
     for entry in entries {
-        let number = match entry.get("number") {
-            Some(Json::Int(number)) if *number >= 0 => *number as usize,
+        let number = match entry.get("number").map(Value::as_i64) {
+            Some(Some(number)) if number >= 0 => number as usize,
             _ => {
                 return Err(WireError::BadRequest(
                     "a match needs a line number".to_string(),
@@ -1704,7 +1741,8 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
             }
         };
         let text = entry
-            .get_str("text")
+            .get("text")
+            .and_then(Value::as_str)
             .ok_or_else(|| WireError::BadRequest("a match needs its text".to_string()))?
             .to_string();
         lines.push(crate::search::Match {
@@ -1715,7 +1753,7 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
         });
     }
 
-    let encoding = match value.get_str("encoding") {
+    let encoding = match value.get("encoding").and_then(Value::as_str) {
         Some(tag) => crate::search::Encoding::named(tag).ok_or_else(|| {
             WireError::BadRequest(format!("encoding: {tag:?} is not one this version knows"))
         })?,
@@ -1728,29 +1766,33 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
     };
 
     let number = |field: &str| -> u64 {
-        match value.get(field) {
-            Some(Json::Int(number)) if *number >= 0 => *number as u64,
+        match value.get(field).map(Value::as_i64) {
+            Some(Some(number)) if number >= 0 => number as u64,
             _ => 0,
         }
     };
 
     Ok(crate::search::Search {
-        path: value.get_str("path").unwrap_or_default().to_string(),
+        path: value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         lines,
         total,
         searched,
         problem,
-        truncated: value.get("truncated").and_then(Json::as_bool) == Some(true),
+        truncated: value.get("truncated").and_then(Value::as_bool) == Some(true),
         bytes_read: number("bytes_read"),
-        file_bytes: match value.get("file_bytes") {
-            Some(Json::Int(bytes)) if *bytes >= 0 => Some(*bytes as u64),
+        file_bytes: match value.get("file_bytes").map(Value::as_i64) {
+            Some(Some(bytes)) if bytes >= 0 => Some(bytes as u64),
             _ => None,
         },
         encoding,
         // Absent means a search, which is what this reply was before `tail` existed: a
         // reader that has the field and does not know it says "matches" is reading an older
         // answer to the same question.
-        noun: match value.get_str("noun") {
+        noun: match value.get("noun").and_then(Value::as_str) {
             Some("lines") => crate::search::Noun::Lines,
             _ => crate::search::Noun::Matches,
         },
@@ -1758,7 +1800,7 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
 }
 
 /// A search result, wrapped as a reply.
-pub fn encode_search_reply(search: &crate::search::Search) -> Json {
+pub fn encode_search_reply(search: &crate::search::Search) -> Value {
     reply_result(search_to_json(search))
 }
 
@@ -1768,38 +1810,38 @@ pub fn encode_search_reply(search: &crate::search::Search) -> Json {
 /// reading as a directory that is not there -- `docs/ROADMAP.md` M10's own requirement for
 /// this capability ("a list *and* the counts that make an empty one readable"), and the same
 /// argument as `searched` in [`search_to_json`].
-pub fn ls_listing_to_json(listing: &crate::listing::Listing) -> Json {
-    let entries: Vec<Json> = listing
+pub fn ls_listing_to_json(listing: &crate::listing::Listing) -> Value {
+    let entries: Vec<Value> = listing
         .entries
         .iter()
         .map(|entry| {
-            let mut fields = BTreeMap::new();
-            fields.insert("name".to_string(), Json::str(&entry.name));
-            fields.insert("dir".to_string(), Json::Bool(entry.dir));
+            let mut fields = Map::new();
+            fields.insert("name".to_string(), serde_json::json!(&entry.name));
+            fields.insert("dir".to_string(), Value::Bool(entry.dir));
             // Absent rather than null for a directory's size: `null` would be a second way to
             // spell "not applicable", and the reader already has `dir` to branch on.
             if let Some(size) = entry.size {
-                fields.insert("size".to_string(), Json::Int(size as i64));
+                fields.insert("size".to_string(), serde_json::json!(size as i64));
             }
             if let Some(modified) = entry.modified {
-                fields.insert("modified".to_string(), Json::Int(modified));
+                fields.insert("modified".to_string(), serde_json::json!(modified));
             }
-            Json::Object(fields)
+            Value::Object(fields)
         })
         .collect();
 
-    object! {
-        "path" => listing.path,
-        "entries" => Json::Array(entries),
-        "count" => listing.entries.len() as i64,
-        "total" => listing.total as i64,
-        "truncated" => listing.truncated,
-        "found" => listing.found,
-        "problem" => match &listing.problem {
-            Some(problem) => Json::str(problem),
-            None => Json::Null,
+    serde_json::json!({
+        "path": listing.path,
+        "entries": Value::Array(entries),
+        "count": listing.entries.len() as i64,
+        "total": listing.total as i64,
+        "truncated": listing.truncated,
+        "found": listing.found,
+        "problem": match &listing.problem {
+            Some(problem) => serde_json::json!(problem),
+            None => Value::Null,
         },
-    }
+    })
 }
 
 /// A directory listing out of a reply.
@@ -1817,29 +1859,30 @@ pub fn ls_listing_from_reply(reply: &Reply) -> Result<crate::listing::Listing, W
 
     let found = value
         .get("found")
-        .and_then(Json::as_bool)
+        .and_then(Value::as_bool)
         .ok_or_else(|| WireError::BadRequest("found: missing, or not true or false".to_string()))?;
 
     let problem = match value.get("problem") {
-        Some(Json::Null) | None => None,
-        Some(Json::Str(problem)) => Some(problem.clone()),
+        Some(Value::Null) | None => None,
+        Some(Value::String(problem)) => Some(problem.clone()),
         Some(_) => return Err(WireError::BadRequest("problem: not a string".to_string())),
     };
 
     let entries_value = value
         .get("entries")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .ok_or_else(|| WireError::BadRequest("entries: missing or not an array".to_string()))?;
 
     let mut entries = Vec::new();
     for entry in entries_value {
         let name = entry
-            .get_str("name")
+            .get("name")
+            .and_then(Value::as_str)
             .ok_or_else(|| WireError::BadRequest("an entry needs a name".to_string()))?
             .to_string();
-        let dir = entry.get("dir").and_then(Json::as_bool) == Some(true);
-        let size = match entry.get("size") {
-            Some(Json::Int(size)) if *size >= 0 => Some(*size as u64),
+        let dir = entry.get("dir").and_then(Value::as_bool) == Some(true);
+        let size = match entry.get("size").map(Value::as_i64) {
+            Some(Some(size)) if size >= 0 => Some(size as u64),
             Some(_) => {
                 return Err(WireError::BadRequest(
                     "an entry's size is not a count".to_string(),
@@ -1847,8 +1890,8 @@ pub fn ls_listing_from_reply(reply: &Reply) -> Result<crate::listing::Listing, W
             }
             None => None,
         };
-        let modified = match entry.get("modified") {
-            Some(Json::Int(seconds)) => Some(*seconds),
+        let modified = match entry.get("modified").map(Value::as_i64) {
+            Some(Some(seconds)) => Some(seconds),
             _ => None,
         };
 
@@ -1861,8 +1904,8 @@ pub fn ls_listing_from_reply(reply: &Reply) -> Result<crate::listing::Listing, W
     }
 
     let number = |field: &str| -> Result<usize, WireError> {
-        match value.get(field) {
-            Some(Json::Int(number)) if *number >= 0 => Ok(*number as usize),
+        match value.get(field).map(Value::as_i64) {
+            Some(Some(number)) if number >= 0 => Ok(number as usize),
             Some(_) => Err(WireError::BadRequest(format!("{field}: not a count"))),
             None => Err(WireError::BadRequest(format!("{field}: missing"))),
         }
@@ -1871,15 +1914,19 @@ pub fn ls_listing_from_reply(reply: &Reply) -> Result<crate::listing::Listing, W
     Ok(crate::listing::Listing {
         entries,
         total: number("total")?,
-        truncated: value.get("truncated").and_then(Json::as_bool) == Some(true),
-        path: value.get_str("path").unwrap_or_default().to_string(),
+        truncated: value.get("truncated").and_then(Value::as_bool) == Some(true),
+        path: value
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         found,
         problem,
     })
 }
 
 /// A directory listing, wrapped as a reply.
-pub fn encode_ls_reply(listing: &crate::listing::Listing) -> Json {
+pub fn encode_ls_reply(listing: &crate::listing::Listing) -> Value {
     reply_result(ls_listing_to_json(listing))
 }
 
@@ -1894,8 +1941,8 @@ pub fn encode_ls_reply(listing: &crate::listing::Listing) -> Json {
 /// the message, and the JSON around the output is part of it. The encoding is
 /// deterministic and escapes what has to be escaped, so measuring it is exact --
 /// an estimate of it would be a number that is wrong exactly where it matters.
-pub fn reply_fits(reply: &Json, ceiling: usize) -> bool {
-    json::write(reply).len() <= ceiling
+pub fn reply_fits(reply: &Value, ceiling: usize) -> bool {
+    (reply).to_string().len() <= ceiling
 }
 
 /// The largest reply this protocol can send, in the bytes that reply encodes to.
@@ -1956,7 +2003,7 @@ pub fn reply_ceiling() -> usize {
 ///
 /// `ceiling` is the same parameter [`reply_fits`] takes, and it is quoted in the
 /// message so the number a caller reads is the number that was applied.
-pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Json {
+pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Value {
     reply_refused(&format!(
         "the command's output is too large to return: stdout was {} bytes and stderr {} \
          bytes, and a reply of at most {ceiling} bytes is what this agent can send. Write \
@@ -1967,8 +2014,8 @@ pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Json {
 }
 
 /// The identity reply, as the agent builds it.
-pub fn identity_to_json(name: &str, version: &str) -> Json {
-    reply_result(object! { "name" => name, "version" => version })
+pub fn identity_to_json(name: &str, version: &str) -> Value {
+    reply_result(serde_json::json!({ "name": name, "version": version }))
 }
 
 /// The name out of an identity result.
@@ -1984,7 +2031,8 @@ pub fn identity_from_json(reply: &Reply) -> Result<String, WireError> {
         ));
     };
     value
-        .get_str("name")
+        .get("name")
+        .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| WireError::BadRequest("the identity reply has no name".to_string()))
 }
@@ -2011,10 +2059,10 @@ pub fn run_outcome_from_reply(reply: &Reply) -> Result<RunOutcome, WireError> {
 /// # Errors
 ///
 /// [`WireError::BadRequest`] when the body is not UTF-8, or not JSON.
-pub fn parse_body(body: &[u8]) -> Result<Json, WireError> {
+pub fn parse_body(body: &[u8]) -> Result<Value, WireError> {
     let text = std::str::from_utf8(body)
         .map_err(|_| WireError::BadRequest("the message is not UTF-8".to_string()))?;
-    json::parse(text).map_err(|error| WireError::BadRequest(error.to_string()))
+    serde_json::from_str::<Value>(text).map_err(|error| WireError::BadRequest(error.to_string()))
 }
 
 /// Renders a transfer's outcome as the text a caller reads.

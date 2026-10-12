@@ -4,13 +4,14 @@ version = { workspace = true }
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The target-side agent: one file, no dependencies, runs a command when asked."
+description = "The target-side agent: a standalone executable that runs a command when asked."
 
 [[bin]]
 name = "linklet-agent"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
 linklet-adapters = { path = "../linklet-adapters" }
 # The protocol, and nothing else. The agent and the host decode the same
 # definitions out of the same module, so they cannot come to disagree about what

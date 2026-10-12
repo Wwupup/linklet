@@ -126,9 +126,9 @@ fn send_manifest(
     session: &mut dyn Sealed,
     manifest: &Manifest,
 ) -> Result<(), TransferFailure> {
-    let body = linklet_core::json::write(&linklet_core::wire::request_to_json(
-        &linklet_core::wire::Request::Push(manifest.clone()),
-    ));
+    let body =
+        linklet_core::wire::request_to_json(&linklet_core::wire::Request::Push(manifest.clone()))
+            .to_string();
     let mut sealed = Vec::new();
     session.seal_into(body.as_bytes(), &mut sealed)?;
     connection.write_frame(linklet_core::frame::Kind::Sealed, &sealed)?;

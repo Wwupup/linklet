@@ -23,7 +23,6 @@ use std::time::Duration;
 use linklet_client::{AgentAddress, CallError, probe};
 use linklet_core::auth::Token;
 use linklet_core::frame::{self, Kind};
-use linklet_core::json;
 use linklet_core::wire;
 
 /// A token long enough for the agent's own rule, so the call gets as far as the handshake.
@@ -33,7 +32,7 @@ const TEST_TOKEN: &str = "protocol-test-token-0123456789";
 ///
 /// Holding it open matters: the client reads the hello and then decides, and a peer that hung
 /// up immediately would be testing a different failure.
-fn agent_that_says(hello: linklet_core::json::Json) -> (u16, std::thread::JoinHandle<()>) {
+fn agent_that_says(hello: serde_json::Value) -> (u16, std::thread::JoinHandle<()>) {
     // A **reply**, not a bare handshake body: the hello frame carries the same result-or-refusal
     // shape every other message does, which is why a body sent on its own is refused with "a
     // reply needs an ok field". Getting that wrong made this fixture fail for a reason that had
@@ -62,7 +61,7 @@ fn agent_that_says(hello: linklet_core::json::Json) -> (u16, std::thread::JoinHa
             return;
         }
 
-        let payload = json::write(&hello);
+        let payload = hello.to_string();
         let Ok(bytes) = frame::encode(Kind::Hello, payload.as_bytes()) else {
             return;
         };
@@ -99,11 +98,11 @@ fn an_agent_that_predates_the_version_field_is_read_as_the_oldest_protocol() {
     // starts refusing this peer. That is the whole point of pinning absence to a named constant
     // rather than to the current version.
     let old = wire::handshake_to_json(&[0u8; 32]);
-    let linklet_core::json::Json::Object(mut fields) = old else {
+    let serde_json::Value::Object(mut fields) = old else {
         panic!("a handshake is an object");
     };
     fields.remove("protocol");
-    let old = linklet_core::json::Json::Object(fields);
+    let old = serde_json::Value::Object(fields);
 
     assert_eq!(
         wire::handshake_protocol_from_json(&old).expect("a number"),
@@ -132,17 +131,20 @@ fn a_peer_speaking_a_different_protocol_is_refused_with_both_numbers() {
     // states a number this build is not is refused at the handshake rather than at whichever
     // later operation happens to need a feature it does not have -- which is what a caller got
     // before this: `op: "ls" is not one of identity, run, push, ...`, true and useless.
-    use linklet_core::json::Json;
-    use std::collections::BTreeMap;
+    use serde_json::Map;
+    use serde_json::Value;
 
-    let mut object: BTreeMap<String, Json> = BTreeMap::new();
-    object.insert("ephemeral_public".to_string(), Json::str("00".repeat(32)));
+    let mut object: Map<String, Value> = Map::new();
+    object.insert(
+        "ephemeral_public".to_string(),
+        serde_json::json!("00".repeat(32)),
+    );
     object.insert(
         "protocol".to_string(),
-        Json::Int(wire::PROTOCOL_VERSION + 1),
+        serde_json::json!(wire::PROTOCOL_VERSION + 1),
     );
 
-    let (port, agent) = agent_that_says(Json::Object(object));
+    let (port, agent) = agent_that_says(Value::Object(object));
     let outcome = probe(&address(port), Duration::from_secs(2));
 
     let Err(error) = outcome else {
@@ -200,14 +202,17 @@ fn a_protocol_that_is_not_a_number_is_a_bad_message_and_not_an_old_agent() {
     // a real deployment and is read as the oldest protocol. A `protocol` key that is a string
     // is a peer disagreeing about what the field is, and reading that as "old" would hide a
     // malformed message behind a version story.
-    use linklet_core::json::Json;
-    use std::collections::BTreeMap;
+    use serde_json::Map;
+    use serde_json::Value;
 
-    let mut object: BTreeMap<String, Json> = BTreeMap::new();
-    object.insert("ephemeral_public".to_string(), Json::str("00".repeat(32)));
-    object.insert("protocol".to_string(), Json::str("two"));
+    let mut object: Map<String, Value> = Map::new();
+    object.insert(
+        "ephemeral_public".to_string(),
+        serde_json::json!("00".repeat(32)),
+    );
+    object.insert("protocol".to_string(), serde_json::json!("two"));
 
-    let (port, agent) = agent_that_says(Json::Object(object));
+    let (port, agent) = agent_that_says(Value::Object(object));
     let outcome = probe(&address(port), Duration::from_secs(2));
 
     let Err(error) = outcome else {
@@ -232,7 +237,7 @@ fn the_handshake_this_build_sends_carries_the_version() {
     // from the client's use of it, because a writer that dropped the field and a reader that
     // defaulted to the current version would agree with each other perfectly and never notice.
     let hello = wire::handshake_to_json(&[7u8; 32]);
-    let text = json::write(&hello);
+    let text = hello.to_string();
 
     assert!(
         text.contains("protocol"),

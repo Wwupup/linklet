@@ -14,6 +14,7 @@
 //! before the first request, which is also why the banner exists: it is bound
 //! before it is printed, so reading it is proof the port is open.
 
+use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
@@ -22,7 +23,6 @@ use std::time::Duration;
 use linklet_adapters::{Connection, ConnectionError, HkdfChannel};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::Kind;
-use linklet_core::json;
 use linklet_core::transfer::{CHUNK_BYTES, Manifest};
 use linklet_core::wire::{self, Reply, Request, RunOutcome, RunRequest};
 
@@ -127,7 +127,7 @@ impl Agent {
         let (ours, pending) = HkdfChannel
             .propose(token.as_bytes())
             .expect("proposing a handshake");
-        let hello = json::write(&wire::handshake_to_json(ours.as_bytes()));
+        let hello = wire::handshake_to_json(ours.as_bytes()).to_string();
         connection
             .write_frame(Kind::Hello, hello.as_bytes())
             .expect("writing the handshake");
@@ -215,7 +215,7 @@ struct Conversation {
 impl Conversation {
     /// Sends one request and returns the reply.
     fn ask(&mut self, request: &Request) -> Reply {
-        self.ask_json(&json::write(&wire::request_to_json(request)))
+        self.ask_json(&wire::request_to_json(request).to_string())
     }
 
     /// Sends one request written by hand.
@@ -272,9 +272,7 @@ impl Conversation {
     /// purpose: that function reads a file, and this test is about what the *agent* does
     /// with the messages.
     fn push(&mut self, manifest: &Manifest, body: &[u8]) -> Reply {
-        self.send_json(&json::write(&wire::request_to_json(&wire::Request::Push(
-            manifest.clone(),
-        ))));
+        self.send_json(&wire::request_to_json(&wire::Request::Push(manifest.clone())).to_string());
 
         // Two replies are read on this connection from here: the answer to the manifest and
         // the transfer's result. The default budget is the handshake and one reply, so the
@@ -711,9 +709,12 @@ fn the_agent_says_which_agent_it_is() {
     let Reply::Result(value) = reply else {
         panic!("the identity call should be answered");
     };
-    assert_eq!(value.get_str("name"), Some("linklet-agent"));
+    assert_eq!(
+        value.get("name").and_then(Value::as_str),
+        Some("linklet-agent")
+    );
     assert!(
-        value.get_str("version").is_some(),
+        value.get("version").and_then(Value::as_str).is_some(),
         "a caller that has only a name cannot tell an old agent from a new one"
     );
 }
@@ -1020,13 +1021,14 @@ fn the_agent_answers_a_push_manifest_before_any_of_the_file_is_sent() {
     // thirty. Nothing about the transfer needs longer.
     conversation.connection.set_budget(Duration::from_secs(5));
 
-    conversation.send_json(&json::write(&wire::request_to_json(&Request::Push(
-        Manifest {
+    conversation.send_json(
+        &wire::request_to_json(&Request::Push(Manifest {
             path: escaping_path("escaped.exe"),
             bytes: 1024,
             sha256: DIGEST.to_string(),
-        },
-    ))));
+        }))
+        .to_string(),
+    );
 
     let reply = conversation.read_one();
     let reason = refusal(reply);

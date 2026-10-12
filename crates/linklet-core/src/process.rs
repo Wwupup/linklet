@@ -29,6 +29,8 @@
 //! parse is counted in [`Listing::unreadable`] rather than skipped, because a listing that
 //! quietly drops what it cannot read is a listing that reports a clean machine.
 
+use serde_json::Value;
+
 /// One process, as far as the caller may know about it.
 ///
 /// The optional fields are not laziness: `tasklist` gives a name and a pid to anyone, and
@@ -218,10 +220,8 @@ impl Filter {
     /// nothing was asked for**, rather than omitted: a caller reading a reply has to be
     /// able to tell "no filters" from "the filters were dropped on the way out", and only
     /// one of those is safe to act on.
-    pub fn applied(&self) -> crate::json::Json {
-        use crate::json::Json;
-
-        let mut entries = std::collections::BTreeMap::new();
+    pub fn applied(&self) -> serde_json::Value {
+        let mut entries = serde_json::Map::new();
         for (key, value) in [
             ("name", &self.name),
             ("path", &self.path),
@@ -230,10 +230,10 @@ impl Filter {
             ("exclude", &self.exclude),
         ] {
             if let Some(value) = value {
-                entries.insert(key.to_string(), Json::str(value));
+                entries.insert(key.to_string(), serde_json::json!(value));
             }
         }
-        Json::Object(entries)
+        Value::Object(entries)
     }
 }
 
@@ -243,9 +243,6 @@ impl Filter {
 /// is how many processes were examined; `count` is how many are in `processes`. A filter
 /// that matched nothing and a machine with nothing on it produce different pairs, and so
 /// does a listing that hit its ceiling.
-///
-/// `PartialEq` without `Eq`, because the echoed filter is a [`crate::json::Json`] and a
-/// JSON number may be a float.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listing {
     /// The processes that matched, in the order the machine reported them.
@@ -257,7 +254,7 @@ pub struct Listing {
     /// Whether the filter matched more than [`MAX_LISTED`] and was cut short.
     pub truncated: bool,
     /// The filter, echoed.
-    pub applied: crate::json::Json,
+    pub applied: serde_json::Value,
     /// What the machine could not tell us, one sentence each. Empty when it could tell us
     /// everything.
     pub notes: Vec<String>,
@@ -300,7 +297,7 @@ impl Listing {
     /// applied.
     pub fn applied_is_empty(&self) -> bool {
         match &self.applied {
-            crate::json::Json::Object(entries) => entries.is_empty(),
+            serde_json::Value::Object(entries) => entries.is_empty(),
             _ => true,
         }
     }
@@ -752,10 +749,10 @@ pub fn render(listing: &Listing) -> String {
 /// Read back out of the JSON the reply already carries rather than from a [`Filter`],
 /// because the echo is what the caller has and what a reader should be shown: a renderer
 /// that re-derived it could disagree with what was applied.
-fn describe_filter(applied: &crate::json::Json) -> String {
+fn describe_filter(applied: &serde_json::Value) -> String {
     let mut parts = Vec::new();
     for key in ["name", "path", "cmdline", "query", "exclude"] {
-        if let Some(value) = applied.get_str(key) {
+        if let Some(value) = applied.get(key).and_then(Value::as_str) {
             parts.push(format!("{key}={value}"));
         }
     }
@@ -819,7 +816,7 @@ mod tests {
         assert_eq!(listing.count(), 0);
         assert_eq!(listing.total, 2, "there were processes; none matched");
         assert_eq!(
-            listing.applied.get_str("name"),
+            listing.applied.get("name").and_then(Value::as_str),
             Some("no-such-thing.exe"),
             "the filter has to come back: {:#?}",
             listing.applied
@@ -905,7 +902,7 @@ mod tests {
         );
         assert_eq!(
             listing.applied,
-            crate::json::Json::Object(Default::default())
+            serde_json::Value::Object(Default::default())
         );
         assert!(!listing.notes.is_empty());
     }
@@ -943,7 +940,7 @@ mod tests {
         assert_eq!(listing.count(), 2);
         assert_eq!(
             listing.applied,
-            crate::json::Json::Object(Default::default())
+            serde_json::Value::Object(Default::default())
         );
     }
 

@@ -13,7 +13,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use linklet_core::ExitCode;
-use linklet_core::json::{self, Json};
+use serde_json::Value;
 
 /// Sends each message to `linklet mcp` and returns the replies it produced.
 ///
@@ -42,7 +42,7 @@ fn repo_root() -> std::path::PathBuf {
 /// enough to prove the framing: if replies were buffered until exit, they would
 /// still arrive, and if the newline framing were wrong the parse below would
 /// fail. Flushing is proven by the round trip completing at all.
-fn session(messages: &[&str]) -> Vec<Json> {
+fn session(messages: &[&str]) -> Vec<Value> {
     session_with_token(messages, None)
 }
 
@@ -51,7 +51,7 @@ fn session(messages: &[&str]) -> Vec<Json> {
 /// One function with a token rather than two that differ in an environment variable: a
 /// copy of this that forgot the token would fail with "the agent refused" and send a
 /// reader looking at the transfer.
-fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Json> {
+fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Value> {
     let root = repo_root();
     assert!(
         root.join("Cargo.toml").is_file(),
@@ -87,7 +87,7 @@ fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Json> {
     text.lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            json::parse(line)
+            serde_json::from_str::<Value>(line)
                 .unwrap_or_else(|e| panic!("a reply was not one JSON line: {e} in {line:?}"))
         })
         .collect()
@@ -159,10 +159,10 @@ fn request(id: i64, method: &str, params: &str) -> String {
 }
 
 /// The reply to `id`, or a panic naming what arrived instead.
-fn reply_for(replies: &[Json], id: i64) -> Json {
+fn reply_for(replies: &[Value], id: i64) -> Value {
     replies
         .iter()
-        .find(|reply| reply.get("id").and_then(Json::as_int) == Some(id))
+        .find(|reply| reply.get("id").and_then(Value::as_i64) == Some(id))
         .unwrap_or_else(|| panic!("no reply with id {id} in {replies:#?}"))
         .clone()
 }
@@ -191,7 +191,7 @@ fn a_full_session_produces_one_reply_per_request_and_none_for_the_notification()
     assert!(
         replies
             .iter()
-            .all(|reply| reply.get("id") != Some(&Json::Null)),
+            .all(|reply| reply.get("id") != Some(&Value::Null)),
         "a reply carried a null id, which is what a reply to a notification looks like"
     );
 }
@@ -212,7 +212,7 @@ fn initialize_echoes_the_clients_protocol_version() {
     assert_eq!(
         result
             .get("result")
-            .and_then(|r| r.get_str("protocolVersion")),
+            .and_then(|r| r.get("protocolVersion").and_then(Value::as_str)),
         Some("2029-01-01")
     );
 }
@@ -224,7 +224,7 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     let tools = reply_for(&replies, 1)
         .get("result")
         .and_then(|r| r.get("tools"))
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .expect("a tools array")
         .to_vec();
 
@@ -232,7 +232,10 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     // and the dispatcher agree; this one checks the list survives the wire, which
     // is the part a session can fail at and a unit test cannot.
     assert_eq!(tools.len(), 11, "the surface is eleven tools: {tools:#?}");
-    let names: Vec<Option<&str>> = tools.iter().map(|tool| tool.get_str("name")).collect();
+    let names: Vec<Option<&str>> = tools
+        .iter()
+        .map(|tool| tool.get("name").and_then(Value::as_str))
+        .collect();
     assert_eq!(
         names,
         vec![
@@ -251,11 +254,14 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     );
 
     for tool in &tools {
-        let description = tool.get_str("description").expect("a description");
+        let description = tool
+            .get("description")
+            .and_then(Value::as_str)
+            .expect("a description");
         assert!(
             description.len() < 80,
             "{}'s description is {} characters: {description:?}",
-            tool.get_str("name").unwrap_or("?"),
+            tool.get("name").and_then(Value::as_str).unwrap_or("?"),
             description.len()
         );
     }
@@ -280,15 +286,15 @@ fn the_push_tool_refuses_a_local_path_outside_the_working_tree() {
         .clone();
 
     assert_eq!(
-        result.get("isError").and_then(Json::as_bool),
+        result.get("isError").and_then(Value::as_bool),
         Some(true),
         "a refused argument is a failed call: {result:?}"
     );
     let text = result
         .get("content")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .and_then(|content| content.first())
-        .and_then(|entry| entry.get_str("text"))
+        .and_then(|entry| entry.get("text").and_then(Value::as_str))
         .expect("the refusal is text");
     assert!(
         text.contains("working tree"),
@@ -337,9 +343,9 @@ fn the_testbed_tool_answers_from_a_real_file() {
     let text = reply_for(&replies, 1)
         .get("result")
         .and_then(|r| r.get("content"))
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .and_then(|content| content.first())
-        .and_then(|first| first.get_str("text"))
+        .and_then(|first| first.get("text").and_then(Value::as_str))
         .expect("a text block")
         .to_string();
 
@@ -365,9 +371,9 @@ fn a_spec_path_outside_the_tree_is_refused_before_the_filesystem_sees_it() {
     let text = reply_for(&replies, 1)
         .get("result")
         .and_then(|r| r.get("content"))
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .and_then(|content| content.first())
-        .and_then(|first| first.get_str("text"))
+        .and_then(|first| first.get("text").and_then(Value::as_str))
         .expect("a text block")
         .to_string();
 
@@ -387,9 +393,9 @@ fn a_tool_call_reaches_the_network_and_answers_in_plain_text() {
     let text = result
         .get("result")
         .and_then(|r| r.get("content"))
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .and_then(|content| content.first())
-        .and_then(|first| first.get_str("text"))
+        .and_then(|first| first.get("text").and_then(Value::as_str))
         .expect("a text content block");
 
     // Port 1 on loopback: nothing listens, and the machine says so at once.
@@ -414,7 +420,7 @@ fn a_tool_call_reaches_the_network_and_answers_in_plain_text() {
         result
             .get("result")
             .and_then(|r| r.get("isError"))
-            .and_then(Json::as_bool),
+            .and_then(Value::as_bool),
         Some(false),
         "bad news is not a failed call"
     );
@@ -434,7 +440,7 @@ fn a_bad_tool_call_is_a_result_with_is_error_and_not_a_protocol_fault() {
         reply
             .get("result")
             .and_then(|r| r.get("isError"))
-            .and_then(Json::as_bool),
+            .and_then(Value::as_bool),
         Some(true)
     );
 }
@@ -453,9 +459,9 @@ fn a_bad_argument_names_the_field() {
     let text = reply_for(&replies, 1)
         .get("result")
         .and_then(|r| r.get("content"))
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .and_then(|content| content.first())
-        .and_then(|first| first.get_str("text"))
+        .and_then(|first| first.get("text").and_then(Value::as_str))
         .expect("a text block")
         .to_string();
 
@@ -473,12 +479,12 @@ fn a_line_that_is_not_json_is_reported_and_the_session_continues() {
         replies[0]
             .get("error")
             .and_then(|e| e.get("code"))
-            .and_then(Json::as_int),
+            .and_then(Value::as_i64),
         Some(-32700)
     );
     assert_eq!(
         replies[0].get("id"),
-        Some(&Json::Null),
+        Some(&Value::Null),
         "a parse failure has no id to quote"
     );
     assert!(
@@ -495,7 +501,7 @@ fn an_unknown_method_is_reported_as_unsupported() {
         reply_for(&replies, 1)
             .get("error")
             .and_then(|e| e.get("code"))
-            .and_then(Json::as_int),
+            .and_then(Value::as_i64),
         Some(-32601)
     );
 }
@@ -569,12 +575,12 @@ fn the_push_tool_moves_a_real_file_through_a_real_agent() {
         .get("result")
         .expect("a tool result")
         .clone();
-    assert_eq!(result.get("isError").and_then(Json::as_bool), Some(false));
+    assert_eq!(result.get("isError").and_then(Value::as_bool), Some(false));
     let text = result
         .get("content")
-        .and_then(Json::as_array)
+        .and_then(Value::as_array)
         .and_then(|content| content.first())
-        .and_then(|entry| entry.get_str("text"))
+        .and_then(|entry| entry.get("text").and_then(Value::as_str))
         .expect("the result is text");
 
     assert_eq!(
@@ -604,4 +610,35 @@ fn mcp_refuses_to_take_arguments() {
 
     assert_eq!(output.status.code(), Some(i32::from(ExitCode::USAGE)));
     assert!(String::from_utf8_lossy(&output.stderr).contains("takes no arguments"));
+}
+
+#[test]
+fn integer_request_ids_are_echoed_without_rounding() {
+    for id in ["0", "9223372036854775809", "18446744073709551615"] {
+        let message = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"ping"}}"#);
+        let replies = session(&[&message]);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(
+            (replies[0].get("id").expect("a response id")).to_string(),
+            id
+        );
+    }
+}
+
+#[test]
+fn escaped_request_ids_stay_on_one_line_and_round_trip() {
+    let id: String = (0..32)
+        .map(|n| char::from_u32(n).expect("control character"))
+        .collect();
+    let id = format!("{id}\u{4e2d}");
+    let message = format!(
+        r#"{{"jsonrpc":"2.0","id":{},"method":"ping"}}"#,
+        serde_json::json!(&id)
+    );
+    let replies = session(&[&message]);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].get("id").and_then(Value::as_str),
+        Some(id.as_str())
+    );
 }

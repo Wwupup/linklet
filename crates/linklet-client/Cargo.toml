@@ -8,8 +8,7 @@ description = "The host side of the agent protocol: ask a target to run somethin
 
 [dependencies]
 linklet-adapters = { path = "../linklet-adapters" }
-# The protocol, and nothing else -- the same single dependency the agent has, so
-# the two ends of a message are decoded by the same code.
+# Shared wire types keep both ends of a message consistent.
 linklet-core = { path = "../linklet-core" }
 
 # No dev-dependency on the agent, although the integration test spawns its
@@ -17,6 +16,9 @@ linklet-core = { path = "../linklet-core" }
 # dependency and warns -- a declaration that does nothing is worse than none,
 # because a reader believes it. The test finds the binary on disk and says so
 # when it cannot, which is the honest version of the same intent.
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

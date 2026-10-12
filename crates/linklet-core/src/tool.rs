@@ -29,7 +29,7 @@
 
 use std::time::Duration;
 
-use crate::json::{self, Json};
+use serde_json::Value;
 
 /// One tool, in the shape MCP wants it.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,7 +39,7 @@ pub struct Tool {
     /// What it does, and nothing else.
     pub description: &'static str,
     /// The JSON Schema for its arguments.
-    pub input_schema: Json,
+    pub input_schema: Value,
 }
 
 /// What a call produced.
@@ -211,20 +211,20 @@ pub trait ToolRunner {
 }
 
 /// The name of a JSON value's type, for an error message.
-fn type_name(value: &Json) -> &'static str {
+fn type_name(value: &Value) -> &'static str {
     match value {
-        Json::Null => "null",
-        Json::Bool(_) => "a boolean",
-        Json::Int(_) | Json::Float(_) => "a number",
-        Json::Str(_) => "a string",
-        Json::Array(_) => "an array",
-        Json::Object(_) => "an object",
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
     }
 }
 
 /// Rejects any argument the tool does not take.
-fn reject_unknown(arguments: &Json, allowed: &[&str]) -> Result<(), ToolError> {
-    let Json::Object(entries) = arguments else {
+fn reject_unknown(arguments: &Value, allowed: &[&str]) -> Result<(), ToolError> {
+    let Value::Object(entries) = arguments else {
         return Ok(());
     };
     for key in entries.keys() {
@@ -246,10 +246,10 @@ fn reject_unknown(arguments: &Json, allowed: &[&str]) -> Result<(), ToolError> {
 /// whole feature is arranged against.
 ///
 /// Returns `Result` rather than `Option` for that reason.
-fn optional_str(arguments: &Json, name: &'static str) -> Result<Option<String>, ToolError> {
+fn optional_str(arguments: &Value, name: &'static str) -> Result<Option<String>, ToolError> {
     match arguments.get(name) {
         None => Ok(None),
-        Some(Json::Str(text)) => Ok(Some(text.clone()).filter(|text| !text.trim().is_empty())),
+        Some(Value::String(text)) => Ok(Some(text.clone()).filter(|text| !text.trim().is_empty())),
         Some(other) => Err(ToolError::BadArgument {
             name,
             problem: format!("expected a string, got {}", type_name(other)),
@@ -258,9 +258,9 @@ fn optional_str(arguments: &Json, name: &'static str) -> Result<Option<String>, 
 }
 
 /// A required string argument.
-fn required_str(arguments: &Json, name: &'static str) -> Result<String, ToolError> {
+fn required_str(arguments: &Value, name: &'static str) -> Result<String, ToolError> {
     match arguments.get(name) {
-        Some(Json::Str(text)) => Ok(text.clone()),
+        Some(Value::String(text)) => Ok(text.clone()),
         Some(other) => Err(ToolError::BadArgument {
             name,
             problem: format!("expected a string, got {}", type_name(other)),
@@ -280,7 +280,7 @@ fn required_str(arguments: &Json, name: &'static str) -> Result<String, ToolErro
 /// which are the two directions a transfer adds. Rejecting the two ways out of the tree
 /// -- an absolute path and a `..` -- is cheaper than reasoning about what a caller meant,
 /// and the refusal names the argument it refused.
-fn relative_local_path(arguments: &Json, name: &'static str) -> Result<String, ToolError> {
+fn relative_local_path(arguments: &Value, name: &'static str) -> Result<String, ToolError> {
     let path = required_str(arguments, name)?;
 
     let is_absolute = path.starts_with('/')
@@ -304,7 +304,7 @@ fn relative_local_path(arguments: &Json, name: &'static str) -> Result<String, T
 /// string, so the two shapes meet here. Joining rather than parsing entry by
 /// entry keeps the grammar in one place: a caller that split the list itself
 /// would be a second answer to what a target is.
-fn targets_from(arguments: &Json) -> Result<String, ToolError> {
+fn targets_from(arguments: &Value) -> Result<String, ToolError> {
     let Some(value) = arguments.get("targets") else {
         return Err(ToolError::BadArgument {
             name: "targets",
@@ -312,7 +312,7 @@ fn targets_from(arguments: &Json) -> Result<String, ToolError> {
         });
     };
 
-    let Json::Array(items) = value else {
+    let Value::Array(items) = value else {
         return Err(ToolError::BadArgument {
             name: "targets",
             problem: format!("expected an array, got {}", type_name(value)),
@@ -329,7 +329,7 @@ fn targets_from(arguments: &Json) -> Result<String, ToolError> {
     let mut specs = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
         match item {
-            Json::Str(text) => specs.push(text.clone()),
+            Value::String(text) => specs.push(text.clone()),
             other => {
                 return Err(ToolError::BadArgument {
                     name: "targets",
@@ -348,34 +348,32 @@ fn targets_from(arguments: &Json) -> Result<String, ToolError> {
 /// seconds and silently got 10 has been lied to about what happened, and this
 /// project exists to not do that.
 fn optional_int(
-    arguments: &Json,
+    arguments: &Value,
     name: &'static str,
     default: u64,
     max: u64,
 ) -> Result<u64, ToolError> {
-    match arguments.get(name) {
-        None => Ok(default),
-        Some(Json::Int(value)) => {
-            if *value < 1 {
-                return Err(ToolError::BadArgument {
-                    name,
-                    problem: format!("{value} is not a positive number of seconds"),
-                });
-            }
-            let value = *value as u64;
-            if value > max {
-                return Err(ToolError::BadArgument {
-                    name,
-                    problem: format!("{value} is more than the maximum of {max}"),
-                });
-            }
-            Ok(value)
-        }
-        Some(other) => Err(ToolError::BadArgument {
+    let Some(input) = arguments.get(name) else {
+        return Ok(default);
+    };
+    let value = input.as_i64().ok_or_else(|| ToolError::BadArgument {
+        name,
+        problem: format!("expected an integer, got {}", type_name(input)),
+    })?;
+    if value < 1 {
+        return Err(ToolError::BadArgument {
             name,
-            problem: format!("expected an integer, got {}", type_name(other)),
-        }),
+            problem: format!("{value} is not a positive number of seconds"),
+        });
     }
+    let value = value as u64;
+    if value > max {
+        return Err(ToolError::BadArgument {
+            name,
+            problem: format!("{value} is more than the maximum of {max}"),
+        });
+    }
+    Ok(value)
 }
 
 /// The longest a single description may be.
@@ -398,49 +396,43 @@ pub fn tools() -> Vec<Tool> {
         Tool {
             name: "check",
             description: "Report whether each host:port accepts a TCP connection.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "targets": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "host:port, for example 10.0.0.5:8787"
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "seconds to wait for each host",
-                            "minimum": 1,
-                            "maximum": 10
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["targets"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "timeout": {
+                        "type": "integer",
+                        "description": "seconds to wait for each host",
+                        "minimum": 1,
+                        "maximum": 10
+                    }
+                },
+                "required": ["targets"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "testbed",
             description: "Report whether a machine matches a testbed specification file.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "spec": {
-                            "type": "string",
-                            "description": "path to a testbed file, inside the working tree"
-                        },
-                        "target": {
-                            "type": "string",
-                            "description": "a label for the machine being checked"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "spec": {
+                        "type": "string",
+                        "description": "path to a testbed file, inside the working tree"
                     },
-                    "required": ["spec", "target"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "target": {
+                        "type": "string",
+                        "description": "a label for the machine being checked"
+                    }
+                },
+                "required": ["spec", "target"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "exec",
@@ -449,30 +441,27 @@ pub fn tools() -> Vec<Tool> {
             // would leave a reader unsure whether it runs here or there -- and
             // that is the one thing a caller must know before using it.
             description: "Run a command on a remote linklet agent and return its output.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "command": {
-                            "type": "string",
-                            "description": "the command line, as it would be typed in cmd.exe"
-                        },
-                        "timeout": {
-                            "type": "integer",
-                            "description": "seconds the command may run before it is killed",
-                            "minimum": 1,
-                            "maximum": 600
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "command"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "command": {
+                        "type": "string",
+                        "description": "the command line, as it would be typed in cmd.exe"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "seconds the command may run before it is killed",
+                        "minimum": 1,
+                        "maximum": 600
+                    }
+                },
+                "required": ["agent", "command"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "push",
@@ -480,56 +469,50 @@ pub fn tools() -> Vec<Tool> {
             // that reads this as an ordinary copy hashes the file at the other end itself,
             // which is a round trip for a comparison the receiving side already made.
             description: "Copy one local file to a remote linklet agent, verified by digest.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "from": {
-                            "type": "string",
-                            "description": "path to the local file, inside the working tree"
-                        },
-                        "to": {
-                            "type": "string",
-                            "description": "a path on the target, under the agent's transfer root"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "from", "to"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "from": {
+                        "type": "string",
+                        "description": "path to the local file, inside the working tree"
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "a path on the target, under the agent's transfer root"
+                    }
+                },
+                "required": ["agent", "from", "to"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "pull",
             // The same word as `push`, and for the same reason: the receiving side here is
             // the host, and a caller that does not know it checks anyway.
             description: "Copy one file from a remote linklet agent to here, verified by digest.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "from": {
-                            "type": "string",
-                            "description": "a path on the target, under the agent's transfer root"
-                        },
-                        "to": {
-                            "type": "string",
-                            "description": "where to put it locally, inside the working tree"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "from", "to"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "from": {
+                        "type": "string",
+                        "description": "a path on the target, under the agent's transfer root"
+                    },
+                    "to": {
+                        "type": "string",
+                        "description": "where to put it locally, inside the working tree"
+                    }
+                },
+                "required": ["agent", "from", "to"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "ps",
@@ -540,36 +523,33 @@ pub fn tools() -> Vec<Tool> {
             // result rather than in the description, which is the right place for it:
             // `docs/MCP.md` refuses a description that has to teach a manual.
             description: "List processes on a remote linklet agent's machine.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "keep processes whose image name contains this"
-                        },
-                        "cmdline": {
-                            "type": "string",
-                            "description": "keep processes whose command line contains this"
-                        },
-                        "query": {
-                            "type": "string",
-                            "description": "keep processes matching this in any field"
-                        },
-                        "exclude": {
-                            "type": "string",
-                            "description": "drop processes whose name or command line contains this"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "name": {
+                        "type": "string",
+                        "description": "keep processes whose image name contains this"
+                    },
+                    "cmdline": {
+                        "type": "string",
+                        "description": "keep processes whose command line contains this"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "keep processes matching this in any field"
+                    },
+                    "exclude": {
+                        "type": "string",
+                        "description": "drop processes whose name or command line contains this"
+                    }
+                },
+                "required": ["agent"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "kill",
@@ -581,36 +561,33 @@ pub fn tools() -> Vec<Tool> {
             // given. A schema cannot say "one of" without `oneOf`, which costs more to read
             // than the six words this adds.
             description: "Stop processes on a remote linklet agent's machine, by pid or by name.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "pid": {
-                            "type": "integer",
-                            "description": "stop this one process; never needs confirmed"
-                        },
-                        "name": {
-                            "type": "string",
-                            "description": "stop processes whose image name is exactly this"
-                        },
-                        "confirmed": {
-                            "type": "boolean",
-                            "description": "required for name: it can match more than one process"
-                        },
-                        "candidates_cmdline": {
-                            "type": "string",
-                            "description": "only consider processes whose command line contains this"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "pid": {
+                        "type": "integer",
+                        "description": "stop this one process; never needs confirmed"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "stop processes whose image name is exactly this"
+                    },
+                    "confirmed": {
+                        "type": "boolean",
+                        "description": "required for name: it can match more than one process"
+                    },
+                    "candidates_cmdline": {
+                        "type": "string",
+                        "description": "only consider processes whose command line contains this"
+                    }
+                },
+                "required": ["agent"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "spawn",
@@ -619,28 +596,25 @@ pub fn tools() -> Vec<Tool> {
             // So the description says what it does and where, and the word "started" in the
             // result is what tells a caller this is not `exec`: nothing was waited for.
             description: "Start a program on a remote linklet agent's machine, and return at once.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "command": {
-                            "type": "string",
-                            "description": "the command line, run through the target's shell"
-                        },
-                        "output": {
-                            "type": "string",
-                            "description": "where on the target the program's output goes"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "command", "output"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "command": {
+                        "type": "string",
+                        "description": "the command line, run through the target's shell"
+                    },
+                    "output": {
+                        "type": "string",
+                        "description": "where on the target the program's output goes"
+                    }
+                },
+                "required": ["agent", "command", "output"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "grep",
@@ -648,77 +622,71 @@ pub fn tools() -> Vec<Tool> {
             // it finds matching lines, and it does so **on the remote machine**, without
             // bringing the file here.
             description: "Find lines matching text in a file on a remote agent's machine.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "the file, under the agent's transfer root"
-                        },
-                        "pattern": {
-                            "type": "string",
-                            "description": "the text to find, matched as a substring and not as a pattern; an empty string matches every line, which is rarely what is wanted"
-                        },
-                        "mode": {
-                            "type": "string",
-                            "enum": ["first", "last"],
-                            "description": "search from the start, or from the end"
-                        },
-                        "ignore_case": {
-                            "type": "boolean",
-                            "description": "match without regard to case; the default is to care"
-                        },
-                        "max_matches": {
-                            "type": "integer",
-                            "description": "how many matches to return",
-                            "minimum": 1,
-                            "maximum": 200
-                        },
-                        "context": {
-                            "type": "integer",
-                            "description": "lines to show on each side of a match",
-                            "minimum": 0,
-                            "maximum": 20
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "path", "pattern"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "path": {
+                        "type": "string",
+                        "description": "the file, under the agent's transfer root"
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "the text to find, matched as a substring and not as a pattern; an empty string matches every line, which is rarely what is wanted"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["first", "last"],
+                        "description": "search from the start, or from the end"
+                    },
+                    "ignore_case": {
+                        "type": "boolean",
+                        "description": "match without regard to case; the default is to care"
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "how many matches to return",
+                        "minimum": 1,
+                        "maximum": 200
+                    },
+                    "context": {
+                        "type": "integer",
+                        "description": "lines to show on each side of a match",
+                        "minimum": 0,
+                        "maximum": 20
+                    }
+                },
+                "required": ["agent", "path", "pattern"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "tail",
             description: "Read the last lines of a file on a remote agent's machine.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "the file, under the agent's transfer root"
-                        },
-                        "lines": {
-                            "type": "integer",
-                            "description": "how many lines from the end",
-                            "minimum": 1,
-                            "maximum": 2000
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "path"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "path": {
+                        "type": "string",
+                        "description": "the file, under the agent's transfer root"
+                    },
+                    "lines": {
+                        "type": "integer",
+                        "description": "how many lines from the end",
+                        "minimum": 1,
+                        "maximum": 2000
+                    }
+                },
+                "required": ["agent", "path"],
+                "additionalProperties": false
+            }),
         },
         Tool {
             name: "ls",
@@ -726,24 +694,21 @@ pub fn tools() -> Vec<Tool> {
             // a reader unsure whether the directory is here or there, which is the one thing
             // a caller must know before using it -- the same argument as `exec`'s.
             description: "List a directory on a remote linklet agent's machine.",
-            input_schema: json::parse(
-                r#"{
-                    "type": "object",
-                    "properties": {
-                        "agent": {
-                            "type": "string",
-                            "description": "the agent's host:port, for example 10.0.0.5:8787"
-                        },
-                        "path": {
-                            "type": "string",
-                            "description": "the directory or file, under the agent's transfer root"
-                        }
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
-                    "required": ["agent", "path"],
-                    "additionalProperties": false
-                }"#,
-            )
-            .expect("the schema above is a literal and parses"),
+                    "path": {
+                        "type": "string",
+                        "description": "the directory or file, under the agent's transfer root"
+                    }
+                },
+                "required": ["agent", "path"],
+                "additionalProperties": false
+            }),
         },
     ]
 }
@@ -753,15 +718,18 @@ pub fn tools() -> Vec<Tool> {
 /// Built from [`tools`] rather than written out, so a tool cannot appear in the
 /// list with a name the dispatcher has never heard of. That mismatch is the kind
 /// of bug that shows up only in a live session.
-pub fn tool_list_json() -> Json {
-    Json::Array(
+pub fn tool_list_json() -> Value {
+    Value::Array(
         tools()
             .into_iter()
             .map(|tool| {
-                Json::Object(
+                Value::Object(
                     [
-                        ("name".to_string(), Json::str(tool.name)),
-                        ("description".to_string(), Json::str(tool.description)),
+                        ("name".to_string(), serde_json::json!(tool.name)),
+                        (
+                            "description".to_string(),
+                            serde_json::json!(tool.description),
+                        ),
                         ("inputSchema".to_string(), tool.input_schema),
                     ]
                     .into_iter()
@@ -794,7 +762,7 @@ pub fn total_description_chars() -> usize {
 /// and had bad news returns `Ok(ToolOutcome)`, because bad news is an answer.
 pub fn dispatch(
     name: &str,
-    arguments: &Json,
+    arguments: &Value,
     runner: &dyn ToolRunner,
 ) -> Result<ToolOutcome, ToolError> {
     match name {
@@ -878,9 +846,9 @@ pub fn dispatch(
             // **A name or a pid, and never both.** The wire refuses a request that names
             // neither, and a request naming both would need a rule for which wins -- which
             // is the kind of rule that is discovered in a diff rather than written in one.
-            let by_pid = match arguments.get("pid") {
-                Some(Json::Int(pid)) if *pid > 0 => Some(*pid as u32),
-                Some(Json::Int(pid)) => {
+            let by_pid = match arguments.get("pid").map(Value::as_i64) {
+                Some(Some(pid)) if pid > 0 => Some(pid as u32),
+                Some(Some(pid)) => {
                     return Err(ToolError::BadArgument {
                         name: "pid",
                         problem: format!("{pid} is not a process identifier"),
@@ -917,7 +885,7 @@ pub fn dispatch(
                 // The tool's word for it is `confirmed`, and it is a different word on
                 // purpose: an agent reading a schema sees "confirmed" and knows it is being
                 // asked to mean it, where `force` reads like a technical switch.
-                force: arguments.get("confirmed").and_then(Json::as_bool) == Some(true),
+                force: arguments.get("confirmed").and_then(Value::as_bool) == Some(true),
                 candidates: crate::process::Filter {
                     cmdline: optional_str(arguments, "candidates_cmdline")?,
                     ..crate::process::Filter::any()
@@ -985,7 +953,7 @@ pub fn dispatch(
                 path,
                 pattern: crate::search::Pattern {
                     text: pattern,
-                    case_sensitive: arguments.get("ignore_case").and_then(Json::as_bool)
+                    case_sensitive: arguments.get("ignore_case").and_then(Value::as_bool)
                         != Some(true),
                 },
                 direction,
