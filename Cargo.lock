@@ -211,7 +211,6 @@ name = "linklet-adapters"
 version = "0.3.0"
 dependencies = [
  "chacha20poly1305",
- "getrandom",
  "hkdf",
  "linklet-core",
  "serde_json",

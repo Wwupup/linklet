@@ -1,83 +1,9 @@
-//! What it means to talk to an agent without the network reading it.
+//! Contracts for authenticated, forward-secret sessions.
 //!
-//! # The shape, and why it is a trait rather than an implementation
-//!
-//! This module says **what** a channel is: something that turns a message into
-//! bytes nobody else can read and back again, given a shared secret. It does not
-//! say how, and it must not -- implementing cryptography is the one thing this
-//! project should never do by hand, and the way to make that impossible is to put
-//! the trait here and every implementation somewhere else.
-//!
-//! That is the same inversion as [`crate::Probe`] and [`crate::testbed::Prober`],
-//! applied to the part where hand-rolling is most tempting and most damaging. The
-//! core keeps its promise of no dependencies; `linklet-adapters` carries the
-//! vetted crate that does the arithmetic.
-//!
-//! # Why a hand-written implementation was tried and thrown away
-//!
-//! For completeness, because the reasoning is the useful part: a SHA-256 was
-//! written here to avoid a dependency while the crate registry looked
-//! unreachable. Padding was wrong three times, the published vectors caught it,
-//! and one observation was never explained. The registry was reachable all along
-//! -- a stale proxy address in a git config was the whole problem -- and the
-//! lesson is not "be more careful". It is that **a hash is a thing with published
-//! test vectors and still failed repeatedly**, which is a fair estimate of what
-//! would happen to a cipher with none.
-//!
-//! # What this is not, still
-//!
-//! - **Forward secrecy is available, and opt-in.** [`Handshake`] runs an X25519
-//!   exchange whose private halves are discarded, so a session recorded today
-//!   cannot be read by anyone who learns the secret tomorrow. [`Channel`] alone
-//!   does **not** have that property: it derives the keys from the shared secret
-//!   and nothing else, so it is the wrong path for a deployment and the right one
-//!   for a test. Both are here, and which is which is stated on each trait rather
-//!   than left to be inferred from the names.
-//! - **No protection against replay within a session.** A captured message can be
-//!   sent again and will open. The sequence numbers stop a *reordering* from being
-//!   accepted; they do not stop a repeat of the exact bytes from being replayed at
-//!   the point they were captured. A caller that cares has to carry its own
-//!   request identity, and the protocol does not yet.
-//! - **Nothing here decides how the secret is chosen or shared.** That is
-//!   [`crate::auth`], and its own documentation says the token travels in
-//!   cleartext until this module is used -- which is the point of using it.
-
-/// A random value that identifies one session and seeds its keys.
-///
-/// Opaque to the core: it is bytes to be carried in a header and fed to a key
-/// derivation, and giving it methods would invite the core to reason about
-/// randomness it cannot see.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionId(Vec<u8>);
-
-impl SessionId {
-    /// How many bytes a session identifier carries.
-    ///
-    /// Thirty-two, which is what a key derivation wants as a salt and is far more
-    /// than enough to make a repeat impossible in practice.
-    pub const BYTES: usize = 32;
-
-    /// Wraps bytes that came from somewhere else.
-    ///
-    /// # Errors
-    ///
-    /// When the length is not [`SessionId::BYTES`]. A short identifier is not a
-    /// weak secret, it is a sign that whatever produced it is not producing what
-    /// this expects -- and a truncated salt is how two sessions end up with the
-    /// same keys.
-    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, ChannelError> {
-        let bytes = bytes.into();
-        if bytes.len() != Self::BYTES {
-            return Err(ChannelError::BadSessionId { bytes: bytes.len() });
-        }
-        Ok(Self(bytes))
-    }
-
-    /// The bytes, for putting in a header.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
+//! Adapters generate ephemeral keys and implement these contracts with vetted
+//! cryptographic libraries. The core carries protocol values and performs no I/O.
+//! Each session accepts messages once, in order; dropped messages can still stop
+//! progress. Secret provisioning belongs to [`crate::auth`].
 
 /// Why a message could not be opened.
 ///
@@ -92,17 +18,7 @@ impl SessionId {
 pub enum ChannelError {
     /// The message was not produced by the other side, or was altered.
     NotAuthentic,
-    /// The message belongs to a different point in the session.
-    OutOfOrder,
-    /// A session identifier was the wrong length.
-    BadSessionId {
-        /// How long it was.
-        bytes: usize,
-    },
     /// A public key was the wrong length.
-    ///
-    /// Separate from [`ChannelError::BadSessionId`] because the two arrive from
-    /// different headers and a reader fixing one should not be sent to the other.
     BadPublicKey {
         /// How long it was.
         bytes: usize,
@@ -122,12 +38,6 @@ impl std::fmt::Display for ChannelError {
             // one sentence because there is nothing more to say that would not
             // help an attacker.
             Self::NotAuthentic => write!(f, "the message is not authentic"),
-            Self::OutOfOrder => write!(f, "the message is not the next one"),
-            Self::BadSessionId { bytes } => write!(
-                f,
-                "a session identifier is {bytes} bytes; {} are required",
-                SessionId::BYTES
-            ),
             Self::BadPublicKey { bytes } => write!(
                 f,
                 "a public key is {bytes} bytes; {} are required",
@@ -139,28 +49,6 @@ impl std::fmt::Display for ChannelError {
 }
 
 impl std::error::Error for ChannelError {}
-
-/// Which end of a session is being built.
-///
-/// The parameter that has to exist, and the bug that proved it: the first version
-/// derived both directional keys and assigned them the same way at both ends, so
-/// the host sealed with one key and the agent tried to open with the other. Every
-/// round trip failed.
-///
-/// That failure was the *safe* direction of the mistake, which is luck rather than
-/// design. Had the derivation produced one key and both ends used it for
-/// everything, the round trips would all have passed -- and the result would have
-/// been a single key with two independent nonce sequences under it, where the first
-/// repeat destroys confidentiality and forgery becomes possible. **A test that
-/// passes is not evidence that the keys are separate**, so the role is explicit and
-/// the two keys are distinct by construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
-    /// The side that opens the conversation.
-    Host,
-    /// The side that answers.
-    Agent,
-}
 
 /// One direction of a sealed conversation, as the core needs to see it.
 ///
@@ -199,8 +87,7 @@ pub trait Sealed: Send {
     /// # Errors
     ///
     /// [`ChannelError::NotAuthentic`] for bytes that were not produced by the other
-    /// side of this session, and [`ChannelError::OutOfOrder`] for a message that is
-    /// authentic but is not the one expected next.
+    /// side of this session, including replayed or out-of-order messages.
     fn open_into(&mut self, ciphertext: &[u8], out: &mut Vec<u8>) -> Result<(), ChannelError>;
 
     /// Seals one message and returns it.
@@ -227,34 +114,6 @@ pub trait Sealed: Send {
         self.open_into(ciphertext, &mut out)?;
         Ok(out)
     }
-}
-
-/// Turns a shared secret and a session identifier into a sealed conversation.
-///
-/// A trait with one method rather than a free function, because the thing that
-/// implements it is the crate that owns the cryptography, and the core's job is to
-/// say what it needs. `linklet-adapters` has the only real implementation; tests
-/// have a fake that counts calls, which is why the framing and sequencing above
-/// can be tested without a cipher.
-pub trait Channel {
-    /// A conversation keyed by `session`, for the end named by `role`.
-    ///
-    /// This is the **shared-secret-only** path: two sides that already hold the
-    /// same secret derive the same keys with no exchange at all. It is kept
-    /// because it is the simplest thing that seals a message and because the tests
-    /// above drive it, but it has no forward secrecy -- see [`Handshake`] for the
-    /// path a deployment should use.
-    ///
-    /// # Errors
-    ///
-    /// [`ChannelError::Refused`] when the implementation cannot set up a session,
-    /// and [`ChannelError::NotAuthentic`] when it can but will not.
-    fn open_session(
-        &self,
-        secret: &[u8],
-        session: &SessionId,
-        role: Role,
-    ) -> Result<Box<dyn Sealed>, ChannelError>;
 }
 
 /// A public key for one handshake, as bytes.
@@ -332,9 +191,7 @@ pub trait Pending {
 ///
 /// An attacker who records the whole exchange and later learns the shared secret
 /// still needs the ephemeral private keys to recompute that result, and those no
-/// longer exist anywhere. That is the entire benefit, and it is worth the round
-/// trip exactly once: an operator who does not need it can use
-/// [`Channel::open_session`] and skip the exchange.
+/// longer exist in the handshake state. Every session uses this exchange.
 ///
 /// # What the shared secret is still for
 ///

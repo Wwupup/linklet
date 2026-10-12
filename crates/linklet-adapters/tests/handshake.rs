@@ -16,10 +16,8 @@
 //! open. But a version that agreed in one direction and not the other would be the
 //! silent kind, so both are checked.
 
-use linklet_adapters::{HkdfChannel, new_session_id};
-use linklet_core::channel::{
-    Channel, ChannelError, EphemeralPublic, Handshake, Role, Sealed, SessionId,
-};
+use linklet_adapters::HkdfChannel;
+use linklet_core::channel::{ChannelError, EphemeralPublic, Handshake, Sealed};
 
 /// The secret both ends share.
 const SECRET: &[u8] = b"a shared secret for the handshake test";
@@ -259,44 +257,5 @@ fn accepting_a_zero_public_key_is_refused_too() {
             Err(ChannelError::NotAuthentic)
         ),
         "a zero public key produced a session"
-    );
-}
-
-// --- the shared-secret path still works --------------------------------------
-
-#[test]
-fn the_shared_secret_path_is_unchanged() {
-    // `open_session` is kept for the case where an operator does not want the round
-    // trip. It has no forward secrecy, which is why the handshake exists, but it
-    // must not have been broken by adding one.
-    let session = new_session_id().expect("randomness");
-    let mut host = HkdfChannel
-        .open_session(SECRET, &session, Role::Host)
-        .expect("host");
-    let mut agent = HkdfChannel
-        .open_session(SECRET, &session, Role::Agent)
-        .expect("agent");
-
-    let sealed = host.seal(b"no handshake here").expect("sealing");
-    assert_eq!(agent.open(&sealed).expect("opening"), b"no handshake here");
-}
-
-#[test]
-fn the_two_paths_do_not_interoperate() {
-    // Which is the point: a handshake session and a shared-secret session use
-    // different derivations, so a message from one cannot be opened by the other.
-    // If they did interoperate, the handshake would be adding nothing.
-    let session: SessionId = new_session_id().expect("randomness");
-    let mut direct = HkdfChannel
-        .open_session(SECRET, &session, Role::Host)
-        .expect("host");
-
-    let (_host_end, mut through_handshake) = handshake();
-
-    let sealed = direct.seal(b"direct").expect("sealing");
-    assert_eq!(
-        through_handshake.open(&sealed),
-        Err(ChannelError::NotAuthentic),
-        "a shared-secret message opened in a handshake session"
     );
 }

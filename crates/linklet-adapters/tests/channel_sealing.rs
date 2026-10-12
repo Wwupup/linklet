@@ -12,16 +12,11 @@
 //! the session is refused). A channel missing any one of those is a channel that
 //! looks fine and is not.
 
-use linklet_adapters::{HkdfChannel, OVERHEAD_BYTES, new_session_id};
-use linklet_core::channel::{Channel, ChannelError, Role, Sealed};
+use linklet_adapters::{HkdfChannel, OVERHEAD_BYTES};
+use linklet_core::channel::{ChannelError, Handshake, Sealed};
 
 /// The secret both ends share.
 const SECRET: &[u8] = b"a shared secret for the test only";
-
-/// A session identifier that is fixed, so a failure is reproducible.
-fn fixed_session() -> linklet_core::channel::SessionId {
-    new_session_id().expect("the system should have randomness")
-}
 
 /// Both ends of one session, each able to seal its own direction and open the
 /// other's.
@@ -31,13 +26,9 @@ fn fixed_session() -> linklet_core::channel::SessionId {
 /// `open` uses the key for the direction it is receiving, so the same type serves
 /// both ends without either knowing which it is.
 fn both_ends() -> (Box<dyn Sealed>, Box<dyn Sealed>) {
-    let session = fixed_session();
-    let host = HkdfChannel
-        .open_session(SECRET, &session, Role::Host)
-        .expect("the host end");
-    let agent = HkdfChannel
-        .open_session(SECRET, &session, Role::Agent)
-        .expect("the agent end");
+    let (public, pending) = HkdfChannel.propose(SECRET).expect("proposing");
+    let (reply, agent) = HkdfChannel.accept(SECRET, &public).expect("accepting");
+    let host = pending.finish(&reply).expect("finishing");
     (host, agent)
 }
 
@@ -160,38 +151,21 @@ fn a_truncated_message_is_refused() {
 
 #[test]
 fn a_message_from_a_different_secret_is_refused() {
-    // The case a channel is for: someone who does not know the secret can send
-    // bytes, and they do not open.
-    let session = fixed_session();
-    let mut attacker = HkdfChannel
-        .open_session(b"a different secret entirely", &session, Role::Host)
-        .expect("their own session");
-    let mut victim = HkdfChannel
-        .open_session(SECRET, &session, Role::Agent)
-        .expect("the real one");
-
+    let (public, pending) = HkdfChannel
+        .propose(b"a different secret entirely")
+        .expect("proposing");
+    let (reply, mut victim) = HkdfChannel.accept(SECRET, &public).expect("accepting");
+    let mut attacker = pending.finish(&reply).expect("finishing");
     let forged = attacker.seal(b"trust me").expect("sealing");
     assert_eq!(victim.open(&forged), Err(ChannelError::NotAuthentic));
 }
 
 #[test]
 fn a_message_from_a_different_session_is_refused() {
-    // The salt is what makes each request's keys separate. Without it, the same
-    // secret would give the same key every time and a message from one session
-    // would open in another.
-    let mut first = HkdfChannel
-        .open_session(SECRET, &fixed_session(), Role::Host)
-        .expect("a");
-    let mut second = HkdfChannel
-        .open_session(SECRET, &fixed_session(), Role::Host)
-        .expect("b");
-
+    let (mut first, _) = both_ends();
+    let (_, mut second) = both_ends();
     let sealed = first.seal(b"from session one").expect("sealing");
-    assert_eq!(
-        second.open(&sealed),
-        Err(ChannelError::NotAuthentic),
-        "a message crossed between sessions"
-    );
+    assert_eq!(second.open(&sealed), Err(ChannelError::NotAuthentic));
 }
 
 // --- ordering ----------------------------------------------------------------
@@ -201,10 +175,6 @@ fn a_replayed_message_is_refused() {
     // The counter is the defence: the same bytes arriving twice cannot both be the
     // next message. Within a session this is what stops a captured message from
     // being useful again.
-    //
-    // It does not stop a replay at the *network* level if the attacker can also
-    // suppress the reply, which `linklet_core::channel` documents as a gap rather
-    // than leaving it to be discovered.
     let (mut host, mut agent) = host_to_agent();
     let first = host.seal(b"one").expect("sealing");
     let second = host.seal(b"two").expect("sealing");
@@ -250,40 +220,6 @@ fn a_relabelled_message_is_refused() {
     // replayed back to its own sender as if it came from the peer.
     let reply = agent_seal.seal(b"agent to host").expect("sealing");
     assert_eq!(host_open.open(&reply).expect("opening"), b"agent to host");
-}
-
-// --- what the core asks of an implementation ---------------------------------
-
-#[test]
-fn a_session_identifier_is_the_declared_length() {
-    let session = new_session_id().expect("randomness");
-    assert_eq!(
-        session.as_bytes().len(),
-        linklet_core::channel::SessionId::BYTES
-    );
-}
-
-#[test]
-fn two_session_identifiers_differ() {
-    // The salt is fresh per session, which is what lets the nonce counter start at
-    // zero every time. A source that returned the same bytes twice would give two
-    // sessions the same key, and the counter would then repeat a nonce under it.
-    let a = new_session_id().expect("randomness");
-    let b = new_session_id().expect("randomness");
-    assert_ne!(a, b);
-}
-
-#[test]
-fn a_session_identifier_of_the_wrong_length_is_refused() {
-    use linklet_core::channel::SessionId;
-    for length in [0usize, 1, 31, 33, 64] {
-        let error = SessionId::from_bytes(vec![0u8; length]).expect_err("should be refused");
-        assert!(
-            matches!(error, ChannelError::BadSessionId { bytes } if bytes == length),
-            "{length} gave {error:?}"
-        );
-    }
-    assert!(SessionId::from_bytes(vec![0u8; SessionId::BYTES]).is_ok());
 }
 
 #[test]

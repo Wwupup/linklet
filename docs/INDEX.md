@@ -114,7 +114,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
 | `crates/linklet-core/src/transfer.rs` | T1: whether a path may be written, and the two filesystems' rules for deciding -- including the case rule that was a live escape on Linux |
-| `crates/linklet-core/src/auth.rs` | the token, where it may come from, and the constant-time comparison that is the point of it |
+| `crates/linklet-core/src/auth.rs` | token validation, file-content parsing, and the public refusal message |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |
 | `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, why a failed search is not an empty one, and the total rule for bytes no machine can name |
@@ -143,7 +143,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |
 | `crates/linklet-core/tests/architecture.rs` | the layer rule and the dependency allowlist, checked not trusted |
-| `crates/linklet-core/tests/auth_secret.rs` | the token rules, and a timing test for the comparison |
+| `crates/linklet-core/tests/auth_secret.rs` | token validation, file-content parsing, and refusal wording |
 | `crates/linklet-adapters/tests/connection.rs` | the four framing defences that need a socket, over real sockets |
 | `crates/linklet-adapters/tests/transfer.rs` | a real file over a real socket, and what a failure may leave |
 | `crates/linklet-adapters/tests/handshake.rs` | forward secrecy and the man in the middle |

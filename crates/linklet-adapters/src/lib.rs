@@ -29,7 +29,7 @@ mod system;
 mod tcp;
 mod transfer;
 
-pub use channel::{HkdfChannel, OVERHEAD_BYTES, new_session_id};
+pub use channel::{HkdfChannel, OVERHEAD_BYTES};
 pub use connection::{Connection, ConnectionError};
 pub use discovery::{Scan, default_gateway, local_interfaces, plan_here, scan};
 pub use listing::list as list_directory;

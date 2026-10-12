@@ -22,19 +22,6 @@
 //! replaced HTTP with frames. It had been wrong since M6, which is what a limit
 //! written down in one place and changed in another looks like.
 //!
-//! # Why the comparison is written by hand
-//!
-//! [`token_matches`] does not use `==`. Comparing two strings with `==` in Rust
-//! stops at the first differing byte, so the time it takes depends on how many
-//! leading bytes were right. An attacker who can time the reply can therefore
-//! recover a secret one byte at a time: a wrong first byte returns in one step, a
-//! right first byte takes two, and the difference is measurable over enough
-//! attempts.
-//!
-//! That is not a theoretical concern for a LAN tool with a reply path of a few
-//! hundred microseconds. It is also the kind of bug that never shows up in a
-//! functional test, which is why the test for it measures something.
-
 /// The smallest token this will accept, in bytes.
 ///
 /// A short token is not a weak secret because of the length of the string; it is
@@ -97,7 +84,7 @@ impl Token {
         Ok(Self(secret))
     }
 
-    /// The value, for putting in a header.
+    /// The value, for deriving an authenticated session; never sent on the wire.
     pub fn expose(&self) -> &str {
         &self.0
     }
@@ -127,33 +114,6 @@ pub fn secret_in_file(contents: &str) -> &str {
         Some(end) => &contents[..end],
         None => contents,
     }
-}
-
-/// Whether a presented token is the expected one, in time that does not depend on
-/// how much of it was right.
-///
-/// The loop runs over every byte of both inputs regardless of where they differ,
-/// and accumulates the difference instead of returning early. The `u8` accumulator
-/// cannot overflow into a false match: it is a bitwise OR of XOR results, so it is
-/// zero exactly when every byte matched.
-///
-/// The length check does leak the expected length, which is not a secret worth
-/// protecting -- the token's length is visible from any single request if the
-/// attacker can see one, and hiding it would mean comparing against a padded
-/// buffer, which trades a real subtlety for a theoretical one.
-pub fn token_matches(expected: &str, presented: &str) -> bool {
-    let expected = expected.as_bytes();
-    let presented = presented.as_bytes();
-
-    if expected.len() != presented.len() {
-        return false;
-    }
-
-    let mut difference: u8 = 0;
-    for (a, b) in expected.iter().zip(presented.iter()) {
-        difference |= a ^ b;
-    }
-    difference == 0
 }
 
 /// The reason an agent gives when a caller's session did not hold a usable token.

@@ -22,7 +22,7 @@ use linklet_adapters::{
     Connection, HkdfChannel, TransferFailure, describe, digest_of_file, part_path, receive_body,
     send_body,
 };
-use linklet_core::channel::{Sealed, SessionId};
+use linklet_core::channel::{Handshake, Sealed};
 use linklet_core::transfer::Manifest;
 use linklet_core::wire::TransferOutcome;
 
@@ -86,35 +86,17 @@ fn pair() -> (TcpStream, TcpStream) {
 type End = (Connection, Box<dyn Sealed>);
 
 /// A pair of sessions, one at each end of a socket pair.
-///
-/// The shared-secret path rather than a handshake, because a handshake is tested where
-/// it belongs and the point here is the file.
 fn sessions() -> (End, End) {
     let (client, server) = pair();
-    let session = SessionId::from_bytes(vec![7u8; SessionId::BYTES]).expect("32 bytes");
-
-    let host = HkdfChannel
-        .open_session(
-            b"a test secret of some length",
-            &session,
-            linklet_core::channel::Role::Host,
-        )
-        .expect("a session");
-    let agent = HkdfChannel
-        .open_session(
-            b"a test secret of some length",
-            &session,
-            linklet_core::channel::Role::Agent,
-        )
-        .expect("a session");
-
+    let secret = b"a test secret of some length";
+    let (public, pending) = HkdfChannel.propose(secret).expect("proposing");
+    let (reply, agent) = HkdfChannel.accept(secret, &public).expect("accepting");
+    let host = pending.finish(&reply).expect("finishing");
     (
         (Connection::with_budget(client, BUDGET), host),
         (Connection::with_budget(server, BUDGET), agent),
     )
 }
-
-use linklet_core::channel::Channel;
 
 /// Sends a manifest frame, the way a `push` request does.
 ///

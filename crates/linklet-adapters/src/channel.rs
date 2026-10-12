@@ -14,8 +14,8 @@
 //! confidential and the attacker can forge -- a failure that no test can see from
 //! the outside.
 //!
-//! **One session, one key.** The session identifier is a salt in the derivation,
-//! generated fresh for every request. So the counter can start at zero every time:
+//! **Fresh keys per session.** The ephemeral exchange supplies key material and
+//! both public keys form the salt. The counter can start at zero every time:
 //! what matters is that a key never sees a repeated nonce, and a fresh key makes
 //! the counter's starting point irrelevant.
 //!
@@ -55,9 +55,7 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use linklet_core::channel::{
-    Channel, ChannelError, EphemeralPublic, Handshake, Pending, Role, Sealed, SessionId,
-};
+use linklet_core::channel::{ChannelError, EphemeralPublic, Handshake, Pending, Sealed};
 
 /// How long a tag Poly1305 appends.
 const TAG_BYTES: usize = 16;
@@ -72,11 +70,15 @@ const KEY_BYTES: usize = 32;
 const HOST_TO_AGENT: &[u8] = b"linklet v1 host->agent";
 const AGENT_TO_HOST: &[u8] = b"linklet v1 agent->host";
 
+#[derive(Clone, Copy)]
+enum Role {
+    Host,
+    Agent,
+}
+
 /// A session built from key material, a salt, and which end we are.
 ///
-/// Extracted so that the shared-secret path and the handshake path cannot disagree
-/// about how a session is built. They differ only in what goes in: the handshake
-/// feeds the X25519 result *and* the shared secret, so the keys depend on both.
+/// Both handshake roles derive keys from the X25519 result and the shared secret.
 fn session_from(salt: &[u8], material: &[u8], role: Role) -> Result<Session, ChannelError> {
     let hkdf = Hkdf::<Sha256>::new(Some(salt), material);
 
@@ -121,7 +123,7 @@ fn handshake_salt(initiator: &EphemeralPublic, responder: &EphemeralPublic) -> V
     salt
 }
 
-/// The only implementation of [`Channel`] and [`Handshake`] in this project.
+/// The authenticated X25519 handshake implementation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HkdfChannel;
 
@@ -212,34 +214,6 @@ fn exchange(private: &StaticSecret, peer: &EphemeralPublic) -> Result<[u8; 32], 
         return Err(ChannelError::NotAuthentic);
     }
     Ok(*shared.as_bytes())
-}
-
-impl Channel for HkdfChannel {
-    fn open_session(
-        &self,
-        secret: &[u8],
-        session: &SessionId,
-        role: Role,
-    ) -> Result<Box<dyn Sealed>, ChannelError> {
-        // The session identifier is the salt, and the shared secret is the only
-        // input. No exchange, and therefore no forward secrecy -- see the trait's
-        // documentation for which path a deployment wants.
-        Ok(Box::new(session_from(session.as_bytes(), secret, role)?))
-    }
-}
-
-/// A session identifier from the operating system's random source.
-///
-/// # Errors
-///
-/// [`ChannelError::Refused`] when the system cannot produce randomness. Failing
-/// loudly is the only safe response: a session identifier that was not random
-/// would repeat, and a repeated salt under a reused secret is a repeated key.
-pub fn new_session_id() -> Result<SessionId, ChannelError> {
-    let mut bytes = [0u8; SessionId::BYTES];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| ChannelError::Refused(format!("no randomness available: {e}")))?;
-    SessionId::from_bytes(bytes.to_vec())
 }
 
 /// One session: a key for each direction and a count for each.
