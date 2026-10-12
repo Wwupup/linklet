@@ -13,7 +13,7 @@ Working rules for this list:
 
 ## M0 -- the skeleton
 
-- [x] workspace, three crates, the compiler-enforced layer rule
+- [x] workspace, three crates, the dependency-direction rule
 - [x] `.gitignore`, `AGENTS.md`, `rust-toolchain.toml`, this file
 - [x] the core types declared, with the tests that define their behaviour
 - [x] everything else: `cargo test` failed on `unimplemented!`, on purpose

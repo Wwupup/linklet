@@ -15,18 +15,13 @@ wins and this file is the bug.
 
 ## 1. Dependency direction
 
-A rule that depends on someone remembering it is not a rule. Making `core` a
-crate with no dependencies turns "do not do I/O in the core" into a compile
-error, so it cannot be broken by accident at 2am.
+Core decisions should be testable without a network, filesystem or cleanup.
+That requires keeping I/O at the edges, not keeping the dependency count at zero.
+Mature libraries reduce the code we maintain; core may use their pure APIs.
 
-The direction `cli -> adapters -> core` is what keeps decisions testable. Once
-`core` can open a socket, its tests need a network, and a test that needs a
-network stops being run -- and then the behaviour it covered is wrong without
-anyone noticing.
-
-If you want to add a dependency to `core`, the new code almost always belongs
-in `adapters`, behind a trait that `core` defines. That inversion is the point
-of the whole layout, and it is milestone M2.
+The dependency allowlist records intended use and catches unreviewed additions.
+It does not prove purity: both `std` and dependencies can expose I/O APIs, so usage
+still needs review. I/O belongs in adapters behind traits core defines.
 
 ## 2. Tests before implementation
 

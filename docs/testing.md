@@ -26,7 +26,7 @@ And the corollary that does the real work:
 > **If a behaviour can only be observed in an expensive layer, that is a design
 > problem, not a testing problem.**
 
-That is not a slogan; it is the reason `linklet-core` has no dependencies. The
+This is why `linklet-core` performs no I/O, even when it uses mature libraries. The
 probe's decision-making -- what counts as reachable, what a timeout means, what
 happens to a run when one target fails -- would be in the adapter by default, and
 would then need a machine that is off, a machine that refuses, and a machine that

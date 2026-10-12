@@ -67,46 +67,15 @@ fn declared_dependencies(crate_name: &str) -> Vec<String> {
     found
 }
 
-/// The architectural rule of this project, checked instead of trusted.
-///
-/// `linklet-core` must stay free of dependencies, because that is what makes
-/// "no I/O in the core" impossible to break by accident rather than merely
-/// discouraged. The moment someone adds `tokio` here to "just read one file",
-/// the core stops being testable in microseconds and the property is gone --
-/// silently, and without any other test failing. So this test fails instead.
-///
-/// It is also the demonstration of the point: the rule was written down in
-/// `AGENTS.md` and `README.md` first, where it is a wish, and it became real
-/// when it moved here.
-/// The crates `linklet-core` may depend on, and why each one is allowed.
-///
-/// # Why this replaced a rule that said "nothing"
-///
-/// The original rule was that `linklet-core` depends on no crate at all, and the
-/// reason behind it was never the count: it was that **core does no I/O**. Its
-/// tests need no network, no files and no cleanup, so they run in milliseconds and
-/// cannot fail for a reason outside the code. That property is worth defending and
-/// it is still defended here.
-///
-/// What was wrong was the wording. "Depends on nothing" is satisfied by a rule and
-/// not by a reason, so it stayed in force past the point where its reason applied
-/// -- and while the crate registry looked unreachable it was read as a rule about
-/// the whole project, which is how a SHA-256 came to be written by hand. Nothing
-/// about a pure-computation library threatens the property above.
-///
-/// So the rule is narrower and explicit: **core may depend on crates that compute
-/// and touch nothing.** Every entry is a decision, and adding one means arguing
-/// that the crate does no I/O -- not that it would be convenient.
+/// Reviewed core dependencies and the pure APIs used from each.
+/// This checks declared dependencies, not calls to I/O APIs in them or in std.
 const ALLOWED_DEPENDENCIES: &[(&str, &str)] = &[(
     "serde_json",
-    "parses and writes JSON, and does nothing else: no files, no sockets, no \
-     clock, no environment. It replaced six hundred lines of hand-written codec \
-     that sat on the path reading untrusted input from the network, which is the \
-     last place to keep code whose bugs only a fuzzer finds.",
+    "Value, in-memory JSON parsing and serialization; core does not use reader/writer APIs.",
 )];
 
 #[test]
-fn core_depends_only_on_crates_that_do_no_io() {
+fn core_dependencies_have_a_reviewed_pure_use() {
     let declared = declared_dependencies("linklet-core");
     let offenders: Vec<&String> = declared
         .iter()
@@ -119,13 +88,9 @@ fn core_depends_only_on_crates_that_do_no_io() {
 
     assert!(
         offenders.is_empty(),
-        "linklet-core must not depend on anything that does I/O, but it declares \
-         {offenders:?}.\n\
-         If the new code needs I/O, it belongs in linklet-adapters behind a trait \
-         that linklet-core defines -- see AGENTS.md rule 1.\n\
-         If it genuinely does no I/O, add it to ALLOWED_DEPENDENCIES above with a \
-         sentence saying why, so the next reader sees the argument rather than the \
-         exception."
+        "Unreviewed core dependencies: {offenders:?}. Mature libraries are allowed; \
+         record their pure use in ALLOWED_DEPENDENCIES. Keep I/O in adapters \
+         behind core traits. See AGENTS.md rule 1."
     );
 }
 
@@ -156,7 +121,7 @@ fn the_allowlist_actually_matches_a_real_dependency() {
 
 /// Guards the guard.
 ///
-/// `core_has_no_dependencies` passing is only evidence if the parser behind it
+/// `core_dependencies_have_a_reviewed_pure_use` passing is only evidence if the parser behind it
 /// can actually see a dependency. A reader that returns nothing is
 /// indistinguishable from a manifest with nothing in it, and that is how an
 /// architecture test quietly becomes decoration. This checks the reader against
@@ -168,7 +133,7 @@ fn the_reader_can_actually_see_dependencies() {
     assert!(
         adapters.iter().any(|line| line.contains("linklet-core")),
         "the dependency reader found nothing in linklet-adapters, which does \
-         depend on linklet-core -- so `core_has_no_dependencies` proves nothing \
+         depend on linklet-core -- so `core_dependencies_have_a_reviewed_pure_use` proves nothing \
          until this is fixed. Found: {adapters:?}"
     );
 }

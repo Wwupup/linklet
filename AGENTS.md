@@ -1,60 +1,48 @@
 # Rules
 
-Rules only. The reason for each one is in `docs/rationale.md` -- read it when
-you are about to change a rule, not before.
+## Reading
 
-## Docs
+- Before work, read `docs/retrospective.md`. `README.md` defines the tool;
+  `docs/ROADMAP.md` defines scope; `docs/INDEX.md` maps the remaining docs.
+- Before questioning a design, read `docs/decisions.md`; before changing a rule,
+  read `docs/rationale.md`.
+- Read the relevant guide before changing its area: `docs/MCP.md` (tools),
+  `docs/framing.md` (connections), `docs/transfer.md` (file transfers),
+  `docs/VERSIONING.md` (wire changes or releases), `docs/VERIFYING.md` (workflows).
+- Read `docs/machine.md` for unexpected command failures and `docs/VERIFYING.md`
+  for unexpected verification results. Read `docs/smoke.md` before claiming LAN behavior.
 
-| file | read it when |
-|---|---|
-| `README.md` | what the tool is, and what it deliberately is not |
-| `docs/ROADMAP.md` | what to build next, and what was parked on purpose |
-| `docs/LEARNING.md` | the task loop: red, spec, smallest change, verify |
-| `docs/testing.md` | which layer a test belongs in, and what it costs |
-| `docs/MCP.md` | the agent-facing surface: what is on it, and what is not |
-| `docs/COMMITS.md` | how to write a commit, with worked examples |
-| `docs/review-m1.md` | the standard M1 is judged against, published early |
-| `docs/rationale.md` | why a rule below exists |
-| `docs/decisions.md` | before arguing with a choice that looks wrong -- it may already be recorded as wrong |
-| `docs/retrospective.md` | before starting work, so the six failures are not paid for twice |
-| `docs/framing.md` | before touching the wire format or a connection |
-| `docs/transfer.md` | before moving a file: fourteen failure modes with a defence for each |
-| `docs/smoke.md` | before claiming anything works on a real machine |
-| `docs/VERSIONING.md` | before changing the wire, or cutting a release |
-| `docs/machine.md` | when a command fails in a way that looks like the code is wrong |
-| `docs/VERIFYING.md` | before changing a workflow, or when a run does something you did not expect |
-| `docs/INDEX.md` | the map of this project, for keeping it current |
+## Work style
+
+- State assumptions and verifiable success criteria before implementation. Surface
+  competing interpretations and simpler approaches; clarify uncertainty before proceeding.
+  For multi-step work, give a short plan with a check for each step.
+- Build only what was requested. No speculative features, single-use abstractions,
+  unrequested configuration, or handling of impossible cases. Prefer the smallest solution.
+- Every changed line must serve the request. Match existing style; avoid unrelated
+  cleanup, refactoring, or formatting. Remove only dead code your change creates;
+  report pre-existing dead code instead of deleting it.
 
 ## 1. Dependency direction
 
-`linklet-core` does no I/O, and depends on no crate that does.
-
-- Enforced by `tests/architecture.rs`, which allows a named list of
-  pure-computation crates and refuses everything else. Adding one means writing
-  down why it does no I/O.
-- The reason, since the wording changed once already: core tests need no network,
-  no files and no cleanup, so they run in milliseconds. A crate that computes and
-  touches nothing does not threaten that. "Depends on nothing" was satisfied by a
-  rule rather than a reason, and it stayed in force past the point where its reason
-  applied -- see `docs/decisions.md`.
-- Direction is `cli -> adapters -> core`. Never the reverse.
-- Something in `core` needs I/O? It belongs in `adapters`, behind a trait
-  `core` defines.
+`cli -> adapters -> core`. Core performs no I/O; mature libraries are welcome.
+Prefer established libraries to hand-written general-purpose code. Keep I/O in
+adapters behind core traits. Record each core dependency and its pure use in
+`crates/linklet-core/tests/architecture.rs`; do not call its I/O APIs from core.
 
 ## 2. Tests before implementation
 
-Write the test first. Run it. It must fail, and fail for the reason you meant --
-not a compile error, not a test that never runs. A test never seen failing is
-not evidence of anything.
-
-`cargo test --workspace` is green before a commit.
+Write and run the test first; observe failure for the intended behavior, not a
+compile error or a test that never ran. For refactors, verify before and after.
+Use the cheapest layer that observes the behavior; see `docs/testing.md` and
+`docs/LEARNING.md`. Make the smallest change, then verify the success criteria.
 
 ## 3. Definition of done
 
-All four pass, plus the docs the change makes untrue are updated in the same
-commit.
+All four checks must pass; update docs made untrue by the change in the same commit.
+`tools/verify.ps1` is the shared entry point. Its required gates are:
 
-```
+```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
@@ -63,37 +51,21 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 ## 4. Commits
 
-One logical change per commit -- write the revert message, and if it needs the
-word "and", it is two commits. `<type>: <what, imperative>`, under 72
-characters, then why if it is not obvious. Types: `feat` `fix` `refactor`
-`test` `docs` `chore`. English, ASCII. The rest, with worked examples, is in
-`docs/COMMITS.md`. Checked by `tests/commit_message.rs`.
+One logical change per commit. If its revert needs "and", split it.
+Use `<type>: <imperative summary>`, under 72 characters; explain why when needed.
+Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. See `docs/COMMITS.md`.
 
 ## 5. Never commit
 
-Secrets, tokens, logs, build output, release archives. If you reach for
-`git add -f`, fix `.gitignore` instead.
+No secrets, tokens, logs, build output, or release archives.
+Fix `.gitignore` instead of using `git add -f`.
 
 ## 6. Public API
 
-Doc comment on every public item: what it does, and what it does not where a
-caller could guess wrong. No `unwrap()` in library code.
+Document every public item, including limits callers could misunderstand.
+No `unwrap()` in library code.
 
 ## 7. Language
 
-English everywhere. ASCII in every committed file; non-ASCII test data is
-written as escapes. Checked by `tests/ascii_only.rs`, which exists because
-seven em dashes reached one document from the same hand without any of them
-being noticed.
-
-## 8. This machine
-
-The facts about this development machine that have each cost someone time -- the stale git
-proxy that made the registry look unreachable, the sandbox mode that fails before any command
-runs, what a command sent to a target does to quote characters -- are in `docs/machine.md`.
-
-They are there and not here because a rule is something to obey and a machine fact is something
-to look up: the rules above are short enough to read every time, and the facts in that file are
-long enough that keeping them here buried the rules.
-
-**Read it when a command fails in a way that looks like the code is wrong.**
+Use English and ASCII in committed files and commit messages.
+Write non-ASCII test data as escapes.

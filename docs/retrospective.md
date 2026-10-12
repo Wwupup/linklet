@@ -1,5 +1,8 @@
 # What this was, and what went wrong
 
+Historical snapshot. The current rule permits mature core dependencies for pure
+computation; it is not a compiler guarantee against I/O. See `AGENTS.md` rule 1.
+
 A record of one rebuild, written at the end of it. It is a **decision** document in
 the sense `docs/INDEX.md` uses: kept true by nothing, and it does not go stale
 because it is a moment rather than a claim about the code.

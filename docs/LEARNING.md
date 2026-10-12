@@ -37,9 +37,8 @@ Take one task. A task is one test that does not pass yet.
    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
    ```
 
-   All four, every time. They take under a second on a warm cache, so there is
-   no reason to skip one, and every reason not to: a check that is allowed to
-   fail once is allowed to fail forever.
+   Run all four. Adapter and end-to-end tests use this machine and take longer
+   than pure core tests; report failures with their cause rather than skipping them.
 
 6. **Commit one logical change.** See `AGENTS.md` rule 4.
 
@@ -61,9 +60,8 @@ In rough order of how often each one helps:
   to apply, change the rule -- but only after saying out loud which reason
   stopped applying. A rule that gets worked around silently stops being a rule.
 
-## The one thing not to do
+## Dependencies
 
-Do not add a dependency to `linklet-core` to solve a problem. It will not
-build -- `tests/architecture.rs` fails, on purpose. If the code genuinely needs
-I/O, the trait belongs in `linklet-core` and the implementation belongs in
-`linklet-adapters`, and that is milestone M2.
+Use mature libraries for general-purpose computation, including in `linklet-core`.
+Record a core dependency and its pure use in `tests/architecture.rs`. If the code
+needs I/O, define the trait in core and implement it in `linklet-adapters`.
