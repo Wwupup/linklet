@@ -1318,3 +1318,82 @@ fn transfer_completion_requires_a_path_and_valid_digest() {
         assert!(wire::transfer_outcome_from_json(&value).is_err(), "{value}");
     }
 }
+
+#[test]
+fn query_contracts_report_counts_scope_and_boolean_completeness() {
+    let search = wire::search_to_json(&a_search());
+    assert_eq!(
+        search["count"].as_u64(),
+        Some(a_search().lines.len() as u64)
+    );
+    assert!(search["complete"].is_boolean());
+    assert!(search.get("scope").is_some());
+    let processes = wire::ps_listing_to_json(&a_listing());
+    assert_eq!(processes["complete"], false);
+    assert!(processes["scope"].is_object());
+    let listing = wire::ls_listing_to_json(&linklet_core::listing::empty("/tmp"));
+    assert_eq!(listing["complete"], true);
+    assert_eq!(listing["scope"]["path"], "/tmp");
+}
+
+#[test]
+fn process_completeness_never_depends_on_notes() {
+    use linklet_core::process::{self, Filter, Incomplete, Process};
+    let mut failed = process::could_not_enumerate("OS error", &Filter::any());
+    failed.notes.clear();
+    assert_eq!(failed.incomplete(), Incomplete::NotEnumerated);
+    let mut complete = process::apply(vec![Process::named(1, "helper")], &Filter::any(), 0);
+    complete
+        .notes
+        .push("cannot is just an arbitrary note".into());
+    assert_eq!(complete.incomplete(), Incomplete::No);
+    let filter = Filter {
+        path: Some("/bin/helper".into()),
+        ..Filter::any()
+    };
+    let missing = process::apply(vec![Process::named(1, "helper")], &filter, 0);
+    assert_ne!(missing.incomplete(), Incomplete::No);
+}
+
+#[test]
+fn invalid_execution_facts_cannot_become_a_success() {
+    let empty = wire::text_to_json(&wire::Text::default());
+    let run = serde_json::json!({"cwd":"/tmp","exit_code":4294967296u64,"stdout":empty,"stderr":empty,"duration_ms":1,"reason":null,"error":null});
+    assert!(wire::run_outcome_from_json(&run).is_err());
+    let spawn = serde_json::json!({"pid":42,"command":"program","cwd":"/tmp","output":"/tmp/log","pid_kind":"program","state":"started","observed_ms":0,"exit_code":null,"error":null,"tail":empty});
+    for (key, value) in [
+        ("state", serde_json::json!("ready")),
+        ("pid", serde_json::json!(4294967296u64)),
+        ("exit_code", serde_json::json!(7)),
+        ("pid_kind", serde_json::json!("service")),
+    ] {
+        let mut invalid = spawn.clone();
+        invalid[key] = value;
+        assert!(
+            wire::spawn_report_from_reply(&wire::Reply::Result(invalid)).is_err(),
+            "{key}"
+        );
+    }
+}
+
+#[test]
+fn partially_missing_process_fields_make_filter_results_incomplete() {
+    use linklet_core::process::{self, Filter, Incomplete, Process};
+    let visible = Process {
+        pid: 1,
+        name: "worker".into(),
+        path: Some("/bin/worker".into()),
+        cmdline: Some("worker".into()),
+    };
+    let hidden = Process::named(2, "worker");
+    let listing = process::apply(
+        vec![visible, hidden],
+        &Filter {
+            cmdline: Some("worker".into()),
+            ..Filter::any()
+        },
+        0,
+    );
+    assert_eq!(listing.count(), 1);
+    assert_ne!(listing.incomplete(), Incomplete::No);
+}

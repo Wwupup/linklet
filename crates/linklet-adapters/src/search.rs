@@ -81,6 +81,7 @@ pub fn grep(
 
 /// A file's lines, and what was learned about its bytes on the way.
 struct Read {
+    scope: linklet_core::tail::ByteRange,
     /// The lines, without terminators.
     lines: Vec<String>,
     /// What the bytes were taken to be.
@@ -96,6 +97,7 @@ struct Read {
 /// Moves the facts about the reading onto the search that answered.
 fn finish(mut search: Search, path: &str, read: Read) -> Search {
     search.path = path.to_string();
+    search.scope = Some(read.scope);
     search.encoding = read.encoding;
     search.bytes_read = read.bytes_read;
     search.file_bytes = read.file_bytes;
@@ -165,6 +167,10 @@ fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, O
     };
 
     Ok(Read {
+        scope: linklet_core::tail::ByteRange {
+            start: window.offset as u64,
+            end: (window.offset + bytes.len()) as u64,
+        },
         lines: lines_of(text),
         encoding,
         bytes_read: window.read,

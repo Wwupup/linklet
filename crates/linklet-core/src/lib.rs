@@ -70,3 +70,5 @@ pub mod presentation;
 
 /// Stateless incremental log results.
 pub mod tail;
+
+mod output_schema;

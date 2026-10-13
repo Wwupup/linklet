@@ -520,6 +520,11 @@ impl CommandOutcome {
         {
             self.tool.fail(error);
         }
+        if data.get("complete").and_then(serde_json::Value::as_bool) == Some(false) {
+            self.tool
+                .warnings
+                .push("Observation is incomplete; inspect scope, limits and notes.".into());
+        }
         self.tool.data = data;
         self
     }
@@ -562,24 +567,38 @@ impl ToolRunner for LiveRunner {
             // A target that does not parse is a failed call: the agent asked for
             // something this tool cannot interpret, and it has to change the
             // request. Bad news about a machine is the other case entirely.
-            Err(CheckFailure::BadSpec(problem)) => {
-                ToolOutcome::failed(format!("the targets do not parse: {problem}"))
-            }
-            Err(CheckFailure::Refused(error)) => {
-                ToolOutcome::failed(format!("the run was refused: {error}"))
-            }
+            Err(CheckFailure::BadSpec(problem)) => ToolOutcome::failure(OperationError::new(
+                ErrorCode::InvalidArgument,
+                "validate",
+                format!("the targets do not parse: {problem}"),
+            )),
+            Err(CheckFailure::Refused(error)) => ToolOutcome::failure(OperationError::new(
+                ErrorCode::InvalidArgument,
+                "validate",
+                format!("the run was refused: {error}"),
+            )),
         }
     }
 
     fn testbed(&self, spec_path: &str, target: &str) -> ToolOutcome {
-        let Ok(text) = std::fs::read_to_string(spec_path) else {
-            // Local paths are read with this process's filesystem permissions.
-            return ToolOutcome::failed(format!("cannot read {spec_path}"));
+        let text = match std::fs::read_to_string(spec_path) {
+            Ok(text) => text,
+            Err(error) => {
+                return ToolOutcome::failure(linklet_adapters::failure::io(
+                    error,
+                    "read_config",
+                    std::path::Path::new(spec_path),
+                ));
+            }
         };
 
         let Ok(testbed) = Testbed::parse(&text) else {
             let problem = Testbed::parse(&text).expect_err("just failed");
-            return ToolOutcome::failed(format!("{spec_path}: {problem}"));
+            return ToolOutcome::failure(OperationError::new(
+                ErrorCode::LocalConfigError,
+                "parse_config",
+                format!("{spec_path}: {problem}"),
+            ));
         };
 
         let verdicts = testbed.check(&SystemProber);
@@ -1175,7 +1194,7 @@ fn discover_on(port: u16, networks: bool, targets: bool) -> CommandOutcome {
         lines.join("\n")
     };
     let mut answer = CommandOutcome::answered(text, i32::from(result.truncated));
-    answer.tool.data = serde_json::json!({"listeners":result.found.iter().map(|f|f.address.to_string()).collect::<Vec<_>>(),"networks":result.networks,"skipped":result.skipped,"truncated":result.truncated,"complete":!result.truncated,"authenticated":false,"count":result.found.len(),"scanned":result.tried,"port":port});
+    answer.tool.data = serde_json::json!({"listeners":result.found.iter().map(|f|format!("{}:{}",f.address,f.port)).collect::<Vec<_>>(),"networks":result.networks,"skipped":result.skipped,"truncated":result.truncated,"complete":!result.truncated && result.skipped.is_empty(),"authenticated":false,"count":result.found.len(),"scanned":result.tried,"port":port});
     answer
 }
 
@@ -1624,7 +1643,9 @@ fn ps_on(agent: &str, filter: &linklet_core::process::Filter) -> CommandOutcome 
     match linklet_client::ps(&address, filter) {
         Ok(listing) => CommandOutcome::answered(
             linklet_core::process::render(&listing),
-            i32::from(listing.unreadable > 0 || !listing.notes.is_empty()),
+            i32::from(
+                listing.truncated || listing.incomplete() != linklet_core::process::Incomplete::No,
+            ),
         )
         .facts(agent, wire::ps_listing_to_json(&listing)),
         Err(error) => CommandOutcome::call_failed(agent, &error),

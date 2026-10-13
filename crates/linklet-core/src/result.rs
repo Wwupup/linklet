@@ -142,18 +142,29 @@ impl ToolOutcome {
             "error":self.error,"warnings":self.warnings})
     }
 }
-/// Common schema with operation-specific data.
+pub(crate) fn error_schema() -> Value {
+    json!({"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,
+        "required":["code","phase","message"],"properties":{
+            "code":{"enum":["invalid_argument","local_config_error","pairing_required","authentication_failed",
+                "protocol_mismatch","connection_failed","permission_denied","not_found","command_failed",
+                "deadline_exceeded","result_unknown","invalid_reply","refused","io_error","internal_error"]},
+            "phase":{"type":"string"},"message":{"type":"string"}}}]})
+}
+/// Common envelope plus required operation facts on a successful result.
+/// Failures may have no data when the request did not return any facts.
 pub fn output_schema(data: Value) -> Value {
     json!({"type":"object","additionalProperties":false,
     "required":["status","target","data","error","warnings"],
     "properties":{
-        "status":{"type":"string","enum":["ok","error","unknown"]},
-        "target":{"type":["string","null"]}, "data":data,
-        "error":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":false,
-            "required":["code","phase","message"],"properties":{
-                "code":{"type":"string"},"phase":{"type":"string"},"message":{"type":"string"}}}]},
-        "warnings":{"type":"array","items":{"type":"string"}}
-    }})
+        "status":{"enum":["ok","error","unknown"]},"target":{"type":["string","null"]},
+        "data":{"anyOf":[data,{"type":"object","additionalProperties":false,"properties":{"presentation":{"type":"object"}}}]},
+        "error":error_schema(),"warnings":{"type":"array","items":{"type":"string"}}
+    },
+    "allOf":[
+        {"if":{"properties":{"status":{"const":"ok"}}},"then":{"properties":{"data":{"not":{"type":"object","additionalProperties":false,"properties":{"presentation":{"type":"object"}}}},"error":{"type":"null"}}}},
+        {"if":{"properties":{"status":{"enum":["error","unknown"]}}},"then":{"properties":{"error":{"type":"object"}}}},
+        {"if":{"properties":{"status":{"const":"unknown"}}},"then":{"properties":{"error":{"properties":{"code":{"const":"result_unknown"}}}}}}
+    ]})
 }
 
 impl From<String> for OperationError {

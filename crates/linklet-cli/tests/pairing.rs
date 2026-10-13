@@ -1,4 +1,6 @@
 //! Pair once, then use credentials across independent CLI and MCP processes.
+#[path = "../../test-support/schemas.rs"]
+mod schemas;
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -211,11 +213,18 @@ fn mcp_calls(f: &Fixture, controller: &str, messages: &[Value]) -> Vec<Value> {
         writeln!(child.stdin.as_mut().expect("stdin"), "{message}").expect("write");
     }
     let output = child.wait_with_output().expect("MCP reply");
-    String::from_utf8(output.stdout)
+    let replies: Vec<Value> = String::from_utf8(output.stdout)
         .expect("UTF-8")
         .lines()
         .map(|s| serde_json::from_str(s).expect("JSON"))
-        .collect()
+        .collect();
+    for (message, reply) in messages.iter().zip(&replies) {
+        schemas::validate(
+            message["params"]["name"].as_str().expect("tool"),
+            &reply["result"],
+        );
+    }
+    replies
 }
 fn call(id: u32, name: &str, args: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}})

@@ -551,7 +551,11 @@ pub fn ps(
         HANDSHAKE_ALLOWANCE,
     )?;
 
-    wire::ps_listing_from_reply(&reply).map_err(|error| CallError::Protocol(error.to_string()))
+    match reply {
+        Reply::Refused(error) => Err(CallError::Refused(error)),
+        result => wire::ps_listing_from_reply(&result)
+            .map_err(|error| CallError::Protocol(error.to_string())),
+    }
 }
 
 /// Lists a path on an agent's machine, without moving anything.
@@ -870,14 +874,9 @@ fn protocol_mismatch(agent: i64) -> String {
     } else {
         "this tool"
     };
-    let newer = if agent < tool {
-        "this tool"
-    } else {
-        "the agent"
-    };
     format!(
         "protocol {agent} on the agent and protocol {tool} here; \
-         {older} is the older one, so upgrade {newer} or use a matching build \
+         {older} is the older one, so upgrade {older} or use a matching build \
          (see docs/VERSIONING.md)"
     )
 }
@@ -1153,9 +1152,13 @@ pub fn pair(
         .map_err(transport)?;
     let frame = connection.read_frame(Kind::Sealed).map_err(transport)?;
     let mut plaintext = Vec::new();
-    session
-        .open_into(&frame, &mut plaintext)
-        .map_err(|_| CallError::Refused("pairing authentication failed".into()))?;
+    session.open_into(&frame, &mut plaintext).map_err(|_| {
+        CallError::Refused(linklet_core::result::OperationError::new(
+            linklet_core::result::ErrorCode::AuthenticationFailed,
+            "authenticate",
+            "pairing authentication failed",
+        ))
+    })?;
     let value = match decode_reply(&plaintext)? {
         Reply::Result(v) => v,
         Reply::Refused(r) => return Err(CallError::Refused(r)),

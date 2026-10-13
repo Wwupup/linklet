@@ -1108,8 +1108,10 @@ pub fn run_outcome_from_json(value: &Value) -> Result<RunOutcome, WireError> {
         Some(Value::Null) => None,
         Some(code) => Some(
             code.as_i64()
-                .ok_or_else(|| WireError::BadRequest("exit_code: not a number".to_string()))?
-                as i32,
+                .and_then(|c| i32::try_from(c).ok())
+                .ok_or_else(|| {
+                    WireError::BadRequest("exit_code: outside signed 32-bit range".to_string())
+                })?,
         ),
     };
 
@@ -1241,15 +1243,20 @@ pub fn ps_listing_to_json(listing: &crate::process::Listing) -> Value {
         crate::process::Incomplete::No => "no",
         crate::process::Incomplete::UnreadableLines => "unreadable-lines",
         crate::process::Incomplete::NotEnumerated => "not-enumerated",
+        crate::process::Incomplete::MissingFields => "missing-fields",
     };
 
     serde_json::json!({
+        "problem": listing.problem,
+        "missing_fields": listing.missing_fields,
         "processes": Value::Array(processes),
         "count": listing.processes.len() as i64,
         "total": listing.total as i64,
         "unreadable": listing.unreadable as i64,
         "truncated": listing.truncated,
-        "complete": complete,
+        "complete": complete == "no" && !listing.truncated,
+        "incomplete_reason": complete,
+        "scope": {"kind":"process_snapshot","filter":listing.applied},
         "applied": listing.applied.clone(),
         "notes": Value::Array(notes),
     })
@@ -1324,6 +1331,10 @@ pub fn ps_listing_from_reply(reply: &Reply) -> Result<crate::process::Listing, W
         .unwrap_or_default();
 
     Ok(crate::process::Listing {
+        problem: serde_json::from_value(value["problem"].clone())
+            .map_err(|e| WireError::BadRequest(e.to_string()))?,
+        missing_fields: serde_json::from_value(value["missing_fields"].clone())
+            .map_err(|e| WireError::BadRequest(e.to_string()))?,
         processes,
         total: number("total")?,
         unreadable: number("unreadable")?,
@@ -1576,7 +1587,7 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
     };
 
     let pid = match value.get("pid").map(Value::as_i64) {
-        Some(Some(pid)) if pid > 0 => pid as u32,
+        Some(Some(pid)) if pid > 0 && pid <= i64::from(u32::MAX) => pid as u32,
         _ => {
             return Err(WireError::BadRequest(
                 "pid: missing, or not a process identifier".to_string(),
@@ -1592,8 +1603,21 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
         .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
         .to_string();
 
+    let state = required_text(value, "state")?;
+    let pid_kind = required_text(value, "pid_kind")?;
+    if !matches!(
+        state.as_str(),
+        "started" | "running_at_observation" | "exited"
+    ) || !matches!(pid_kind.as_str(), "program" | "shell")
+        || (state != "exited" && !value["exit_code"].is_null())
+        || (state == "exited" && value["exit_code"] != 0 && value["error"].is_null())
+    {
+        return Err(WireError::BadRequest(
+            "inconsistent spawn observation".into(),
+        ));
+    }
     Ok(SpawnReport {
-        state: required_text(value, "state")?,
+        state,
         observed_ms: value["observed_ms"]
             .as_u64()
             .ok_or_else(|| WireError::BadRequest("observed_ms missing".into()))?,
@@ -1606,7 +1630,7 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
         command,
         cwd: required_text(value, "cwd")?,
         output: required_text(value, "output")?,
-        pid_kind: required_text(value, "pid_kind")?,
+        pid_kind,
     })
 }
 
@@ -1762,6 +1786,9 @@ pub fn search_to_json(search: &crate::search::Search) -> Value {
 
     serde_json::json!({
         "path": search.path,
+        "count": search.lines.len(),
+        "complete": search.searched && search.problem.is_none() && !search.truncated,
+        "scope": search.scope,
         "lines": Value::Array(lines),
         "total": match search.total {
             Some(total) => serde_json::json!(total as i64),
@@ -1893,6 +1920,14 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
     };
 
     Ok(crate::search::Search {
+        scope: value
+            .get("scope")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                serde_json::from_value(v.clone())
+                    .map_err(|e| WireError::BadRequest(format!("scope: {e}")))
+            })
+            .transpose()?,
         path: value
             .get("path")
             .and_then(Value::as_str)
@@ -1952,6 +1987,8 @@ pub fn ls_listing_to_json(listing: &crate::listing::Listing) -> Value {
 
     serde_json::json!({
         "path": listing.path,
+        "scope": {"path":listing.path,"recursive":false},
+        "complete": listing.found && listing.problem.is_none() && !listing.truncated,
         "entries": Value::Array(entries),
         "count": listing.entries.len() as i64,
         "total": listing.total as i64,
@@ -2131,12 +2168,16 @@ pub fn reply_ceiling() -> usize {
 /// `ceiling` is the same parameter [`reply_fits`] takes, and it is quoted in the
 /// message so the number a caller reads is the number that was applied.
 pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Value {
-    reply_refused(&format!(
-        "the command's output is too large to return: stdout was {} bytes and stderr {} \
+    reply_failure(&crate::result::OperationError::new(
+        crate::result::ErrorCode::ResultUnknown,
+        "encode_reply",
+        format!(
+            "the command's output is too large to return: stdout was {} bytes and stderr {} \
          bytes, and a reply of at most {ceiling} bytes is what this agent can send. Write \
          the output to a file on the target and pull that instead",
-        outcome.stdout.byte_count(),
-        outcome.stderr.byte_count(),
+            outcome.stdout.byte_count(),
+            outcome.stderr.byte_count(),
+        ),
     ))
 }
 

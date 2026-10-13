@@ -380,7 +380,11 @@ fn answer(
             // The refusal names the path the caller sent and not the resolved one: the caller
             // cannot see this machine's tree, and "which of my arguments was wrong" is the
             // question they are asking.
-            Err(error) => wire::reply_refused(&format!("cannot write {}: {error}", spawn.output)),
+            Err(error) => wire::reply_failure(&linklet_core::result::OperationError::new(
+                linklet_core::result::ErrorCode::InvalidArgument,
+                "validate",
+                format!("cannot write {}: {error}", spawn.output),
+            )),
         }),
         // The two requests that read a file **without moving it**, which is what
         // `docs/ROADMAP.md` M10 asks for: a pull is right for a log you want and wrong for a
@@ -406,7 +410,13 @@ fn answer(
         // A request the agent could not read is a refusal and not a dropped
         // connection: the caller learns which field was wrong instead of waiting for
         // a reply that is not coming.
-        Err(error) => Response::Sealed(wire::reply_refused(&refusal_text(&error))),
+        Err(error) => Response::Sealed(wire::reply_failure(
+            &linklet_core::result::OperationError::new(
+                linklet_core::result::ErrorCode::InvalidArgument,
+                "validate",
+                refusal_text(&error),
+            ),
+        )),
     }
 }
 
@@ -460,7 +470,13 @@ fn receive(
 ) -> Value {
     let target = match manifest.check(paths) {
         Ok(target) => target,
-        Err(error) => return wire::reply_refused(&error.to_string()),
+        Err(error) => {
+            return wire::reply_failure(&linklet_core::result::OperationError::new(
+                linklet_core::result::ErrorCode::InvalidArgument,
+                "validate",
+                error.to_string(),
+            ));
+        }
     };
 
     // Answer the manifest before reading a byte of the file. A sender that has not been
@@ -499,7 +515,15 @@ fn send(
 ) -> Response {
     let target = match paths.resolve(path) {
         Ok(target) => target,
-        Err(error) => return Response::Sealed(wire::reply_refused(&error.to_string())),
+        Err(error) => {
+            return Response::Sealed(wire::reply_failure(
+                &linklet_core::result::OperationError::new(
+                    linklet_core::result::ErrorCode::InvalidArgument,
+                    "validate",
+                    error.to_string(),
+                ),
+            ));
+        }
     };
 
     // Describing the file hashes it, which is the pass that produces the digest the

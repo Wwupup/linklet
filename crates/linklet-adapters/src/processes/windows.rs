@@ -35,11 +35,20 @@ use super::{MAX_READ, Parsed};
 ///
 /// The reason `tasklist` could not be run. It is an error rather than an empty list because
 /// the two mean opposite things to a caller deciding whether it is safe to overwrite a file.
-pub(super) fn read_all() -> Result<Parsed, String> {
+pub(super) fn read_all() -> Result<Parsed, linklet_core::result::OperationError> {
     let output = Command::new("tasklist")
         .args(["/FO", "CSV", "/NH"])
         .output()
-        .map_err(|error| format!("cannot run tasklist: {error}"))?;
+        .map_err(|error| {
+            crate::failure::io(error, "enumerate", std::path::Path::new("tasklist"))
+        })?;
+    if !output.status.success() {
+        return Err(linklet_core::result::OperationError::new(
+            linklet_core::result::ErrorCode::CommandFailed,
+            "enumerate",
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
 
     // `tasklist` exits 0 and writes "no tasks are running" when a filter matched nothing, so
     // the status is not the answer. A failure to run at all is already the `map_err` above.

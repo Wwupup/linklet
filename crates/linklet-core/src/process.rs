@@ -142,8 +142,14 @@ impl Filter {
     /// about: on a machine with nothing running, an unreadable field changes nothing.
     pub fn unanswerable(&self, processes: &[Process]) -> Vec<Field> {
         let wanted = [
-            (self.path.as_ref(), Field::Path),
-            (self.cmdline.as_ref(), Field::Cmdline),
+            (self.path.as_ref().or(self.query.as_ref()), Field::Path),
+            (
+                self.cmdline
+                    .as_ref()
+                    .or(self.query.as_ref())
+                    .or(self.exclude.as_ref()),
+                Field::Cmdline,
+            ),
         ];
 
         wanted
@@ -153,7 +159,7 @@ impl Filter {
             .filter(|field| {
                 processes
                     .iter()
-                    .all(|process| process.field(*field).is_none())
+                    .any(|process| process.field(*field).is_none())
             })
             .filter(|_| !processes.is_empty())
             .collect()
@@ -245,6 +251,10 @@ impl Filter {
 /// does a listing that hit its ceiling.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Listing {
+    /// Typed failure to obtain the process snapshot.
+    pub problem: Option<crate::result::OperationError>,
+    /// Requested filter fields unavailable for every observed process.
+    pub missing_fields: Vec<String>,
     /// The processes that matched, in the order the machine reported them.
     pub processes: Vec<Process>,
     /// How many processes were examined, before the filter.
@@ -274,6 +284,8 @@ pub enum Incomplete {
     UnreadableLines,
     /// The machine's process list could not be obtained at all.
     NotEnumerated,
+    /// A requested filter cannot be answered by this snapshot.
+    MissingFields,
 }
 
 /// How many processes one listing reports.
@@ -314,8 +326,11 @@ impl Listing {
         if self.unreadable > 0 {
             return Incomplete::UnreadableLines;
         }
-        if self.notes.iter().any(|note| note.starts_with("cannot")) {
+        if self.problem.is_some() {
             return Incomplete::NotEnumerated;
+        }
+        if !self.missing_fields.is_empty() {
+            return Incomplete::MissingFields;
         }
         Incomplete::No
     }
@@ -328,6 +343,12 @@ impl Listing {
 /// rather than a clean machine.
 pub fn could_not_enumerate(reason: &str, filter: &Filter) -> Listing {
     Listing {
+        problem: Some(crate::result::OperationError::new(
+            crate::result::ErrorCode::IoError,
+            "enumerate",
+            reason,
+        )),
+        missing_fields: Vec::new(),
         processes: Vec::new(),
         total: 0,
         unreadable: 0,
@@ -370,6 +391,11 @@ pub fn apply(processes: Vec<Process>, filter: &Filter, unreadable: usize) -> Lis
     matched.truncate(MAX_LISTED);
 
     Listing {
+        problem: None,
+        missing_fields: unanswerable
+            .iter()
+            .map(|f| f.as_str().to_string())
+            .collect(),
         processes: matched,
         total,
         unreadable,
@@ -386,8 +412,8 @@ fn notes_for(unanswerable: &[Field], unreadable: usize) -> Vec<String> {
     if !unanswerable.is_empty() {
         let names: Vec<&str> = unanswerable.iter().map(|field| field.as_str()).collect();
         notes.push(format!(
-            "no process here could be described well enough to check {}: an agent that is \
-             not elevated cannot read another user's command line",
+            "some processes could not be described well enough to check {}; \
+             these fields were unavailable in the snapshot",
             names.join(" or ")
         ));
     }
@@ -733,6 +759,7 @@ pub fn render(listing: &Listing) -> String {
             out.push_str(&format!(", {} lines unreadable", listing.unreadable));
         }
         Incomplete::NotEnumerated => out.push_str(", the process list could not be read"),
+        Incomplete::MissingFields => out.push_str(", requested fields are unavailable"),
     }
 
     for note in &listing.notes {

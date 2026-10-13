@@ -264,3 +264,15 @@ newly detected encoding are reported and restart from the file beginning. A
 missing file is an error. continuity=boundary_checked only describes the sampled
 boundary: arbitrary rewrites outside those samples cannot be ruled out. A reset
 never claims continuity with the previous contents.
+
+Query `count` is the target-side returned count. `complete` is a boolean
+about the underlying observation, independent of MCP presentation trimming.
+`scope` identifies the process filter, nonrecursive path, or raw byte window
+read by grep; grep line numbers in a suffix window are relative to that window.
+MCP `displayed_count` / `displayed_counts` and `presentation_truncated`
+separately describe the complete entries retained for display.
+
+Each output schema requires the operation's successful facts and validates stream,
+query, identity, transfer and spawn fields. Error/unknown results may have empty
+data when nothing trustworthy was received. Process enumeration failures and
+unavailable filter fields are typed facts, independent of explanatory notes.

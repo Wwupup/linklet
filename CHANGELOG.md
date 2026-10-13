@@ -13,9 +13,11 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
-- Next minor: all 14 MCP tools declare outputSchema and return structuredContent.
+- Next minor: all 14 MCP tools declare validated outputSchema and return structuredContent.
   Stable error categories distinguish known failures from unknown results after
   possible execution. Pair and probe return authenticated target process context.
+  Query counts, byte windows, partial process fields and completeness are explicit;
+  MCP presentation trimming preserves these facts.
 
 - Next minor: zero-argument target startup generates a permanent six-digit pairing
   code and a strong saved credential. New controllers can pair unattended through

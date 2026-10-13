@@ -21,10 +21,16 @@ fn slots(value: &Value, path: &str, found: &mut Vec<(String, usize, bool)>) {
         }
         for (key, child) in fields {
             let next = format!("{path}/{key}");
-            if matches!(
-                key.as_str(),
-                "lines" | "entries" | "processes" | "listeners"
-            ) {
+            let query_results = key == "results"
+                && child
+                    .as_array()
+                    .is_some_and(|entries| entries.iter().all(|e| e.get("status").is_none()));
+            if query_results
+                || matches!(
+                    key.as_str(),
+                    "lines" | "entries" | "processes" | "listeners" | "networks" | "skipped"
+                )
+            {
                 if let Some(entries) = child.as_array() {
                     found.push((
                         next,
@@ -99,11 +105,18 @@ pub fn present(outcome: &ToolOutcome) -> ToolOutcome {
                 let omitted = count < entries.len();
                 entries.truncate(count);
                 shortened |= omitted;
-                if let Some((parent, _)) = path.rsplit_once('/')
+                if let Some((parent, field)) = path.rsplit_once('/')
                     && let Some(data) = result.data.pointer_mut(parent)
                 {
-                    data["displayed_count"] = count.into();
-                    data["presentation_truncated"] = omitted.into();
+                    if data.get("displayed_counts").is_none() {
+                        data["displayed_counts"] = json!({});
+                    }
+                    data["displayed_counts"][field] = count.into();
+                    if !matches!(field, "networks" | "skipped") {
+                        data["displayed_count"] = count.into();
+                    }
+                    let previous = data["presentation_truncated"].as_bool().unwrap_or(false);
+                    data["presentation_truncated"] = (previous || omitted).into();
                 }
             }
         }

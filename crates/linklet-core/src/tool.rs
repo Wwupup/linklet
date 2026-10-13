@@ -743,7 +743,7 @@ pub fn tool_list_json() -> Value {
                         ("inputSchema".to_string(), tool.input_schema),
                         (
                             "outputSchema".to_string(),
-                            crate::result::output_schema(serde_json::json!({"type":"object"})),
+                            crate::output_schema::tool(tool.name),
                         ),
                     ]
                     .into_iter()

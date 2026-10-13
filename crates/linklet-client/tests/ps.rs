@@ -326,8 +326,8 @@ fn a_field_the_machine_cannot_supply_is_reported_and_one_it_can_is_used() {
         assert_eq!(listing.count(), 0, "no process could be checked");
         assert_eq!(
             listing.incomplete(),
-            Incomplete::No,
-            "the machine was read fine; the field was not available"
+            Incomplete::MissingFields,
+            "the snapshot was read but cannot answer this filter"
         );
         assert!(
             listing.notes.iter().any(|note| note.contains("cmdline")),
@@ -338,9 +338,10 @@ fn a_field_the_machine_cannot_supply_is_reported_and_one_it_can_is_used() {
             listing.count() >= 1,
             "the agent's own command line names it, and was read from /proc: {listing:#?}"
         );
-        assert!(
-            !listing.notes.iter().any(|note| note.contains("cmdline")),
-            "nothing was unanswerable here: {listing:#?}"
+        // Other users' command lines may be unavailable even though this agent is visible.
+        assert_eq!(
+            listing.missing_fields.contains(&"cmdline".to_string()),
+            listing.incomplete() == Incomplete::MissingFields
         );
     }
 }

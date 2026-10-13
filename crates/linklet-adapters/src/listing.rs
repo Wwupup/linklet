@@ -13,7 +13,7 @@
 //! caller that confused them would conclude a machine has no logs, which is how a deployment
 //! stops looking for them.
 
-use linklet_core::listing::{Entry, Listing, MAX_ENTRIES, could_not_list, empty, sorted};
+use linklet_core::listing::{Entry, Listing, MAX_ENTRIES, could_not_list, sorted};
 use linklet_core::transfer::Destination;
 
 /// Lists one absolute path or a path relative to the configured base.
@@ -76,13 +76,18 @@ pub fn list(paths: &Destination, path: &str) -> Listing {
     };
 
     let mut entries = Vec::new();
-    for entry in directory {
+    let mut problem = None;
+    for entry in directory.take(MAX_ENTRIES + 1) {
         // **One unreadable entry does not fail the listing.** The rest of the directory is
         // still an answer, and refusing the whole thing because one name could not be read
         // would report a directory nobody can see as one that is empty -- which is the
         // confusion this module exists to prevent, arriving from the other direction.
-        let Ok(entry) = entry else {
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                problem.get_or_insert_with(|| crate::failure::io(error, "list", &target));
+                continue;
+            }
         };
 
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -90,12 +95,15 @@ pub fn list(paths: &Destination, path: &str) -> Listing {
             Ok(metadata) => entries.push(entry_of(&name, &metadata)),
             // A name whose metadata cannot be read is still a name, and dropping it would
             // make a directory look smaller than it is.
-            Err(_) => entries.push(Entry {
-                name,
-                dir: entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false),
-                size: None,
-                modified: None,
-            }),
+            Err(error) => {
+                problem.get_or_insert_with(|| crate::failure::io(error, "metadata", &entry.path()));
+                entries.push(Entry {
+                    name,
+                    dir: entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false),
+                    size: None,
+                    modified: None,
+                });
+            }
         }
 
         // One past the ceiling is enough to know the list was cut short, and it stops a
@@ -105,10 +113,9 @@ pub fn list(paths: &Destination, path: &str) -> Listing {
         }
     }
 
-    if entries.is_empty() {
-        return empty(path);
-    }
-    sorted(path, entries)
+    let mut listing = sorted(path, entries);
+    listing.problem = problem;
+    listing
 }
 
 /// One entry, from what the filesystem said about it.

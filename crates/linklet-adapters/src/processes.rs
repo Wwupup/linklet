@@ -100,7 +100,11 @@ pub(crate) struct Parsed {
 pub fn list(filter: &Filter) -> Listing {
     match platform::read_all() {
         Ok(parsed) => apply(parsed.processes, filter, parsed.unreadable),
-        Err(reason) => could_not_enumerate(&reason, filter),
+        Err(error) => {
+            let mut listing = could_not_enumerate(&error.to_string(), filter);
+            listing.problem = Some(error);
+            listing
+        }
     }
 }
 
@@ -148,7 +152,7 @@ pub fn kill(
                 .collect::<Vec<Target>>(),
             None,
         ),
-        Err(reason) => (Vec::new(), Some(reason)),
+        Err(reason) => (Vec::new(), Some(reason.to_string())),
     };
 
     let seen = match blind {
@@ -200,7 +204,7 @@ pub fn kill(
 /// that read "I could not look" as "there is nothing there" would declare a machine clean
 /// exactly when it cannot tell.
 pub fn named(name: &str) -> Result<Vec<String>, String> {
-    let parsed = platform::read_all()?;
+    let parsed = platform::read_all().map_err(|e| e.to_string())?;
 
     Ok(parsed
         .processes

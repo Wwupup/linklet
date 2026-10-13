@@ -70,9 +70,9 @@ impl Stat {
 /// two mean opposite things to a caller deciding whether it is safe to overwrite a file -- and
 /// on this platform that distinction is worth more than on Windows, because `/proc` is what
 /// makes the kill guard possible at all.
-pub(super) fn read_all() -> Result<Parsed, String> {
-    let entries =
-        std::fs::read_dir("/proc").map_err(|error| format!("cannot read /proc: {error}"))?;
+pub(super) fn read_all() -> Result<Parsed, linklet_core::result::OperationError> {
+    let entries = std::fs::read_dir("/proc")
+        .map_err(|error| crate::failure::io(error, "enumerate", std::path::Path::new("/proc")))?;
 
     let mut parsed = Parsed::default();
 

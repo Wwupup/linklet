@@ -56,3 +56,16 @@ fn queries_keep_whole_entries_and_the_original_counts() {
             .all(|e| e["name"].as_str().expect("name").len() >= 1001)
     );
 }
+
+#[test]
+fn check_and_discovery_entries_share_the_same_budget() {
+    for field in ["results", "networks"] {
+        let entries: Vec<_> = (0..100)
+            .map(|i| json!({"target":format!("host-{i}"),"detail":"x".repeat(1000)}))
+            .collect();
+        let shown =
+            present(&ToolOutcome::ok("query").with_data(json!({field:entries,"count":100})));
+        assert!(shown.data[field].as_array().expect("entries").len() < 100);
+        assert_eq!(shown.data["count"], 100);
+    }
+}

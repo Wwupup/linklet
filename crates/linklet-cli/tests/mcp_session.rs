@@ -11,6 +11,8 @@
 
 #[path = "../../test-support/credentials.rs"]
 mod credentials;
+#[path = "../../test-support/schemas.rs"]
+mod schemas;
 use credentials::Credentials;
 
 use std::io::Write;
@@ -82,13 +84,29 @@ fn session_with_credentials(messages: &[&str], peers: &[(&str, &str)]) -> Vec<Va
     let output = child.wait_with_output().expect("the server should finish");
     let text = String::from_utf8(output.stdout).expect("replies are UTF-8");
 
-    text.lines()
+    let replies: Vec<Value> = text
+        .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
             serde_json::from_str::<Value>(line)
                 .unwrap_or_else(|e| panic!("a reply was not one JSON line: {e} in {line:?}"))
         })
-        .collect()
+        .collect();
+    for request in messages
+        .iter()
+        .filter_map(|m| serde_json::from_str::<Value>(m).ok())
+    {
+        if request["method"] != "tools/call" {
+            continue;
+        }
+        if let Some(reply) = replies.iter().find(|r| r["id"] == request["id"])
+            && let Some(name) = request["params"]["name"].as_str()
+            && reply.get("result").is_some()
+        {
+            schemas::validate(name, &reply["result"]);
+        }
+    }
+    replies
 }
 
 /// A directory under the system temporary directory that removes itself.
@@ -745,4 +763,31 @@ fn initialize_negotiates_the_supported_structured_result_version() {
         reply_for(&replies, 903)["result"]["protocolVersion"],
         "2025-06-18"
     );
+}
+
+#[test]
+fn local_path_and_parameter_errors_have_stable_categories() {
+    for (name, args, expected) in [
+        (
+            "testbed",
+            serde_json::json!({"spec":"missing-linklet-spec-31fc","target":"local"}),
+            "not_found",
+        ),
+        (
+            "check",
+            serde_json::json!({"targets":["not-a-target"]}),
+            "invalid_argument",
+        ),
+    ] {
+        let call = request(
+            91,
+            "tools/call",
+            &serde_json::json!({"name":name,"arguments":args}).to_string(),
+        );
+        let replies = session(&[&call]);
+        assert_eq!(
+            reply_for(&replies, 91)["result"]["structuredContent"]["error"]["code"],
+            expected
+        );
+    }
 }

@@ -302,6 +302,9 @@ impl Default for Limit {
 /// | what was the text assumed to be | [`Search::encoding`] |
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Search {
+    /// Raw byte window read for this search, excluding encoding sniff bytes.
+    /// Line numbers are relative to this window when its start is nonzero.
+    pub scope: Option<crate::tail::ByteRange>,
     /// The matching lines, in the order they were asked for.
     pub lines: Vec<Match>,
     /// How many matches there are, or `None` when the scan stopped at the limit.
@@ -383,6 +386,7 @@ pub fn could_not_search(
     encoding: Encoding,
 ) -> Search {
     Search {
+        scope: None,
         lines: Vec::new(),
         total: None,
         searched: false,
@@ -447,6 +451,7 @@ pub fn scan(lines: &[String], pattern: &Pattern, limit: Limit, direction: Direct
         .collect();
 
     Search {
+        scope: None,
         truncated: total.is_none(),
         lines: lines_out,
         total,

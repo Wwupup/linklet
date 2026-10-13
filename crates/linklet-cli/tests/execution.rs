@@ -1,6 +1,8 @@
 //! CLI and MCP use exact argv, per-call cwd, and the same process outcomes.
 #[path = "../../test-support/credentials.rs"]
 mod credentials;
+#[path = "../../test-support/schemas.rs"]
+mod schemas;
 use credentials::Credentials;
 use serde_json::{Value, json};
 use std::{
@@ -73,7 +75,9 @@ impl Fixture {
         c
     }
     fn tool(&self, name: &str, mut args: Value) -> Value {
-        args["agent"] = self.address.clone().into();
+        if args.get("agents").is_none() {
+            args["agent"] = self.address.clone().into();
+        }
         let mut c = self
             .cli()
             .arg("mcp")
@@ -83,7 +87,10 @@ impl Fixture {
             .expect("mcp");
         writeln!(c.stdin.take().expect("stdin"),"{}",json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":args}})).expect("request");
         let output = c.wait_with_output().expect("reply");
-        serde_json::from_slice::<Value>(&output.stdout).expect("json")["result"].clone()
+        let result =
+            serde_json::from_slice::<Value>(&output.stdout).expect("json")["result"].clone();
+        schemas::validate(name, &result);
+        result
     }
 }
 impl Drop for Fixture {
@@ -240,3 +247,4 @@ fn mcp_tail_pages_do_not_skip_content_to_fit_the_presentation_budget() {
     assert_eq!(result["isError"], false);
     assert_eq!(result["structuredContent"]["data"]["text"], "");
 }
+
