@@ -212,3 +212,12 @@ What that experiment also found is the boundary of the approach: a short descrip
 a tool does and cannot say **when to prefer it** over the obvious alternative, because that is the
 sentence the rules above exist to keep out. A reader reached for `exec` with one line of `cmd`
 where `testbed` was intended, and that is a reasonable route, not a misreading.
+
+## Bounded presentation
+
+MCP shares 32 KiB of content across a result's command text and query entries.
+Batch streams get fair shares, with unused capacity redistributed. Command text
+keeps its tail; query entries remain whole. presentation_truncated is independent
+of target-side truncated and lossy. Status, targets, exit codes and byte/count
+metadata remain present. CLI output retains the full target-side 1 MiB per stream.
+Discarded command output cannot be recovered and no implicit log is created.

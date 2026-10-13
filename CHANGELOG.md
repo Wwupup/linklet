@@ -704,3 +704,7 @@ skeleton and M5.
   costs and what it does not cover; `docs/ROADMAP.md` records it as open.
 - Concurrency across targets is not implemented: targets are checked one after
   another, so a run of ten unreachable machines takes ten timeouts.
+
+MCP now shares a fixed 32 KiB content budget across command output and complete
+query entries, retaining status, target and accounting metadata. CLI limits stay
+unchanged. Output truncation is explicit and does not change success.

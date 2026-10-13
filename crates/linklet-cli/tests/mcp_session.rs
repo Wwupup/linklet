@@ -310,9 +310,9 @@ fn the_testbed_tool_answers_from_a_real_file() {
         text.starts_with("testbed session-smoke  target this-machine"),
         "got {text:?}"
     );
-    assert!(
-        text.ends_with("READY 1 of 1 requirements met"),
-        "got {text:?}"
+    assert_eq!(
+        reply_for(&replies, 1)["result"]["structuredContent"]["data"]["held"],
+        true
     );
 }
 
@@ -351,7 +351,7 @@ fn a_tool_call_reaches_the_network_and_answers_in_plain_text() {
         reason.contains("refused") || reason.contains("no answer"),
         "the reason should survive: {text:?}"
     );
-    assert!(text.ends_with("0 of 1 live"), "got {text:?}");
+    assert_eq!(result["result"]["structuredContent"]["data"]["count"], 1);
     assert_eq!(
         result
             .get("result")
@@ -593,20 +593,31 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
                     assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
                 }
                 "exec" if arguments["command"] == "exit 7" => {
-                    assert_eq!(
-                        text.matches("exit 7").count(),
-                        if arguments.get("agents").is_some() {
-                            2
-                        } else {
-                            1
-                        },
-                        "{text}"
-                    )
+                    let data = &result["structuredContent"]["data"];
+                    if arguments.get("agents").is_some() {
+                        for record in data["results"].as_array().expect("results") {
+                            assert_eq!(record["data"]["exit_code"], 7);
+                            assert_eq!(record["status"], "error");
+                        }
+                    } else {
+                        assert_eq!(data["exit_code"], 7);
+                    }
                 }
-                "exec" if arguments["timeout"] == 1 => {
-                    assert!(text.contains("no exit code"), "{text}")
-                }
-                "exec" | "grep" | "tail" => assert!(text.contains("crossed"), "{text}"),
+                "exec" if arguments["timeout"] == 1 => assert_eq!(
+                    result["structuredContent"]["error"]["code"],
+                    "deadline_exceeded"
+                ),
+                "exec" => assert!(
+                    result["structuredContent"]["data"]["stdout"]["text"]
+                        .as_str()
+                        .expect("stdout")
+                        .contains("crossed")
+                ),
+                "grep" | "tail" => assert!(
+                    result["structuredContent"]["data"]["lines"]
+                        .to_string()
+                        .contains("crossed")
+                ),
                 "ls" => assert!(text.contains("1 of 1"), "{text}"),
                 _ => {}
             }
@@ -685,7 +696,13 @@ fn discovery_uses_the_cli_network_listing_and_probe_errors_are_tool_errors() {
     assert_eq!(result["isError"], !output.status.success());
     if output.status.success() {
         assert_eq!(
-            result["content"][0]["text"].as_str().expect("text").trim(),
+            result["structuredContent"]["data"]["networks"]
+                .as_array()
+                .expect("networks")
+                .iter()
+                .map(|v| v.as_str().expect("network"))
+                .collect::<Vec<_>>()
+                .join("\n"),
             String::from_utf8_lossy(&output.stdout).trim()
         );
     }

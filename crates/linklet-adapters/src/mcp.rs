@@ -102,6 +102,7 @@ pub fn handle(message: &Value, run_tool: &RunTool<'_>) -> Action {
                     ))
                 }
             };
+            let outcome = linklet_core::presentation::present(&outcome);
             Action::Reply(reply(
                 &id,
                 serde_json::json!({

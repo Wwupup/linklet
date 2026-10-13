@@ -1155,7 +1155,7 @@ fn discover_on(port: u16, networks: bool, targets: bool) -> CommandOutcome {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 0,
-            ),
+            ).facts("local",serde_json::json!({"networks":interfaces.iter().map(ToString::to_string).collect::<Vec<_>>(),"count":interfaces.len(),"complete":true,"authenticated":false})),
             Err(reason) => failure(reason),
         };
     }
@@ -1188,7 +1188,7 @@ fn discover_on(port: u16, networks: bool, targets: bool) -> CommandOutcome {
         lines.join("\n")
     };
     let mut answer = CommandOutcome::answered(text, i32::from(result.truncated));
-    answer.tool.data = serde_json::json!({"listeners":result.found.iter().map(|f|f.address.to_string()).collect::<Vec<_>>(),"networks":result.networks,"skipped":result.skipped,"truncated":result.truncated,"complete":!result.truncated,"authenticated":false});
+    answer.tool.data = serde_json::json!({"listeners":result.found.iter().map(|f|f.address.to_string()).collect::<Vec<_>>(),"networks":result.networks,"skipped":result.skipped,"truncated":result.truncated,"complete":!result.truncated,"authenticated":false,"count":result.found.len(),"scanned":result.tried,"port":port});
     answer
 }
 
