@@ -1,98 +1,166 @@
-//! Starting a program that outlives the request that started it.
-//!
-//! `execute.rs` runs a command and **waits**, which is right for a build step and wrong for
-//! a program meant to keep running. The failure mode is the one `docs/ROADMAP.md` M10 opens
-//! with and `E:\projects\lanlink` documents as a pitfall: a long-running program started
-//! through the blocking path holds the request, the connection **and the agent's pipes**,
-//! so the caller waits for something that is never going to exit.
-//!
-//! # What makes this different from `run`, in one line
-//!
-//! **The child gets its own output file rather than the agent's pipes.** Everything else
-//! follows from that: the agent can answer immediately, the program can outlive the
-//! connection, and the caller has somewhere to look afterwards without needing a new way to
-//! read a file.
-//!
-//! # What it does not do
-//!
-//! - **No supervision.** A program that exits a second later is not restarted and not
-//!   reported. The reply says what was started and its pid, and `ps` is how a caller finds
-//!   out whether it is still there -- which is what `docs/ROADMAP.md` M10 asks for and not
-//!   a lifecycle.
-//! - **No new console, so no survival of the agent's console.** The child is in this
-//!   process's console and dies with it, exactly as the agent does. Making it otherwise
-//!   needs `DETACHED_PROCESS`, which `std` does not expose safely -- the same refusal, for
-//!   the same reason, as the agent's own `--detach` in `docs/ROADMAP.md` M10.
-//! - **No wait, not even briefly.** An earlier version slept for a moment and checked
-//!   whether the process was still alive, so that "it started and died at once" could be
-//!   reported as a failure. It was dropped: it delays every spawn by the length of the
-//!   sleep, it makes the answer depend on how fast the machine is, and it is a worse version
-//!   of the `ps` call the caller is going to make anyway.
+//! Starts one process and reports only facts observed during a bounded window.
+use linklet_core::{
+    result::{ErrorCode, OperationError},
+    wire::{SpawnReport, SpawnRequest, Text},
+};
+use std::{
+    fs::{File, OpenOptions},
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+    process::{Child, Stdio},
+    sync::{OnceLock, mpsc},
+    time::{Duration, Instant},
+};
 
-use std::fs::OpenOptions;
-use std::path::Path;
-use std::process::Stdio;
-
-use linklet_core::wire::SpawnReport;
-
-/// Starts a command and returns what was started, or why it could not be.
-///
-/// The output path has already been resolved and validated by
-/// [`linklet_core::transfer::Destination::resolve`], using the same startup-directory
-/// base and special-file checks as the other file tools. Access follows the
-/// operating-system permissions of the agent process.
-///
-/// # Errors
-///
-/// A sentence for the operator, for the two ways this fails before a process exists: the
-/// output file cannot be created, or the shell cannot be started. **A failure after the
-/// process exists is not an error** -- a program that exits immediately is a program that
-/// was started, and answering otherwise would be claiming to know something this function
-/// has not waited to see.
-pub fn start(
-    request: &linklet_core::wire::SpawnRequest,
-    output: &Path,
-) -> Result<SpawnReport, String> {
+/// Starts a child with closed stdin and a named output file. Zero observation
+/// returns immediately; otherwise an early exit ends observation. Running children
+/// are reaped without storing queryable task history. No state asserts readiness.
+pub fn start(request: &SpawnRequest, output: &Path) -> Result<SpawnReport, OperationError> {
     let (mut command, directory) =
-        crate::shell::invocation(&request.command, request.cwd.as_deref())
-            .map_err(|e| e.to_string())?;
-    // Created or truncated, and both on purpose: the file is this program's output, and a
-    // caller that starts the same command twice wants the second run's output rather than
-    // the two interleaved. `create_new` would fail on the ordinary second start, and append
-    // would make a log that cannot be told from the previous run's.
+        crate::shell::invocation(&request.command, request.cwd.as_deref())?;
     let file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
         .open(output)
-        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
-
-    // `try_clone` rather than handing the same handle to both: the two streams are separate
-    // handles on one file, which is what lets them be redirected independently if this ever
-    // needs to.
+        .map_err(|e| linklet_adapters::failure::io(e, "open_output", output))?;
     let errors = file
         .try_clone()
-        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
-
-    let child = command
-        // **The child's own file, not this process's pipes.** This is the whole difference:
-        // a program that inherited the agent's stdout would hold it open for as long as it
-        // runs, and the agent's thread would wait for a program that never exits -- the trap
-        // this module exists to avoid.
-        .stdin(Stdio::null())
+        .map_err(|e| linklet_adapters::failure::io(e, "open_output", output))?;
+    let mut child = command
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(errors))
         .spawn()
-        .map_err(|error| format!("cannot start {:?}: {error}", request.command))?;
-
-    // Deliberately not waited for, and the handle dropped: the child is not this process's
-    // to reap, and `Child::drop` does not kill it. What is returned is the pid, which is
-    // what the caller watches with `ps`.
+        .map_err(|e| linklet_adapters::failure::io(e, "spawn", &directory))?;
+    let pid = child.id();
+    let started = Instant::now();
+    let mut exit_code = None;
+    let mut error = None;
+    let mut state = "started";
+    let mut exited = false;
+    if request.observe_ms > 0 {
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    exited = true;
+                    state = "exited";
+                    exit_code = status.code();
+                    if !status.success() {
+                        error = Some(OperationError::new(
+                            ErrorCode::CommandFailed,
+                            "observe",
+                            format!("process exited with {:?}", status.code()),
+                        ));
+                    }
+                    break;
+                }
+                Ok(None) if started.elapsed() >= Duration::from_millis(request.observe_ms) => {
+                    state = "running_at_observation";
+                    break;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+                Err(e) => {
+                    error = Some(OperationError::new(
+                        ErrorCode::ResultUnknown,
+                        "observe",
+                        e.to_string(),
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    let observed_ms = if request.observe_ms == 0 {
+        0
+    } else {
+        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    };
+    if !exited {
+        reap(child);
+    }
+    let tail = log_tail(output).unwrap_or_else(|e| {
+        Text::decoded(
+            String::new(),
+            0,
+            0,
+            "unknown".into(),
+            false,
+            Some(e.to_string()),
+        )
+    });
     Ok(SpawnReport {
+        pid,
+        command: request.command.to_string(),
         cwd: directory.to_string_lossy().into_owned(),
         output: output.to_string_lossy().into_owned(),
         pid_kind: request.command.pid_kind().into(),
-        pid: child.id(),
-        command: request.command.to_string(),
+        state: state.into(),
+        observed_ms,
+        exit_code,
+        error,
+        tail,
     })
+}
+
+fn reap(child: Child) {
+    static REAPER: OnceLock<mpsc::Sender<Child>> = OnceLock::new();
+    let sender = REAPER.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<Child>();
+        std::thread::spawn(move || {
+            let mut children: Vec<Child> = Vec::new();
+            loop {
+                let incoming = if children.is_empty() {
+                    receiver
+                        .recv()
+                        .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                } else {
+                    receiver.recv_timeout(Duration::from_millis(50))
+                };
+                match incoming {
+                    Ok(child) => children.push(child),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+                children.retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+            }
+        });
+        sender
+    });
+    let _ = sender.send(child);
+}
+
+fn log_tail(path: &Path) -> std::io::Result<Text> {
+    let mut file = File::open(path)?;
+    let size = file.metadata()?.len();
+    let mut prefix = vec![0; size.min(256) as usize];
+    file.read_exact(&mut prefix)?;
+    let start = size.saturating_sub(linklet_core::output::OUTPUT_LIMIT as u64);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.take(linklet_core::output::OUTPUT_LIMIT as u64)
+        .read_to_end(&mut bytes)?;
+    let sample = linklet_core::search::sniff(&prefix);
+    let encoding = match sample {
+        linklet_core::search::Encoding::Utf8Bom
+        | linklet_core::search::Encoding::Utf16Le
+        | linklet_core::search::Encoding::Utf16Be => sample,
+        _ => {
+            let skip = if start > 0 {
+                bytes
+                    .iter()
+                    .take(3)
+                    .take_while(|b| **b & 0xc0 == 0x80)
+                    .count()
+            } else {
+                0
+            };
+            linklet_core::search::sniff(&bytes[skip..])
+        }
+    };
+    Ok(linklet_adapters::decode_text(
+        &bytes,
+        size as usize,
+        encoding,
+        linklet_adapters::TextSource::Command,
+    ))
 }

@@ -18,7 +18,7 @@ pub fn requested(arguments: &[String]) -> Option<String> {
             "exec (--agent <host:port> | --agents <a,b,...>) [--timeout <1..600>] [--cwd <dir>] (<command...> | --program <exe> [args...])\nOptions end at the command or --program executable. Single-target execution preserves its exit code; a batch returns 0 only if all commands exit 0. Each stream keeps its last 1 MiB, with an explicit truncation notice."
         }
         "spawn" => {
-            "spawn --agent <host:port> --output <remote-file> [--cwd <dir>] (<command...> | --program <exe> [args...])\nStart without waiting. Options end at the command; output goes to the named file. No restart or supervision."
+            "spawn --agent <host:port> --output <remote-file> [--cwd <dir>] (<command...> | --program <exe> [args...])\nObserve for 500 ms (use --observe-ms <0..5000>, 0 returns immediately). Early exits report their code; running_at_observation does not mean readiness. Output goes to the named file. No restart or supervision."
         }
         "ps" => {
             "ps --agent <host:port> [--name <text>] [--cmdline <text>] [--query <text>] [--exclude <text>]\nList matching processes."
@@ -70,6 +70,7 @@ pub fn requested(arguments: &[String]) -> Option<String> {
             ]);
         } else {
             flags.push(Flag::takes_value("--output"));
+            flags.push(Flag::takes_value("--observe-ms"));
         }
         let args = Args::parse(&arguments[1..], &flags, Strictness::CommandTail).ok()?;
         args.switch("-h") || args.switch("--help")

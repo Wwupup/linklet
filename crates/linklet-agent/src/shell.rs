@@ -129,6 +129,7 @@ mod tests {
         assert_eq!(result.stdout.as_str(), "quoted file works");
         crate::spawn::start(
             &linklet_core::wire::SpawnRequest {
+                observe_ms: 500,
                 command: line.into(),
                 cwd: None,
                 output: output.to_string_lossy().into_owned(),

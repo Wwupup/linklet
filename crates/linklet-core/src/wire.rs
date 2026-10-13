@@ -464,6 +464,8 @@ pub const MAX_TAIL_LINES: usize = 2000;
 /// A request to start a program that keeps running.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnRequest {
+    /// Observe the child for 0..=5000 milliseconds; default is 500.
+    pub observe_ms: u64,
     /// The command line, run through the same shell `run` uses.
     pub command: crate::execution::CommandSpec,
     /// Per-call directory; output paths remain relative to the startup directory.
@@ -486,6 +488,16 @@ pub struct SpawnRequest {
 /// exists to remove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnReport {
+    /// Started, running_at_observation, or exited; none asserts readiness.
+    pub state: String,
+    /// Actual elapsed observation time in milliseconds.
+    pub observed_ms: u64,
+    /// Exit code only when an exit was observed.
+    pub exit_code: Option<i32>,
+    /// Failure observed while starting or watching the process.
+    pub error: Option<crate::result::OperationError>,
+    /// Bounded combined output tail from the explicitly named log.
+    pub tail: Text,
     /// Absolute invocation directory.
     pub cwd: String,
     /// Absolute output file path, resolved against startup directory.
@@ -651,6 +663,7 @@ pub fn request_to_json(request: &Request) -> Value {
             let mut value = spawn.command.to_json();
             value["op"] = OP_SPAWN.into();
             value["output"] = spawn.output.clone().into();
+            value["observe_ms"] = spawn.observe_ms.into();
             if let Some(cwd) = &spawn.cwd {
                 value["cwd"] = cwd.clone().into();
             }
@@ -1006,6 +1019,14 @@ pub fn run_request_from_json(value: &Value) -> Result<RunRequest, WireError> {
     })
 }
 
+/// Encodes one bounded output stream with byte and encoding metadata.
+pub fn text_to_json(text: &Text) -> Value {
+    serde_json::json!({
+        "text":text.as_str(), "total_bytes":text.byte_count(), "retained_bytes":text.retained_bytes(),
+        "encoding":text.encoding(), "truncated":text.is_truncated(), "lossy":text.is_lossy(), "decode_error":text.decode_error()
+    })
+}
+
 /// The outcome as protocol 3 JSON, including explicit per-stream metadata.
 pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
     let mut entries = Map::new();
@@ -1019,15 +1040,7 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
         },
     );
     for (field, text) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
-        entries.insert(
-            field.to_string(),
-            serde_json::json!({
-                "text": text.as_str(), "total_bytes": text.byte_count(),
-                "retained_bytes": text.retained_bytes(), "encoding": text.encoding(),
-                "truncated": text.is_truncated(), "lossy": text.is_lossy(),
-                "decode_error": text.decode_error(),
-            }),
-        );
+        entries.insert(field.to_string(), text_to_json(text));
     }
     entries.insert(
         "duration_ms".to_string(),
@@ -1487,7 +1500,15 @@ pub fn spawn_request_from_json(value: &Value) -> Result<SpawnRequest, WireError>
         return Err(WireError::BadRequest("output: empty".to_string()));
     }
 
+    let observe_ms = match value.get("observe_ms") {
+        None => 500,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n <= 5000)
+            .ok_or_else(|| WireError::BadRequest("observe_ms: expected 0..=5000".into()))?,
+    };
     Ok(SpawnRequest {
+        observe_ms,
         command,
         cwd,
         output,
@@ -1498,6 +1519,7 @@ pub fn spawn_request_from_json(value: &Value) -> Result<SpawnRequest, WireError>
 pub fn spawn_report_to_json(report: &SpawnReport) -> Value {
     serde_json::json!({
         "pid": i64::from(report.pid),
+        "state":report.state,"observed_ms":report.observed_ms,"exit_code":report.exit_code,"error":report.error,"tail":text_to_json(&report.tail),
         "cwd": report.cwd, "output": report.output, "pid_kind": report.pid_kind,
         "command": report.command,
     })
@@ -1535,6 +1557,15 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
         .to_string();
 
     Ok(SpawnReport {
+        state: required_text(value, "state")?,
+        observed_ms: value["observed_ms"]
+            .as_u64()
+            .ok_or_else(|| WireError::BadRequest("observed_ms missing".into()))?,
+        exit_code: serde_json::from_value(value["exit_code"].clone())
+            .map_err(|e| WireError::BadRequest(e.to_string()))?,
+        error: serde_json::from_value(value["error"].clone())
+            .map_err(|e| WireError::BadRequest(e.to_string()))?,
+        tail: text_from_json(value, "tail")?,
         pid,
         command,
         cwd: required_text(value, "cwd")?,

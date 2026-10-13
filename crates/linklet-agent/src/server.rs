@@ -375,7 +375,7 @@ fn answer(
         Ok(Request::Spawn(spawn)) => Response::Sealed(match paths.resolve(&spawn.output) {
             Ok(output) => match crate::spawn::start(&spawn, &output) {
                 Ok(report) => wire::encode_spawn_reply(&report),
-                Err(reason) => wire::reply_refused(&reason),
+                Err(reason) => wire::reply_failure(&reason),
             },
             // The refusal names the path the caller sent and not the resolved one: the caller
             // cannot see this machine's tree, and "which of my arguments was wrong" is the

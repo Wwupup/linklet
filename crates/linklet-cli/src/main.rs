@@ -1400,6 +1400,7 @@ fn run_spawn(arguments: &[String]) -> i32 {
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--output"),
+        Flag::takes_value("--observe-ms"),
         Flag::takes_value("--cwd"),
         Flag::starts_tail("--program"),
     ];
@@ -1426,7 +1427,16 @@ fn run_spawn(arguments: &[String]) -> i32 {
         return i32::from(ExitCode::USAGE);
     };
 
+    let observe_ms = match number(&args, "--observe-ms") {
+        Ok(None) => 500,
+        Ok(Some(n)) if n <= 5000 => n,
+        _ => {
+            eprintln!("linklet: --observe-ms must be 0..=5000");
+            return 2;
+        }
+    };
     let request = SpawnRequest {
+        observe_ms,
         // The command is exactly what was typed after the options, joined the way `exec`
         // joins it: a tool that reassembled a command line from pieces would be a second
         // interpretation of the caller's quoting.
@@ -1456,9 +1466,18 @@ fn spawn_on(agent: &str, request: &SpawnRequest) -> ToolOutcome {
     match linklet_client::spawn(&address, request) {
         // `started <pid>`, and the word is chosen: "started" is what this side knows, where
         // "running" would be a claim about a moment it has not looked at.
-        Ok(report) => ToolOutcome::ok(format!("started {}", report.pid))
+        Ok(report) => {
+            let mut outcome = ToolOutcome::ok(format!(
+                "{} {} ({}; observed {} ms; exit {:?}; readiness not checked)",
+                report.state, report.pid, report.pid_kind, report.observed_ms, report.exit_code
+            ))
             .at(agent)
-            .with_data(wire::spawn_report_to_json(&report)),
+            .with_data(wire::spawn_report_to_json(&report));
+            if let Some(error) = report.error {
+                outcome.fail(error);
+            }
+            outcome
+        }
         Err(error) => CommandOutcome::call_failed(agent, &error).tool,
     }
 }

@@ -91,7 +91,7 @@ what was asked.
 
 ```console
 $ linklet spawn --agent 10.0.0.5:8787 --output logs\app.log "app.exe --serve"
-started 5144
+running_at_observation 5144 (shell; observed 500 ms; exit None; readiness not checked)
 $ linklet ps --agent 10.0.0.5:8787 --name app.exe
 5144 app.exe
 1 of 214 match, filter name=app.exe
@@ -104,12 +104,13 @@ Unicode is detected first; Windows command output falls back to its console
 code page (system OEM without a console). File reads fall back to system ANSI.
 Both binaries must use protocol 3; upgrade both ends together.
 
-`spawn` is not `exec` with a flag. **`exec` waits** for the command and returns its output,
-which is right for a build step and wrong for a program meant to keep running: the request,
-the connection and the agent's pipes are held until it exits. `spawn` starts the program with
-**its own output file** and returns a pid at once -- and `started` is the word on the line
-because that is all this side knows. Whether it is still there is the `ps` you run next,
-which is the order the deploy loop actually goes in: start, look, stop if you have to.
+`spawn` writes to its named output file and observes the child for 500 ms by
+default. Set `--observe-ms 0` to return immediately, or choose 0..5000 ms.
+An early exit returns its code; nonzero is a failure. A child still running at
+the end is `running_at_observation`. The reply includes a bounded log tail and
+identifies whether the PID belongs to a shell or direct program. These states
+do not assert service readiness or the state of every descendant.
+
 
 ```console
 $ linklet grep --agent 10.0.0.5:8787 --from build.log --pattern ERROR --last --context 1

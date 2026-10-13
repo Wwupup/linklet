@@ -701,6 +701,10 @@ pub fn tools() -> Vec<Tool> {
         },
     ];
     for tool in &mut tools {
+        if tool.name == "spawn" {
+            tool.input_schema["properties"]["observe_ms"] =
+                serde_json::json!({"type":"integer","minimum":0,"maximum":5000,"default":500});
+        }
         if matches!(tool.name, "exec" | "spawn") {
             let schema = &mut tool.input_schema;
             schema["properties"]["program"] = serde_json::json!({"type":"string","minLength":1,"description":"Executable name or path. Literal args, no shell. Windows .cmd/.bat require command."});
@@ -966,7 +970,15 @@ pub fn dispatch(
         "spawn" => {
             reject_unknown(
                 arguments,
-                &["agent", "command", "program", "args", "cwd", "output"],
+                &[
+                    "agent",
+                    "command",
+                    "program",
+                    "args",
+                    "cwd",
+                    "output",
+                    "observe_ms",
+                ],
             )?;
             let agent = required_str(arguments, "agent")?;
             let request = crate::wire::spawn_request_from_json(arguments).map_err(|e| {

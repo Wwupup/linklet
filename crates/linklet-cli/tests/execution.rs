@@ -18,8 +18,12 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let dir =
-            std::env::temp_dir().join(format!("linklet argv \u{4e2d} {}", std::process::id()));
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "linklet argv \u{4e2d} {} {}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).expect("directory");
         let program = dir.join(format!("literal arguments{}", std::env::consts::EXE_SUFFIX));
         let source =
@@ -157,4 +161,42 @@ fn literal_arguments_cwd_and_remote_help_work_through_cli_and_mcp() {
         response["structuredContent"]["data"]["output"],
         fixture.dir.join("observed.log").to_string_lossy().as_ref()
     );
+}
+
+#[test]
+fn spawn_reports_only_what_was_observed() {
+    let fixture = Fixture::new();
+    for (args, observe, state, code, error) in [
+        (vec!["exit", "0"], 500, "exited", Some(0), false),
+        (vec!["exit", "7"], 500, "exited", Some(7), true),
+        (
+            vec!["sleep", "1200"],
+            100,
+            "running_at_observation",
+            None,
+            false,
+        ),
+        (vec!["sleep", "1200"], 0, "started", None, false),
+    ] {
+        let result=fixture.tool("spawn",json!({"program":fixture.program,"args":args,"output":format!("observe-{observe}-{error}.log"),"observe_ms":observe}));
+        assert_eq!(result["isError"], error, "{result}");
+        let data = &result["structuredContent"]["data"];
+        assert_eq!(data["state"], state, "{result}");
+        assert_eq!(data["exit_code"], json!(code));
+        assert_eq!(data["pid_kind"], "program");
+    }
+    let result = fixture.tool(
+        "spawn",
+        json!({"program":fixture.program,"args":["exit","0"],"output":"default.log"}),
+    );
+    assert_eq!(result["structuredContent"]["data"]["state"], "exited");
+    let result = fixture.tool(
+        "spawn",
+        json!({"program":fixture.program,"output":"invalid.log","observe_ms":5001}),
+    );
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "invalid_argument"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1250));
 }

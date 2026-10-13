@@ -708,3 +708,7 @@ skeleton and M5.
 Execution improvements for the next minor release: exec/spawn accept cwd and
 mutually exclusive command or program/args. MCP uses a shared 32 KiB content
 budget; CLI keeps the target stream limits. Direct arguments are never joined.
+
+spawn now observes for 500 ms by default (0..5000 ms, zero skips observation).
+It reports early exit codes, PID kind, paths and a bounded log tail. Running at
+the observation boundary does not assert readiness. No task history is retained.

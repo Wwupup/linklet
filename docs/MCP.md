@@ -63,7 +63,7 @@ Fourteen tools, one per intent.
 | `exec` | run and wait on one or several agents | `command`, exactly one of `agent` or `agents` |
 | `ps` | what is running on an agent's machine | `agent` |
 | `kill` | stop processes on an agent's machine | `agent`, **and `pid` or `name`** |
-| `spawn` | start a program on an agent's machine, without waiting | `agent`, `command`, `output` |
+| `spawn` | start a program and observe its initial outcome | `agent`, command or program/args, `output`, optional `cwd`, `observe_ms` |
 | `grep` | find lines in a file on an agent's machine | `agent`, `path`, `pattern` |
 | `tail` | read the end of a file on an agent's machine | `agent`, `path` |
 | `ls` | list a path on an agent's machine | `agent`, `path` |
@@ -232,3 +232,13 @@ keeps its tail; query entries remain whole. presentation_truncated is independen
 of target-side truncated and lossy. Status, targets, exit codes and byte/count
 metadata remain present. CLI output retains the full target-side 1 MiB per stream.
 Discarded command output cannot be recovered and no implicit log is created.
+
+## Startup observation
+
+spawn.observe_ms is 0..5000, default 500. Zero returns started; an early exit
+returns exited and its exit_code; otherwise the state is running_at_observation.
+A nonzero observed exit is an error. Replies include PID kind, actual cwd,
+absolute output path, elapsed observation time and a bounded combined log tail.
+No state means service readiness. A shell exit says nothing about all its
+descendants. Only running child handles are retained for reaping; no task history,
+restart, supervision or automatic retry is provided.

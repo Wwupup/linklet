@@ -837,6 +837,7 @@ fn a_spawn_request_carries_the_command_and_where_its_output_goes() {
     use linklet_core::wire::SpawnRequest;
 
     let request = Request::Spawn(SpawnRequest {
+        observe_ms: 500,
         cwd: None,
         command: "app.exe --serve".into(),
         output: r"logs\app.log".to_string(),
@@ -862,6 +863,11 @@ fn a_spawn_reply_carries_the_pid_and_not_a_promise() {
     use linklet_core::wire::SpawnReport;
 
     let report = SpawnReport {
+        state: "started".into(),
+        observed_ms: 0,
+        exit_code: None,
+        error: None,
+        tail: Text::default(),
         cwd: "/work".into(),
         output: "/work/log".into(),
         pid_kind: "shell".into(),
@@ -869,9 +875,13 @@ fn a_spawn_reply_carries_the_pid_and_not_a_promise() {
         command: "app.exe --serve".into(),
     };
 
+    let value = wire::spawn_report_to_json(&report);
+    assert_eq!(value["pid"], 5144);
+    assert_eq!(value["state"], "started");
+    assert_eq!(value["pid_kind"], "shell");
     assert_eq!(
-        wire::spawn_report_to_json(&report).to_string(),
-        r#"{"command":"app.exe --serve","cwd":"/work","output":"/work/log","pid":5144,"pid_kind":"shell"}"#
+        wire::spawn_report_from_reply(&wire::Reply::Result(value)).expect("report"),
+        report
     );
 }
 
