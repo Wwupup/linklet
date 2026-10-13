@@ -81,14 +81,14 @@ conclusion before it was found.
   a workflow can be linted and its shell parsed here, and whether the runner accepts it is only
   known after a push. When a workflow fails, the message has to be brought back by hand --
   which is why `docs/VERSIONING.md` lists what to check *before* pushing instead.
-- **WSL has no `pwsh`, and getting one there is not practical from here.** `tools/verify.ps1` is
-  what CI runs on both platforms, so the obvious way to check the Linux leg locally is to run it
-  in the WSL distribution -- and Ubuntu 24.04 there has no PowerShell, `sudo` asks for a password,
-  and the released tarball is about 75 MB arriving at **10-20 KB/s, measured on both the WSL path
-  and the Windows one** (the proxy on `7890` above was not listening when this was tried). The
-  fallback is the one M11 used, and it is what the Linux leg was checked with: **the four commands
-  run directly in WSL, in the same order**, which is every gate the script runs there except
-  `actionlint`.
+- **The current WSL2 Ubuntu 24.04 environment can run the shared verification script.**
+  The `ww` account has passwordless sudo. Rust 1.95.0 with rustfmt and Clippy, GCC
+  13.3.0, PowerShell 7.6.6, and iproute2 were installed for the 2026-10-13 Linux
+  verification. Source `~/.cargo/env` before using Cargo; shell profiles were not
+  changed. Run tests as `ww`, with sudo used only for system package installation.
+  Set `CARGO_TARGET_DIR` to `~/.cache/linklet-verification/target` to keep Linux
+  artifacts on the WSL filesystem and separate from Windows builds. All four
+  gates passed through `tools/verify.ps1`; see `docs/VERIFYING.md` for the command.
 - **`Compress-Archive` writes no Unix mode, so it cannot build this project's release.** Measured
   on both sides of the same archive: an entry written by `Compress-Archive` comes out of `unzip`
   at mode **600** -- not executable, and not readable by anyone else -- where the same file written

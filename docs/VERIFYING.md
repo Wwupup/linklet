@@ -132,7 +132,20 @@ The protocol 2, bounded-output, CLI status, and 13-tool MCP changes passed
 workspace tests, and documentation with warnings denied. Process and socket
 regressions ran locally; this run does not claim a new LAN smoke result.
 
-Linux verification was not run: the available WSL Ubuntu environment has no
-Cargo. The existing Ubuntu CI job remains the Linux gate; no push or CI run was
-triggered for this change. Optional actionlint was unavailable on PATH. No
-release or deployment was performed.
+The same four gates also passed in the current WSL2 Ubuntu 24.04 environment,
+running as `ww` (uid 1000), with Rust 1.95.0 and PowerShell 7.6.6. The WSL run used
+`RUSTFLAGS="-D warnings"` and a separate Linux build directory. No code changes
+were needed for the Linux run. CLI, MCP, authenticated probes, protocol rejection,
+file access, transfer verification, and process timeout tests ran locally.
+
+Reproduce the WSL run after entering the distribution as `ww`:
+
+```sh
+cd /mnt/d/projects/linklet
+. "$HOME/.cargo/env"
+CARGO_TARGET_DIR="$HOME/.cache/linklet-verification/target" \
+RUSTFLAGS="-D warnings" pwsh -NoProfile -File tools/verify.ps1
+```
+
+Optional actionlint was unavailable on PATH on both platforms. No push, CI run,
+release, deployment, or new LAN smoke test was performed.
