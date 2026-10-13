@@ -110,13 +110,10 @@ tool names a machine, and there is no tool that finds one (see below).
 - **`kill` refuses to stop the agent itself**, and the refusal comes from the target
   rather than being filtered here: a request that named it is a request that must be
   decided again, not a request that silently succeeded on everything else.
-- **A command sent to a Windows target cannot carry a quote.** There the agent runs commands
-  through `cmd /C`, and three layers rewrite quote characters on the way, so a command with
-  quotes comes back reading like the program does not exist. What works is a command with **no
-  quotes at all**: an absolute path with no space in it, and builtins like `certutil` and
-  `type`. On Linux the same command goes to `sh -c`, where quoting is ordinary -- but a command
-  written for one target is not automatically right for the other, which is the general shape
-  of this rule. `docs/machine.md` has the measured Windows forms.
+- **Write commands for the target shell.** Windows uses `cmd.exe /D /S /C`
+  and preserves quotes inside the command; Linux uses `sh -c`. Quote paths
+  containing spaces. CLI `exec` and `spawn` options must precede the command;
+  after its first word or `--`, all arguments belong to the remote command.
 - **A command runs in the agent's working directory, not yours.** A relative path is
   relative to wherever the agent was started, which is usually why a file "is not
   there". File tools use the same startup directory for relative paths; absolute paths

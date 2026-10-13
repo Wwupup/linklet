@@ -23,8 +23,8 @@ use std::process::{Command, Stdio};
 
 /// A command that runs `line` through this platform's shell.
 ///
-/// Windows gets `cmd /C`, which is what this project has always used and what every
-/// documented example is written against. Everything else gets `sh -c`, which is the POSIX
+/// Windows gets `cmd.exe /D /S /C`, preserving the command
+/// string and disabling AutoRun. Everything else gets `sh -c`, which is the POSIX
 /// answer and the one a caller writing a command line for a Linux target expects.
 ///
 /// **The process is put in its own process group on Unix**, and that is not incidental: it
@@ -35,8 +35,12 @@ use std::process::{Command, Stdio};
 pub fn command_line(line: &str) -> Command {
     #[cfg(windows)]
     {
-        let mut command = Command::new("cmd");
-        command.args(["/C", line]);
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("cmd.exe");
+        // cmd removes this outer pair; raw_arg preserves the caller's inner quotes.
+        command
+            .args(["/D", "/S", "/C"])
+            .raw_arg(format!("\"{line}\""));
         command
     }
 
@@ -89,5 +93,60 @@ pub fn kill_tree(pid: u32) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quoted_executable_nested_arguments_pipes_and_redirection() {
+        let output = command_line(
+            r#""C:\Windows\System32\cmd.exe" /D /S /C "echo quoted-value" | findstr "quoted-value" 2>NUL"#,
+        ).output().expect("shell starts");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "quoted-value"
+        );
+    }
+
+    #[test]
+    fn exec_and_spawn_read_a_quoted_unicode_path() {
+        let folder = std::env::temp_dir().join(format!("linklet quotes {}", std::process::id()));
+        std::fs::create_dir_all(&folder).expect("scratch directory");
+        let input = folder.join("message \u{4e2d}\u{6587}.txt");
+        let output = folder.join("spawn.txt");
+        std::fs::write(&input, "quoted file works").expect("fixture");
+        let line = format!("type \"{}\"", input.display());
+        let result = crate::execute::run(&linklet_core::wire::RunRequest {
+            command: line.clone(),
+            timeout_seconds: 5,
+        });
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        assert_eq!(result.stdout.as_str(), "quoted file works");
+        crate::spawn::start(&line, &output).expect("spawn starts");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if std::fs::read(&output).unwrap_or_default() == b"quoted file works" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "spawn did not read the file"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // Wait for cmd to release the output handle before removing fixtures.
+        while std::fs::remove_file(&output).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "spawn kept its output open"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::fs::remove_file(input).expect("remove fixture");
+        std::fs::remove_dir(folder).expect("remove scratch directory");
     }
 }

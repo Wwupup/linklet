@@ -64,18 +64,11 @@ conclusion before it was found.
   confirmed it from the other side**: the bench's `linklet-agent.exe` is still launched
   through that redirect, and `C:\linklet\agent.log` is 0 bytes for an agent that printed a
   banner and has answered every call since. An empty log is evidence about the launcher.
-- **A command sent to a target cannot carry a quote.** The agent runs commands through
-  `cmd /C`, and three layers each rewrite quote characters on the way: PowerShell's
-  native-command quoting (which turns `"` into `\"`), Windows argument quoting, and `cmd`'s
-  own rule about a first character that is a quote. The result reads like the program does
-  not exist: `'\"powershell -NoProfile -C \"\"...\"\"\"' is not recognized as an internal or
-  external command`. Measured forms that failed: `cmd /S /C "..."`, `powershell -Command
-  "..."`, and either of those passed through PowerShell. What works is a command with **no
-  quotes at all** -- an absolute path with no space in it, and builtins like `certutil` and
-  `type`. `C:\linklet\transfers` was chosen for exactly that reason, and on this machine
-  `%TEMP%` is `C:\Users\wuwei\AppData\Local\Temp`, which has no space either. `linklet exec`
-  also runs the command in the *agent's* working directory, not in the caller's: a relative
-  path is relative to wherever the agent was started.
+- **Windows commands preserve inner quotes.** The agent now uses
+  `cmd.exe /D /S /C` with a raw, outer-quoted command string. Quoted executable
+  paths, arguments, pipes, and redirection are supported. The caller still needs
+  to preserve its intended string through its local shell. Commands run in the
+  agent startup directory, under the agent account.
 - **`actionlint` is installed at `%USERPROFILE%\.local\bin\actionlint.exe`** (1.7.12, digest
   checked against the release's `checksums.txt`), and `tools/verify.ps1` runs it when it is on
   `PATH`. Installing it was worth the ten minutes: the first push of the CI workflows came back

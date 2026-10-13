@@ -25,6 +25,10 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- Windows `exec` and `spawn` preserve quoted paths and arguments through
+  `cmd.exe /D /S /C`. Their CLI options end at the command or `--`; remote
+  options are no longer consumed by Linklet.
+
 - Successful `ls`, `grep` and `tail` calls no longer fail because a path contains
   status wording such as `stopped early`. CLI status comes from typed results.
 - MCP replies preserve unsigned integer request IDs without rounding.

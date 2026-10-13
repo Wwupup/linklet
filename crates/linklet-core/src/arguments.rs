@@ -61,6 +61,8 @@ pub enum Strictness {
     ///
     /// For a command with a tail, where the words are the command to run.
     AllowWords,
+    /// The first word starts a command; all remaining arguments belong to it.
+    CommandTail,
     /// An argument that looks like a flag must be a declared one.
     ///
     /// For a flags-only command, where anything unrecognised is a typo. An argument that does
@@ -167,6 +169,10 @@ impl Args {
                     return Err(ParseError::Unknown {
                         flag: argument.clone(),
                     });
+                }
+                if strictness == Strictness::CommandTail {
+                    args.words.extend(arguments[index - 1..].iter().cloned());
+                    break;
                 }
                 args.words.push(argument.clone());
                 continue;
@@ -385,6 +391,17 @@ mod tests {
         assert_eq!(args.value("--agent"), Some("a:1"));
         assert_eq!(args.words(), ["myapp.cmd", "--verbose"]);
         assert_eq!(args.tail(), "myapp.cmd --verbose");
+    }
+
+    #[test]
+    fn command_options_stop_at_the_first_word() {
+        let args = parse(
+            &["--agent", "a:1", "echo", "--agent", "b:2", "--max", "9"],
+            Strictness::CommandTail,
+        )
+        .expect("remote options belong to the command");
+        assert_eq!(args.value("--agent"), Some("a:1"));
+        assert_eq!(args.tail(), "echo --agent b:2 --max 9");
     }
 
     #[test]

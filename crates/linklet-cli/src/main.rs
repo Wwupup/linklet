@@ -898,7 +898,7 @@ fn run_exec(arguments: &[String]) -> u8 {
         Flag::takes_value("--agents"),
         Flag::takes_value("--timeout"),
     ];
-    let args = match read(arguments, &flags, Strictness::AllowWords) {
+    let args = match read(arguments, &flags, Strictness::CommandTail) {
         Ok(args) => args,
         Err(code) => return code,
     };
@@ -1458,7 +1458,7 @@ fn run_spawn(arguments: &[String]) -> u8 {
     // `AllowWords` because everything after the options is the command to run, which may have
     // flags of its own. See the line `linklet_core::arguments` draws.
     let flags = [Flag::takes_value("--agent"), Flag::takes_value("--output")];
-    let args = match read(arguments, &flags, Strictness::AllowWords) {
+    let args = match read(arguments, &flags, Strictness::CommandTail) {
         Ok(args) => args,
         Err(code) => return code,
     };
