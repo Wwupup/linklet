@@ -248,3 +248,56 @@ fn mcp_tail_pages_do_not_skip_content_to_fit_the_presentation_budget() {
     assert_eq!(result["structuredContent"]["data"]["text"], "");
 }
 
+#[test]
+fn concurrent_calls_keep_their_own_directories() {
+    let fixture = Fixture::new();
+    let left = fixture.dir.join("left");
+    let right = fixture.dir.join("right");
+    std::fs::create_dir(&left).expect("left");
+    std::fs::create_dir(&right).expect("right");
+    std::thread::scope(|scope| {
+        for cwd in [&left, &right] {
+            let f = &fixture;
+            scope.spawn(move || {
+                let response = f.tool("exec", json!({"cwd":cwd,"program":f.program,"args":[]}));
+                assert_eq!(
+                    response["structuredContent"]["data"]["cwd"],
+                    cwd.to_string_lossy().as_ref()
+                );
+                assert!(
+                    response["structuredContent"]["data"]["stdout"]["text"]
+                        .as_str()
+                        .expect("stdout")
+                        .contains(cwd.to_string_lossy().as_ref())
+                );
+            });
+        }
+    });
+    let cli = fixture
+        .cli()
+        .args([
+            "spawn",
+            "--agent",
+            &fixture.address,
+            "--output",
+            "cli-spawn.log",
+            "--cwd",
+        ])
+        .arg(&left)
+        .arg("--program")
+        .arg(&fixture.program)
+        .args(["--help", "", "&|"])
+        .output()
+        .expect("spawn");
+    assert!(cli.status.success(), "{cli:?}");
+    let summary = String::from_utf8(cli.stdout).expect("CLI output");
+    assert!(
+        summary.contains(left.to_string_lossy().as_ref())
+            && summary.contains("cli-spawn.log")
+            && summary.contains("stdin:0"),
+        "{summary}"
+    );
+    let log = std::fs::read_to_string(fixture.dir.join("cli-spawn.log")).expect("output");
+    assert!(log.contains("arg:6:--help") && log.contains("arg:0:") && log.contains("arg:2:&|"));
+}
+

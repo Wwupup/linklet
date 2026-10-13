@@ -2288,34 +2288,61 @@ pub fn render_run(outcome: &RunOutcome) -> String {
 
     out.push_str(&format!("took {} ms\n", outcome.duration_ms));
 
+    out.push_str(&format!("cwd {}\n", outcome.cwd));
     for (name, stream) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
-        if stream.as_str().is_empty() && !stream.is_truncated() && stream.decode_error().is_none() {
-            continue;
-        }
-        out.push_str(&format!("{name}:\n"));
-        if stream.encoding() != "utf-8" || stream.is_truncated() {
-            out.push_str(&format!(
-                "  encoding: {}; retained {} of {} bytes\n",
-                stream.encoding(),
-                stream.retained_bytes(),
-                stream.byte_count()
-            ));
-        }
-        if stream.is_truncated() {
-            out.push_str("  truncated: showing the output tail; earlier bytes were discarded\n");
-        }
-        if let Some(error) = stream.decode_error() {
-            out.push_str(&format!("  decoding failed: {error}\n"));
-        }
-        if let Some(note) = stream.loss_note() {
-            out.push_str(&format!("  {note}\n"));
-        }
-        out.push_str(stream.as_str());
-        if !stream.as_str().ends_with('\n') {
-            out.push('\n');
-        }
+        render_stream(&mut out, name, stream);
     }
 
+    out.trim_end().to_string()
+}
+
+fn render_stream(out: &mut String, name: &str, stream: &Text) {
+    if stream.as_str().is_empty() && !stream.is_truncated() && stream.decode_error().is_none() {
+        return;
+    }
+    out.push_str(&format!("{name}:\n"));
+    if stream.encoding() != "utf-8" || stream.is_truncated() {
+        out.push_str(&format!(
+            "  encoding: {}; retained {} of {} bytes\n",
+            stream.encoding(),
+            stream.retained_bytes(),
+            stream.byte_count()
+        ));
+    }
+    if stream.is_truncated() {
+        out.push_str("  truncated: showing the output tail; earlier bytes were discarded\n");
+    }
+    if let Some(error) = stream.decode_error() {
+        out.push_str(&format!("  decoding failed: {error}\n"));
+    }
+    if let Some(note) = stream.loss_note() {
+        out.push_str(&format!("  {note}\n"));
+    }
+    out.push_str(stream.as_str());
+    if !stream.as_str().ends_with('\n') {
+        out.push('\n');
+    }
+}
+
+/// Renders startup observations, paths and the captured log tail without claiming readiness.
+pub fn render_spawn(report: &SpawnReport) -> String {
+    let mut out = format!(
+        "{} {} ({}; observed {} ms; exit {:?}; readiness not checked)\ncwd {}\noutput {}\n",
+        report.state,
+        report.pid,
+        report.pid_kind,
+        report.observed_ms,
+        report.exit_code,
+        report.cwd,
+        report.output
+    );
+    if let Some(error) = &report.error {
+        out.push_str(&format!(
+            "{:?} during {}: {}\n",
+            error.code, error.phase, error.message
+        ));
+    }
+    render_stream(&mut out, "log tail", &report.tail);
     out.trim_end().to_string()
 }
 

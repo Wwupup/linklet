@@ -1133,7 +1133,7 @@ fn a_successful_run_renders_the_exit_code_the_time_and_the_streams() {
 
     assert_eq!(
         wire::render_run(&outcome),
-        "exit 0\ntook 1234 ms\nstdout:\nbuilt 3 targets"
+        "exit 0\ntook 1234 ms\ncwd /work\nstdout:\nbuilt 3 targets"
     );
 }
 
@@ -1188,7 +1188,7 @@ fn a_killed_run_renders_its_reason_instead_of_an_exit_code() {
 
     assert_eq!(
         wire::render_run(&outcome),
-        format!("no exit code: {KILLED_BY_DEADLINE}\ntook 600000 ms")
+        format!("no exit code: {KILLED_BY_DEADLINE}\ntook 600000 ms\ncwd /work")
     );
 }
 

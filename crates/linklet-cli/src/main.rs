@@ -1424,15 +1424,8 @@ fn tail_on(agent: &str, request: &TailRequest) -> CommandOutcome {
     }
 }
 
-/// Starts a program on an agent's machine that outlives this command.
-///
-/// The exit code is `exec`'s: `0` when something was started, `3` when the call could not be
-/// made. There is no command status to pass through, because **this command does not wait for
-/// the program** -- that is the whole of it -- so a program that exits a second later is a
-/// program this command correctly reported as started.
-///
-/// Confirming it stayed up is the caller's next two commands, and they are the ones the
-/// deploy loop is made of: `linklet ps` to look, `linklet kill` to stop it again.
+/// Starts a process with a named log and a bounded initial observation.
+/// An observed nonzero exit fails; running at observation does not assert readiness.
 fn run_spawn(arguments: &[String]) -> i32 {
     // CommandTail leaves every argument after the command to the target shell.
     let flags = [
@@ -1502,15 +1495,11 @@ fn spawn_on(agent: &str, request: &SpawnRequest) -> ToolOutcome {
     };
 
     match linklet_client::spawn(&address, request) {
-        // `started <pid>`, and the word is chosen: "started" is what this side knows, where
-        // "running" would be a claim about a moment it has not looked at.
+        // The report describes the bounded observation, never application readiness.
         Ok(report) => {
-            let mut outcome = ToolOutcome::ok(format!(
-                "{} {} ({}; observed {} ms; exit {:?}; readiness not checked)",
-                report.state, report.pid, report.pid_kind, report.observed_ms, report.exit_code
-            ))
-            .at(agent)
-            .with_data(wire::spawn_report_to_json(&report));
+            let mut outcome = ToolOutcome::ok(wire::render_spawn(&report))
+                .at(agent)
+                .with_data(wire::spawn_report_to_json(&report));
             if let Some(error) = report.error {
                 outcome.fail(error);
             }

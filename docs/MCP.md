@@ -243,6 +243,7 @@ spawn.observe_ms is 0..5000, default 500. Zero returns started; an early exit
 returns exited and its exit_code; otherwise the state is running_at_observation.
 A nonzero observed exit is an error. Replies include PID kind, actual cwd,
 absolute output path, elapsed observation time and a bounded combined log tail.
+CLI startup output displays the same paths and log tail.
 No state means service readiness. A shell exit says nothing about all its
 descendants. Only running child handles are retained for reaping; no task history,
 restart, supervision or automatic retry is provided.
