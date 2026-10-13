@@ -362,16 +362,8 @@ fn answer(
             Ok(report) => Response::Sealed(wire::encode_kill_reply(&report)),
             Err(refusal) => Response::Sealed(wire::reply_refused(&refusal.to_string())),
         },
-        // The request that returns before the program does. It answers with a pid and
-        // nothing about health: what was started is a fact, and whether it is still there is
-        // `ps`'s question -- asked by the caller, a moment later, which is the order the
-        // deploy loop actually runs in.
-        // The request that returns before the program does. It answers with a pid and
-        // nothing about health: what was started is a fact, and whether it is still there is
-        // `ps`'s question -- asked by the caller, a moment later, which is the order the
-        // deploy loop actually runs in.
-        //
-        // Resolve and validate output paths exactly as for every other file tool.
+        // Observe the direct child for a bounded window. Resolve its log against
+        // startup paths independently of the per-call execution directory.
         Ok(Request::Spawn(spawn)) => Response::Sealed(match paths.resolve(&spawn.output) {
             Ok(output) => match crate::spawn::start(&spawn, &output) {
                 Ok(report) => wire::encode_spawn_reply(&report),

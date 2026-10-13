@@ -20,12 +20,8 @@
 //!    "not implemented" is worse than an absent one: the agent has spent a turn
 //!    on it and cannot tell a missing feature from a broken one.
 //!
-//! Rule 3 is why there is one tool here and not five. This build can answer
-//! exactly one question -- whether a machine answers on a port. Running a
-//! command, reading a log and moving a file all need something on the far side
-//! to talk to, and there is nothing there yet. They arrive with the agent that
-//! serves them, and `tests/tool_surface.rs` is where that promise is kept: the
-//! count is asserted, so adding a tool has to be deliberate.
+//! Fourteen tools share typed outcomes and operation-specific output schemas.
+//! The asserted tool count makes every addition deliberate.
 
 use std::time::Duration;
 
@@ -105,10 +101,7 @@ pub trait ToolRunner {
 
     /// Runs a command on an agent and reports what the command did.
     ///
-    /// Takes the pieces rather than a [`crate::wire::RunRequest`] so that this
-    /// crate stays the one deciding what a tool call means. An implementation
-    /// builds the request; whether the request is well formed is decided here,
-    /// before it ever sees a socket.
+    /// Takes the validated execution mode, literal arguments and per-call directory.
     fn exec(&self, agent: &str, request: &crate::wire::RunRequest) -> ToolOutcome;
 
     /// Executes on 1..=256 agents, with concurrency four and input-order results.
@@ -159,12 +152,7 @@ pub trait ToolRunner {
     /// the caller should think again.
     fn kill(&self, agent: &str, request: &crate::wire::KillRequest) -> ToolOutcome;
 
-    /// Starts a program on the agent's machine that outlives this call.
-    ///
-    /// **The difference from [`ToolRunner::exec`] is the point of the tool**, and the answer
-    /// says only what this side knows: a pid. Whether the program is still there a moment
-    /// later is [`ToolRunner::ps`]'s question, and a tool that answered both would be
-    /// claiming to have looked when it had not.
+    /// Starts a child and reports its initial bounded observation, never readiness.
     fn spawn(&self, agent: &str, request: &crate::wire::SpawnRequest) -> ToolOutcome;
 
     /// Searches a file on the agent's machine, without moving it.

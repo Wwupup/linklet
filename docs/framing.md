@@ -126,3 +126,12 @@ carries a localised message that would otherwise be the sentence a user reads.
   budget (five initially, then one per minute); raw connections and ordinary command
   handshakes can still cost a thread each time. The operating system backlog bounds
   pending connections, not all live threads.
+
+## Protocol 3 result uncertainty
+
+The hello rejects command protocol 1 and 2 before execution. Every side-effecting
+request is sent once. After any portion may have arrived, an absent, unauthenticated
+or invalid reply yields `unknown/result_unknown`; a valid typed refusal remains a
+known error. This also covers lost upload acceptance and final commit confirmation.
+Neither a timeout nor a disconnected socket proves that the target did nothing.
+Saved pairing credentials remain usable after both binaries are updated.

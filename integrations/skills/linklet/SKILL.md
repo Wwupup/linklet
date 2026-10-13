@@ -3,159 +3,111 @@ name: linklet
 description: Use when deploying, starting, inspecting or debugging a program on a Windows or Linux test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (pair, check, testbed, discover, probe, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent on each target.
 ---
 
-# Driving linklet
+# Driving Linklet
 
-linklet ships as an MCP server: it gives you the tools. This skill is the procedure,
-because the order of the calls matters and the wrong order produces failures that
-look like bugs.
+The controller runs `linklet mcp`; each target runs an ordinary `linklet-agent`
+process. Both binaries need protocol 3. Saved pairing credentials remain valid.
+The target's account and current elevation determine access to its filesystem
+and processes. Exiting the agent makes it offline; there is no automatic restart.
 
-There are two sides. The **host** is the machine you are on, where the MCP server
-runs. Each **target** is a machine running a `linklet-agent`. **Targets may be Windows
-or Linux**, and the two are handled the same way from here; the commands you send are
-not, because they run in the target's own shell (`cmd` or `sh`). Remote operations
-take `agent`, an address written `host:port`; `exec` also accepts an `agents` array.
-`check` takes target addresses, `discover` finds local-network listeners, and
-`testbed` checks the local machine.
+## Get context once
 
-## Before anything else
+Use the target address from the user, or discover TCP listeners with `discover`.
+Discovery proves reachability only. For a new controller, call `pair` with
+`agent` and the six-digit `code` as a string, preserving leading zeros. The
+credential is saved automatically. Pair already returns authenticated identity,
+account, elevation, shell, startup directory and limits: reuse this context.
+For an already paired target, `probe` obtains the same context in one call.
+Unknown auxiliary facts are null with warnings; sudo eligibility is not elevation.
 
-1. **Know the address.** Use an address from the conversation or call `discover`
-   with `port` and optionally `targets: true`. This establishes TCP reachability.
-2. **Pair if needed.** Call `pair` with `agent` and the user-provided six-digit
-   `code` as a string. New controllers can pair unattended; later calls use the saved
-   credential automatically. Never request a long-term token as a tool argument.
-   Then authenticate by calling `probe` with `agent`.
-   It succeeds only with a valid identity, including name and version. CLI codes
-   are 0 usable, 1 connection failed, 2 local configuration, 3 authentication or
-   protocol refused, and 4 timeout or invalid reply. No automatic restart occurs.
-3. **`testbed` checks the local machine.** It reads a specification file on the
-   machine running the MCP server; its `target` argument is a label in the output.
-   Read each tool's target arguments before handing it an address.
-4. **A refusal is not an empty answer.** `the token is missing or wrong` is about the
-   saved credential. Pair again with the target's current code, especially after
-   `linklet-agent init`. Local storage errors name what could not be read or saved;
-   retrying a remote operation does not repair that storage.
+Do not request a long-term token or configure the removed LINKLET_TOKEN /
+LINKLET_TOKEN_FILE variables. `linklet-agent init` rotates the pairing state
+after the old agent stops, so controllers then need to pair again.
 
-## A round of joint debugging, in order
+## Read structured results
 
-1. **`probe`** -- authenticate the target and confirm its name and version.
-2. **`ps`** with `name` (a **substring**) -- is the program under test still running.
-   Read the summary line, never the list alone.
-3. **`kill`** it -- by `pid` from that listing, or by `name`, which is **exact** and
-   needs `confirmed: true` because it can match several processes. **This step comes
-   before the push, not after:** Windows will not let a running executable be
-   replaced, so a push over one fails with a sharing violation that reads like a
-   permissions problem.
-4. **`push`** the new build -- `from` is a local path and `to` is a target path;
-   both accept absolute paths or paths relative to their process working directory. The receiving side verifies the digest before the
-   real path is touched, so a truncated copy fails here rather than confusingly later;
-   the reply ends `(verified)`, and there is nothing left to check after that.
-5. **`spawn`** it -- `output` is a file on the target for the program's own output,
-   and the reply is `started <pid>`. **Never use `exec` for a program that keeps
-   running**: `exec` waits, so the request, the connection and the agent's pipes are
-   held until it exits, and its timeout is at most 600 seconds -- for a GUI program
-   that means a killed process and a failed call.
-6. **`ps`** again after a moment -- `started` is not `still running`. If several
-   same-named workers exist, filter with `cmdline` rather than `name`.
-7. **`grep`** or **`tail`** its log, and do this even if step 6 failed: a program that
-   died on startup usually says why in its own log. `mode: "last"` answers "where is
-   the last ERROR" directly, and the file does not cross the network to answer it.
-8. **`pull`** the whole log when a summary is not enough, or when several machines
-   need comparing side by side.
-9. **`kill`** it again -- do not leave the program running into the next round.
+- Branch on `structuredContent.status`, `error.code` and `error.phase`.
+  The text is a short summary. Every tool has an outputSchema.
+- `ok` is a valid observation. An empty query or unreachable address in a
+  discovery scan can be an ok observation. Query counts, scope and completeness
+  determine what conclusions the observation supports.
+- `error` is a known failure, including a nonzero command exit or timeout.
+- `unknown/result_unknown` means a side effect may have happened without a
+  valid result arriving. Do not automatically repeat it. Inspect the target
+  state or named output file before deciding what to do next.
+- Batch exec preserves input order and per-target status; aggregate precedence
+  is unknown, then error, then ok. Error and unknown set `isError=true`.
 
-## Rules that bite when ignored
+## Execute accurately
 
-- **`ps`'s `name` is a substring; `kill`'s `name` is exact.** They are deliberately
-  different words on the two tools, and using one to find what the other will stop is
-  how a helper process survives a deploy. `kill` also takes `candidates_cmdline` to
-  narrow an exact-name match to the worker you mean.
-- **An empty list is only readable next to its summary.** `ps` answers `0 of 271
-  match`, `ls` answers `0 of 0 entries in <path>`, and `kill` answers `killed 0 of 1`
-  with anything it could not stop listed under `failed`. A listing the machine could
-  not finish exits 1 and names the field it could not read. **An empty directory and a
-  directory that is not there are the same list and opposite facts**, and a match that
-  was not killed is not a clean result: read the denominator, and the `failed` line,
-  before concluding that anything is gone.
-- **`grep`'s `pattern` is a substring, not a pattern.** `ERROR|FATAL` finds nothing
-  here. An **empty string matches every line**, which is a valid call and almost
-  never the intended one -- `3 matches` for a search meant to narrow is a wrong answer
-  that looks like a right one. The first line of the reply says how many lines were
-  read, whether it stopped early, and which encoding won; a file that could not be
-  read says so and never "no matches".
-- **`isError` means the call could not be made, not that the news is bad.** Every
-  machine being down is a successful call carrying bad news. Retrying an `isError`
-  about the token or about a path is time spent on the wrong problem.
-- **File paths use the process account permissions.** Remote absolute paths are used
-  directly; relative paths, including `..`, use the agent startup directory. Local MCP
-  paths use the server working directory. Other Windows drives and ordinary UNC shares
-  are supported; `--root` has been removed.
-- **A `push` or `pull` that succeeded is already byte-verified; do not hash the file
-  again.** The receiving side made the comparison before the file went under its real
-  name, so a result line is printed only for a transfer that matched -- it ends
-  `(verified)` -- and a mismatch fails the call with no result line at all. Checking at
-  the other end afterwards buys a round trip for a comparison already made, and for a
-  log that is still being written it reports a "mismatch" that is only the file moving
-  on.
-- **Use `/` as the separator in a transfer path, and expect the target's own rules for
-  everything else.** `/` means the same on both platforms; a backslash is a separator on
-  Windows and an ordinary character on Linux, so on a Linux target it is refused rather than
-  written as part of a filename. Names Windows cannot hold are ordinary on Linux and accepted
-  there (`NUL`, `a:stream`, a trailing dot); the ones Windows would resolve to a *different*
-  file -- a stream, a device, a name whose trailing dot it strips -- are refused there. The
-  refusal says which rule it was, so a wrong path is one edit rather than a guess.
-- **`kill` refuses to stop the agent itself**, and the refusal comes from the target
-  rather than being filtered here: a request that named it is a request that must be
-  decided again, not a request that silently succeeded on everything else.
-- **Write commands for the target shell.** Windows uses `cmd.exe /D /S /C`
-  and preserves quotes inside the command; Linux uses `sh -c`. Quote paths
-  containing spaces. CLI `exec` and `spawn` options must precede the command;
-  after its first word or `--`, all arguments belong to the remote command.
-- **A command runs in the agent's working directory, not yours.** A relative path is
-  relative to wherever the agent was started, which is usually why a file "is not
-  there". File tools use the same startup directory for relative paths; absolute paths
-  make the intended location explicit.
-- **A command is written for the target's own shell.** `dir` is not `ls`, and a deployment
-  script that runs on both machines is two commands, not one. Ask `ps` or `ls` for what is
-  there rather than composing a command that assumes it.
-- **`kill` takes the program with it on both platforms, for different reasons.** On Windows
-  `taskkill /T` walks the child list; on Linux the signal goes to the process group when the
-  pid leads one, which is what `spawn` arranges. Either way, stop a program by the pid `spawn`
-  gave you rather than by the pid `ps` found for it, or a helper it started can outlive it.
-- **One call at a time.** A single MCP server serialises its tools: an `exec` with a
-  600-second timeout holds every other call in this session until it returns.
+Prefer `program` plus literal `args` when starting an executable. Empty
+arguments and shell characters are preserved. Omitted args means an empty array.
+Use `command` for pipelines, redirection, shell builtins and Windows batch
+files. The two modes are exclusive. Windows command mode uses cmd.exe /D /S /C;
+Linux uses sh -c. Both close stdin.
 
-## When a call fails
+Set `cwd` for the call when needed; a relative cwd starts at the agent's
+startup directory. A relative program containing path separators starts at that
+call's cwd. File tools and `spawn.output` keep their startup-directory base.
+Absolute paths make locations explicit. CLI options precede the command or
+`--program`; everything after the program is a literal program argument.
 
-1. **Split dead from wedged** with `linklet probe --agent <addr>` (step 2 above).
-   Connection refused means the process is gone; a connect that succeeds and then
-   times out means the agent is alive and stuck, and something outside it has to clear
-   the port.
-2. **Read the agent's own log.** It is at `logs/agent.log` in the directory the agent's
-   executable is in, unless it was started with `--log`. The agent appends a pair of
-   lines per request -- `-> #000001 run` when it is taken, `<- #000001 run ok 2411 ms`
-   when it is answered, with the reason quoted on a refusal. **A `->` with no `<-` is
-   the request that wedged it**, and it is the only evidence that names it. A liveness
-   check is not written down at all, so the missing half is never a monitor's ping. The
-   file rolls over at a mebibyte and keeps three older ones, so `agent.log.1` is
-   yesterday's if you need it. Use the absolute log path with `grep`, `tail` or `pull`
-   when the agent account can read it.
-3. **Report what you observed, not what you conclude.** The raw reply, the summary
-   line and the log tail are the useful part; "it failed" is not.
+Use exec for a finite command. It waits up to its timeout (at most 600 seconds).
+It accepts exactly one of agent or agents; batches support 256 targets with
+concurrency four. One MCP session otherwise processes calls sequentially.
 
-## CLI and MCP parity
+Use spawn for a background program, providing its output file. It observes for
+500 ms by default; observe_ms accepts 0..5000, with zero returning started.
+An early exit returns exited and its exit code. running_at_observation means
+only that the child was still running at that instant. Read PID kind, cwd, log
+path and initial log tail from this reply before making another query. No state
+asserts service readiness or the lifetime of every shell descendant.
 
-Discovery and authenticated probing are available as tools and commands. MCP
-exec accepts exactly one of agent or agents; the array has at most 256 entries,
-runs four at once, and preserves input order. Failed commands and timeouts set
-isError, including any failure in a batch. Truncation alone is not an error:
-each stream retains its final 1 MiB and reports the discarded size. Use the
-target shell's syntax and keep secrets in the environment or a token file.
+## Deploy and inspect with the evidence already available
+
+1. If an old instance might prevent replacement, inspect with ps and stop only
+   the intended process. ps.name is a substring; kill.name is exact and requires
+   confirmed:true. A pid names one process. Check incomplete process snapshots
+   and unavailable filter fields before concluding that no instance exists.
+2. Push the build. Successful transfers report actual paths, byte counts and
+   the compared digest. verified:true needs no extra hash call.
+3. Spawn with program/args and an explicit output path. Use the observed exit
+   and initial log tail. Check ps later only when continued liveness matters;
+   use an application-specific check when readiness matters.
+4. Read more log content with tail. The first call reads the last requested
+   lines; subsequent calls pass next_cursor with the same target and path.
+   Continue while has_more is true. Empty new content is success. Preserve
+   original newlines and fragments when concatenating pages. Rotation, shrinking
+   or changed boundary samples reset the cursor explicitly; do not claim an
+   uninterrupted history after a reset.
+5. Use grep for a fixed substring or pull for a complete file copy when needed.
+   grep.pattern is not a regular expression; ERROR|FATAL is a literal substring.
+   Clean up a program only when its task calls for stopping it.
+
+## Limits and failures
+
+Each command stream keeps at most its final 1 MiB of raw bytes. MCP shares a
+32 KiB content budget across command text and query entries. Target truncation,
+MCP presentation truncation and decoding loss are separate flags. Discarded
+command output is not recoverable; no implicit complete log is saved. Spawn
+writes its explicitly named log, and tail cursors never skip undisplayed bytes.
+
+Remote absolute paths, parent components, other Windows drives and ordinary UNC
+shares follow OS permissions. There is no --root. Relative local paths for
+testbed.spec, push.from and pull.to use the controller's working directory.
+Testbed checks that local machine; its target argument is only a label.
+
+A connection failure says that the endpoint was not reached. A connected timeout
+does not prove why the target did not answer. Preserve the category, phase and
+original reason. Authentication errors may require pairing again; local config
+errors require fixing local storage. Do not convert either into a repeated
+remote side effect. The agent's rotating diagnostic log can provide further
+evidence when accessible; a missing final log line is an observation, not a
+proof that the operation did not run.
 
 ## Reference
 
-- `README.md` -- every command, the output formats, and the exit codes
-- `docs/MCP.md` -- the surface: why each tool is separate, and where a caller goes wrong
-- `docs/smoke.md` -- the target side: the firewall, starting the agent so it survives
-  its console, the log, and the seven claims a real-machine run makes
-- `integrations/README.md` -- how this server and this skill were installed
+- README.md: CLI commands, startup and limits
+- docs/MCP.md: tools, schemas and result meanings
+- docs/AI-EVALUATION.md: measured scenarios and limits of the evidence
+- docs/smoke.md: separate real-machine and LAN validation

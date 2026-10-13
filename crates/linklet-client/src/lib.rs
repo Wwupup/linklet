@@ -686,9 +686,8 @@ fn read(
 
 /// How long a read of a file on a target may take.
 ///
-/// Longer than a handshake, because the work behind it is up to sixteen mebibytes read,
-/// sniffed, decoded and scanned -- and a file that is not UTF-8 is read a second time
-/// through the target's own shell.
+/// Longer than a handshake, because up to sixteen mebibytes may be read,
+/// decoded and scanned. Encoding fallback converts only those captured bytes.
 const READ_ALLOWANCE: Duration = Duration::from_secs(30);
 
 /// Starts a program on an agent's machine that outlives this call.
@@ -696,16 +695,15 @@ const READ_ALLOWANCE: Duration = Duration::from_secs(30);
 /// **The difference from [`run`], and the reason both exist**: `run` waits for the command
 /// and returns its output, so a program meant to keep running holds the call, the connection
 /// and the agent's pipes with it. This starts the program with **its own output file** and
-/// returns its pid immediately.
+/// returns its pid, initial observation, exit status if observed, and bounded log tail.
 ///
-/// That pid plus a [`ps`] call is the whole of "did it stay up": the reply deliberately says
-/// nothing about health, because at the moment it is sent nothing knows. The deploy loop is
-/// those calls in that order -- start, look, and stop if it has to be stopped again.
+/// The observation concerns the direct child at a particular time. It does not
+/// assert application readiness or that all descendants exit with their shell.
 ///
 /// # Errors
 ///
-/// [`CallError`] for anything that means the host does not know whether the program started,
-/// including an agent that refused because the output file could not be created.
+/// [`CallError`] distinguishes a refusal before startup from a missing result
+/// after the request might have reached the target. The latter must not be retried.
 pub fn spawn(
     address: &AgentAddress,
     request: &SpawnRequest,

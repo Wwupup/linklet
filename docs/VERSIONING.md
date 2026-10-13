@@ -11,7 +11,8 @@ independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
 Current development uses **protocol 3**, planned for the next minor release.
-Typed failures and authenticated target context accompany bounded command streams.
+Typed results, per-call execution modes/directories, incremental log cursors and
+startup observation accompany bounded command streams.
 Upgrade the host and agent together; protocol 1 and 2 peers are refused before a
 command is accepted. Existing saved pairing credentials remain valid.
 This change is not a release or deployment. Permanent pairing adds a separate

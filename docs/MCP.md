@@ -64,12 +64,12 @@ that partial snapshot as proof that a process is absent.
 | `pair` | authenticate a code and remember the target | `agent`, `code` |
 | `check` | does each `host:port` accept a TCP connection | `targets` |
 | `testbed` | does a machine match a specification file | `spec`, `target` |
-| `exec` | run and wait on one or several agents | `command`, exactly one of `agent` or `agents` |
+| `exec` | run and wait on one or several agents | command or program/args; exactly one of `agent` or `agents`; optional `cwd` |
 | `ps` | what is running on an agent's machine | `agent` |
 | `kill` | stop processes on an agent's machine | `agent`, **and `pid` or `name`** |
 | `spawn` | start a program and observe its initial outcome | `agent`, command or program/args, `output`, optional `cwd`, `observe_ms` |
 | `grep` | find lines in a file on an agent's machine | `agent`, `path`, `pattern` |
-| `tail` | read the end of a file on an agent's machine | `agent`, `path` |
+| `tail` | read the file end or continue an incremental log page | `agent`, `path`; optional `cursor` |
 | `ls` | list a path on an agent's machine | `agent`, `path` |
 | `push` | copy one local file to an agent | `agent`, `from`, `to` |
 | `pull` | copy one file back from an agent | `agent`, `from`, `to` |
@@ -200,11 +200,15 @@ count is asserted**, **no description may name another tool**, and **every descr
 character budget**. Growing the surface means changing the asserted number and saying in the
 commit why the new question needs its own tool.
 
-`logs` is **absent, not stubbed**. Reading a log is reading a file, so it is `pull` with a path,
+`logs` is **absent, not stubbed**. Bounded log reads use `tail` or `grep`; complete copies use `pull`,
 and a tool that answered "not implemented" would be worse than a missing one: the agent has spent
 a turn and cannot tell a missing feature from a broken one.
 
 ## What has been measured, and what has not
+
+Protocol 3 scenario measurements and execution conditions are recorded in
+[AI operation evaluation](AI-EVALUATION.md). Those are deterministic tests,
+not evidence from a fresh model experiment.
 
 The descriptions are short and every one fits its budget. Whether they are **understandable** is
 a different claim, and it was tested once: `experiments/m5-tool-readability.md` gave the tool list

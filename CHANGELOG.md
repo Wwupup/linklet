@@ -25,7 +25,16 @@ to answer one question: **what can I do now that I could not do before?**
 - `linklet-agent init` rotates both secrets and starts again after the old process
   has stopped, revoking all paired controllers. Pairing uses OPAQUE and a shared
   attempt budget.
-  Protocol 2 command behavior is unchanged; no release or deployment is performed.
+  Pairing credentials remain valid through the protocol 3 upgrade.
+
+- Next minor: exec/spawn accept per-call cwd and either a shell command or a
+  direct program with literal args. Standard input is closed. MCP shares a fixed
+  32 KiB content budget, preserving status and counts; CLI capacity is unchanged.
+- Spawn observes for 500 ms by default (0..5000; zero skips observation). Replies
+  include PID kind, actual paths, early exit status and a bounded log tail.
+  Running at the observation boundary does not assert readiness.
+- Tail supports stateless cursors, bounded incremental pages, original newlines,
+  byte ranges and file-change observations. Cursors never skip undisplayed text.
 
 ### Changed
 
@@ -36,7 +45,7 @@ to answer one question: **what can I do now that I could not do before?**
 - **Breaking, next minor:** removed `LINKLET_TOKEN`, `LINKLET_TOKEN_FILE`, and
   agent `--token` / `--token-file`. Pairing and saved per-target credentials are
   the only setup path. Old environment variables are ignored; old flags exit 2.
-  Existing pairing state remains valid. Protocol 2 is unchanged.
+  Existing pairing state remains valid.
 
 - Next minor: help and version queries exit 0. Single exec preserves the remote
   exit code (including full Windows statuses); batches exit 1 if any target fails.
@@ -47,9 +56,9 @@ to answer one question: **what can I do now that I could not do before?**
   agent or agents; batches keep the 256-target limit, concurrency 4, and input
   order. Failed commands and timeouts set isError; truncation alone does not.
 
-- Next minor: protocol 2 replaces flat command streams with objects containing
+- Next minor: protocol 3 command streams are objects containing
   text, total_bytes, retained_bytes, encoding, truncated, lossy, and decode_error.
-  Upgrade both binaries together; protocol 1 is rejected during the handshake.
+  Upgrade both binaries together; protocols 1 and 2 are rejected during the handshake.
 - Command output retains the last 1 MiB of each stream and keeps draining after
   that limit. Truncation preserves the command status. Unicode and Windows code
   pages are decoded explicitly; file fallback converts only the bounded bytes
@@ -63,7 +72,7 @@ to answer one question: **what can I do now that I could not do before?**
 - MCP `testbed.spec`, `push.from` and `pull.to` now accept local absolute paths and
   parent components. Remote file tools share the agent path rules. Device and stream
   checks, file-type checks, transfer limits and digest verification remain in place.
-  The wire encoding is unchanged; the CLI removal belongs in the next minor release.
+  The CLI removal belongs in the next minor release alongside protocol 3.
 
 ### Fixed
 
@@ -710,15 +719,3 @@ skeleton and M5.
   costs and what it does not cover; `docs/ROADMAP.md` records it as open.
 - Concurrency across targets is not implemented: targets are checked one after
   another, so a run of ten unreachable machines takes ten timeouts.
-
-Execution improvements for the next minor release: exec/spawn accept cwd and
-mutually exclusive command or program/args. MCP uses a shared 32 KiB content
-budget; CLI keeps the target stream limits. Direct arguments are never joined.
-
-spawn now observes for 500 ms by default (0..5000 ms, zero skips observation).
-It reports early exit codes, PID kind, paths and a bounded log tail. Running at
-the observation boundary does not assert readiness. No task history is retained.
-
-tail now returns stateless incremental pages with byte ranges, next_cursor,
-has_more, explicit fragments and file-change observations. MCP never advances a
-log cursor over undisplayed content. Each read remains bounded to 16 MiB.

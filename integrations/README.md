@@ -103,7 +103,9 @@ Start the target, then call MCP `pair` with `agent` and its displayed six-digit
 `code`, for example `{"agent":"10.0.0.5:8787","code":"083614"}`. Use the actual
 displayed code as a string. Even a new controller can pair unattended. The MCP
 server saves the strong credential under its OS account; later operations and CLI
-calls use it automatically. `probe` then confirms authenticated name and version.
+calls use it automatically. Pair also returns the authenticated target context:
+name, version, account, elevation, shell, startup directory and limits. Reuse it;
+a separate probe is needed only when refreshing an already paired target.
 
 Long-term tokens are never MCP arguments or results. See `docs/pairing.md` for
 reset and storage.
@@ -136,9 +138,16 @@ use the startup directory for relative paths and the process account permissions
 
 Keep the ordinary agent process running in the intended account and startup
 directory. Exiting it makes the target offline. This workflow installs no service,
-autostart task, supervisor, or automatic restart. Authenticate with probe before
-using it; the tool returns the remote name and version on success. Upgrade both
-binaries together for protocol 3.
+autostart task, supervisor, or automatic restart. Pair or probe returns the
+authenticated context. Upgrade both binaries together for protocol 3; saved pairing
+credentials remain valid.
+
+MCP clients should read structuredContent.status and typed errors, including
+unknown outcomes that must not be retried automatically. All 14 tools declare
+outputSchema under MCP 2025-06-18. Exec and spawn accept command or program/args
+with optional cwd. Spawn observes for 500 ms by default and includes an initial
+log tail; tail cursors read subsequent log pages without skipping undisplayed
+content. MCP shares a 32 KiB content budget while preserving status and counts.
 
 ## Reference
 

@@ -119,8 +119,9 @@ $ linklet grep --agent 10.0.0.5:8787 --from build.log --pattern ERROR --last --c
 41: ERROR: expected ';' at line 12
   warning: unused import
 $ linklet tail --agent 10.0.0.5:8787 --from build.log --lines 3
-more than 3 lines in build.log, read as utf-8, stopped early, 18244 bytes
-42: done
+6 bytes 18238..18244 in C:\work\build.log, utf-8; has_more=false
+done
+next_cursor <opaque cursor>
 ```
 
 `grep` and `tail` read a file **on the target and return only the answer**, which is the
@@ -136,8 +137,9 @@ $ echo $?
 1
 ```
 
-Exit 1 means the answer is incomplete -- the search stopped early, the file was cut short at
-the byte ceiling, or it could not be read at all. 0 means the whole file was looked at. The
+For grep, exit 1 means the answer is incomplete: the scan stopped early, reached
+its byte ceiling or failed. Tail returns success for valid pages, including empty
+pages; use has_more and next_cursor to continue. A missing file is an error. The
 encoding is in the summary too, so a reader shown mojibake knows which rule produced it: on
 Windows the machine's code page, and elsewhere ISO-8859-1, which is one character per byte
 and loses nothing. **A label is never a guess about the bytes** -- it names the rule that was
