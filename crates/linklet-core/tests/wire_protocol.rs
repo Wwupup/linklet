@@ -398,6 +398,8 @@ fn a_transfer_result_carries_the_digest_the_receiver_computed() {
     // The point of the comparison is that somebody can check it, so the result is the
     // digest rather than a flag that says the comparison happened.
     let outcome = wire::TransferOutcome {
+        destination: "/tmp/received".into(),
+        source: None,
         bytes: 4096,
         sha256: DIGEST.to_string(),
     };
@@ -1219,6 +1221,8 @@ fn a_transfer_result_says_the_digest_was_already_compared() {
     // comparison that has already been made, and a false alarm the moment the file
     // changed in between, which a log still being written does by definition.
     let outcome = wire::TransferOutcome {
+        destination: "/tmp/received".into(),
+        source: None,
         bytes: 4096,
         sha256: DIGEST.to_string(),
     };
@@ -1303,4 +1307,14 @@ fn tail_cursor_and_content_budget_survive_the_wire() {
     let output = wire::request_to_json(&request);
     assert_eq!(output["cursor"], "opaque");
     assert_eq!(output["content_bytes"], 31744);
+}
+
+#[test]
+fn transfer_completion_requires_a_path_and_valid_digest() {
+    for value in [
+        serde_json::json!({"bytes":1,"sha256":DIGEST}),
+        serde_json::json!({"bytes":1,"sha256":"incorrect","destination":"/tmp/file"}),
+    ] {
+        assert!(wire::transfer_outcome_from_json(&value).is_err(), "{value}");
+    }
 }

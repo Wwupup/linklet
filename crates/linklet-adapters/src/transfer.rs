@@ -69,6 +69,8 @@ pub enum TransferFailure {
         path: String,
         /// What the operating system said.
         problem: String,
+        /// Original OS category; classification never parses the message.
+        kind: ErrorKind,
     },
     /// The path exists and is not a regular file. T2.
     NotAFile {
@@ -84,7 +86,7 @@ impl std::fmt::Display for TransferFailure {
             Self::Refused(error) => write!(f, "{error}"),
             Self::Connection(error) => write!(f, "{error}"),
             Self::Channel(error) => write!(f, "a message did not open: {error}"),
-            Self::Filesystem { path, problem } => write!(f, "{path}: {problem}"),
+            Self::Filesystem { path, problem, .. } => write!(f, "{path}: {problem}"),
             Self::NotAFile { path } => write!(
                 f,
                 "{path} exists and is not a regular file, so writing to it would not \
@@ -95,6 +97,28 @@ impl std::fmt::Display for TransferFailure {
 }
 
 impl std::error::Error for TransferFailure {}
+
+impl TransferFailure {
+    /// Stable transfer failure category and its original cause.
+    pub fn diagnostic(&self) -> linklet_core::result::OperationError {
+        use linklet_core::result::{ErrorCode as C, OperationError};
+        let (code, phase) = match self {
+            Self::Filesystem {
+                kind: ErrorKind::NotFound,
+                ..
+            } => (C::NotFound, "filesystem"),
+            Self::Filesystem {
+                kind: ErrorKind::PermissionDenied,
+                ..
+            } => (C::PermissionDenied, "filesystem"),
+            Self::Filesystem { .. } => (C::IoError, "filesystem"),
+            Self::Unsendable(_) | Self::NotAFile { .. } => (C::InvalidArgument, "validate"),
+            Self::Connection(_) => (C::ConnectionFailed, "transfer"),
+            Self::Channel(_) | Self::Refused(_) => (C::InvalidReply, "verify_transfer"),
+        };
+        OperationError::new(code, phase, self.to_string())
+    }
+}
 
 impl From<TransferError> for TransferFailure {
     fn from(error: TransferError) -> Self {
@@ -265,6 +289,9 @@ pub fn receive_body(
     manifest: &Manifest,
     destination: &Path,
 ) -> Result<TransferOutcome, TransferFailure> {
+    let destination =
+        std::path::absolute(destination).map_err(|error| filesystem(destination, error))?;
+    let destination = destination.as_path();
     // T2, and before the temporary exists: a destination that is present and is not a
     // regular file is a directory, a symlink or a device. Writing through a symlink
     // writes where the operator did not intend, and the rename would replace the link
@@ -285,10 +312,11 @@ pub fn receive_body(
 
     let temporary = part_path(destination);
     match copy_into(connection, session, manifest, &temporary) {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
             // T9. The rename is the only moment the real path changes, and it is after
             // the digest has been compared and everything else has passed.
             fs::rename(&temporary, destination).map_err(|error| filesystem(destination, error))?;
+            outcome.destination = destination.display().to_string();
             Ok(outcome)
         }
         Err(failure) => {
@@ -339,6 +367,8 @@ fn copy_into(
     verify_digest(&manifest.sha256, &got)?;
 
     Ok(TransferOutcome {
+        destination: temporary.display().to_string(),
+        source: None,
         bytes: receiving.written(),
         sha256: got,
     })
@@ -353,5 +383,6 @@ fn filesystem(path: &Path, error: std::io::Error) -> TransferFailure {
     TransferFailure::Filesystem {
         path: path.display().to_string(),
         problem: error.to_string(),
+        kind: error.kind(),
     }
 }

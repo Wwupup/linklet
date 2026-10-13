@@ -22,7 +22,10 @@ pub fn run_probe(agent: &str, token: &Token) -> CommandOutcome {
         Err(error) => error,
     };
     let code = match &error {
-        CallError::BadAddress(_) | CallError::Local(_) | CallError::PairingRequired(_) => 2,
+        CallError::BadAddress(_)
+        | CallError::Local(_)
+        | CallError::LocalFailure(_)
+        | CallError::PairingRequired(_) => 2,
         CallError::Connect(_) => 1,
         CallError::Refused(_) | CallError::VersionMismatch(_) => 3,
         _ => NO_ANSWER,

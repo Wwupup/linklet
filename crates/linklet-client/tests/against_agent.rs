@@ -530,14 +530,14 @@ fn a_push_of_a_file_that_is_not_there_is_refused_before_a_socket_is_opened() {
     // The failure is local, and reporting it as a network failure would send the reader
     // to look at the wrong machine. The agent is never asked.
     //
-    // `CallError::Local` rather than `Protocol`: this used to be a protocol error, which
+    // `CallError::LocalFailure` rather than `Protocol`: this used to be a protocol error, which
     // rendered as "the agent's reply was not understood" for a file that was missing on
     // *this* side, before any socket existed.
     let agent = Agent::start();
     let missing = agent.root.join("not-here.bin");
 
     let error = push(&agent.address, &missing, "build.exe").expect_err("nothing is there");
-    assert!(matches!(error, CallError::Local(_)), "{error:?}");
+    assert!(matches!(error, CallError::LocalFailure(_)), "{error:?}");
     assert!(
         error.to_string().contains("not-here.bin"),
         "the refusal should name the file: {error}"
@@ -636,7 +636,7 @@ fn a_pull_onto_a_destination_that_is_a_directory_is_refused() {
 
     // `Local`, because it is: the reason names the destination this side chose, and the
     // agent had already offered a perfectly good file.
-    assert!(matches!(error, CallError::Local(_)), "{error:?}");
+    assert!(matches!(error, CallError::LocalFailure(_)), "{error:?}");
     assert!(
         error.to_string().contains("a-directory"),
         "the reason should name the destination: {error}"

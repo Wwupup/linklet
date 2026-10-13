@@ -1651,7 +1651,7 @@ fn transfer_on(direction: Direction, agent: &str, from: &str, to: &str) -> ToolO
     };
 
     match result {
-        Ok(outcome) => ToolOutcome::ok(wire::render_transfer(&outcome, to)).at(agent).with_data(serde_json::json!({"bytes":outcome.bytes,"sha256":outcome.sha256,"verified":true,"from":from,"to":to})),
+        Ok(outcome) => ToolOutcome::ok(wire::render_transfer(&outcome, to)).at(agent).with_data(serde_json::json!({"bytes":outcome.bytes,"sha256":outcome.sha256,"verified":true,"from":outcome.source,"to":outcome.destination})),
         Err(error) => CommandOutcome::call_failed(agent, &error).tool,
     }
 }

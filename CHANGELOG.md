@@ -65,6 +65,10 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- Transfer completion reports actual paths and checks the final count and digest.
+  Lost acceptance or completion after possible delivery is an unknown result;
+  filesystem errors retain their OS category.
+
 - Reject mismatched command protocol versions on the target during the hello,
   before establishing a session.
 

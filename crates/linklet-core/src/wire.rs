@@ -812,6 +812,10 @@ pub fn manifest_from_json(value: &Value) -> Result<Manifest, WireError> {
 /// matched.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferOutcome {
+    /// Actual destination on the receiving host.
+    pub destination: String,
+    /// Actual source, filled by the client after verifying the completion.
+    pub source: Option<String>,
     /// How many bytes were written.
     pub bytes: u64,
     /// The digest of what is now at the destination, lowercase hex.
@@ -821,6 +825,8 @@ pub struct TransferOutcome {
 /// A transfer result as JSON.
 pub fn transfer_outcome_to_json(outcome: &TransferOutcome) -> Value {
     serde_json::json!({
+        "destination": outcome.destination,
+        "source": outcome.source,
         "bytes": outcome.bytes as i64,
         "sha256": outcome.sha256,
     })
@@ -847,7 +853,32 @@ pub fn transfer_outcome_from_json(value: &Value) -> Result<TransferOutcome, Wire
         .ok_or_else(|| WireError::BadRequest("sha256: missing or not a string".to_string()))?
         .to_string();
 
-    Ok(TransferOutcome { bytes, sha256 })
+    if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(WireError::BadRequest(
+            "sha256: expected 64 hex digits".into(),
+        ));
+    }
+    let destination = value
+        .get("destination")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| WireError::BadRequest("destination: missing".into()))?
+        .to_owned();
+    let source = match value.get("source") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => {
+            return Err(WireError::BadRequest(
+                "source: expected string or null".into(),
+            ));
+        }
+    };
+    Ok(TransferOutcome {
+        bytes,
+        sha256,
+        destination,
+        source,
+    })
 }
 
 /// The result of a transfer, wrapped as a reply.

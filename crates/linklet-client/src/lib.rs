@@ -79,6 +79,8 @@ pub enum CallError {
     /// reply was not understood: a transfer of no bytes is not one this protocol sends",
     /// which sends the reader to the network for a mistake in their own tree.
     Local(String),
+    /// Typed failure in a local file operation.
+    LocalFailure(linklet_core::result::OperationError),
     /// The agent answered, and the answer was no.
     Refused(linklet_core::result::OperationError),
 }
@@ -96,7 +98,7 @@ impl CallError {
             Self::Transport(_) => (C::ConnectionFailed, "receive"),
             Self::NoReply { .. } => (C::DeadlineExceeded, "await_reply"),
             Self::Protocol(_) => (C::InvalidReply, "receive"),
-            Self::Refused(error) => return error.clone(),
+            Self::Refused(error) | Self::LocalFailure(error) => return error.clone(),
             Self::Unknown { phase, reason } => {
                 return OperationError::new(
                     C::ResultUnknown,
@@ -215,6 +217,7 @@ impl std::fmt::Display for CallError {
                 "result unknown during {phase}; the request may have executed: {reason}"
             ),
             Self::Refused(problem) => write!(f, "the agent refused: {problem}"),
+            Self::LocalFailure(problem) => write!(f, "{problem}"),
         }
     }
 }
@@ -450,6 +453,9 @@ pub fn push(
     // ceiling, or unreadable is a local mistake, and making it look like a network one
     // would send the reader to the wrong machine.
     let manifest = describe_file(local, remote).map_err(transfer_failure)?;
+    let source = std::fs::canonicalize(local).map_err(|error| {
+        CallError::LocalFailure(linklet_adapters::failure::io(error, "filesystem", local))
+    })?;
 
     let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
     connection.set_budget(TRANSFER_ALLOWANCE);
@@ -471,12 +477,15 @@ pub fn push(
     // The default budget of two messages is the handshake and one reply, so it is raised here
     // rather than left to coincide.
     connection.set_message_limit(connection.messages_read() + 2);
-    match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)? {
+    match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)
+        .map_err(|e| e.after_delivery("await_acceptance"))?
+    {
         Reply::Refused(reason) => return Err(CallError::Refused(reason)),
         Reply::Result(value) => {
             let reply = Reply::Result(value);
             let accepted = wire::accepted_bytes_from_reply(&reply).map_err(|error| {
                 CallError::Protocol(format!("the agent did not accept the manifest: {error}"))
+                    .after_delivery("decode_acceptance")
             })?;
             // A receiver that accepted a different number has read a different manifest,
             // and finding that out here beats finding it out from a digest.
@@ -484,7 +493,8 @@ pub fn push(
                 return Err(CallError::Protocol(format!(
                     "the agent accepted {accepted} bytes and {} were declared",
                     manifest.bytes
-                )));
+                ))
+                .after_delivery("decode_acceptance"));
             }
         }
     }
@@ -495,9 +505,19 @@ pub fn push(
     match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)
         .map_err(|e| e.after_delivery("await_commit"))?
     {
-        Reply::Result(value) => wire::transfer_outcome_from_json(&value).map_err(|error| {
-            CallError::Protocol(error.to_string()).after_delivery("decode_commit")
-        }),
+        Reply::Result(value) => {
+            let mut outcome = wire::transfer_outcome_from_json(&value).map_err(|error| {
+                CallError::Protocol(error.to_string()).after_delivery("decode_commit")
+            })?;
+            if outcome.bytes != manifest.bytes || outcome.sha256 != manifest.sha256 {
+                return Err(CallError::Protocol(
+                    "completion does not match the sent manifest".into(),
+                )
+                .after_delivery("verify_commit"));
+            }
+            outcome.source = Some(source.display().to_string());
+            Ok(outcome)
+        }
         Reply::Refused(reason) => Err(CallError::Refused(reason)),
     }
 }
@@ -800,7 +820,10 @@ pub fn pull(
         Reply::Refused(reason) => return Err(CallError::Refused(reason)),
     };
 
-    receive_body(&mut connection, session.as_mut(), &manifest, local).map_err(transfer_failure)
+    let mut outcome = receive_body(&mut connection, session.as_mut(), &manifest, local)
+        .map_err(transfer_failure)?;
+    outcome.source = Some(manifest.path);
+    Ok(outcome)
 }
 
 /// Turns a transfer failure into the caller's failure.
@@ -819,7 +842,7 @@ fn transfer_failure(failure: TransferFailure) -> CallError {
         | TransferFailure::Unsendable(_)
         | TransferFailure::NotAFile { .. }
         | TransferFailure::Refused(TransferError::Short { .. }) => {
-            CallError::Local(failure.to_string())
+            CallError::LocalFailure(failure.diagnostic())
         }
 
         // And these are about the other end: a message that would not open, a running total
@@ -1074,6 +1097,7 @@ pub fn render_call_error(error: &CallError) -> String {
         // would be a claim about where the failure came from -- which is the mistake this
         // variant exists to stop making.
         CallError::Local(problem) | CallError::PairingRequired(problem) => problem.clone(),
+        CallError::LocalFailure(problem) => problem.to_string(),
         CallError::Unknown { .. } => error.to_string(),
         CallError::Refused(problem) => format!("the agent refused the request: {problem}"),
     }

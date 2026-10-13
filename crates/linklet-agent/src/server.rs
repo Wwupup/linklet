@@ -472,7 +472,7 @@ fn receive(
 
     match receive_body(connection, session, manifest, &target) {
         Ok(outcome) => wire::encode_transfer_reply(&outcome),
-        Err(failure) => wire::reply_refused(&failure.to_string()),
+        Err(failure) => wire::reply_failure(&failure.diagnostic()),
     }
 }
 
@@ -506,9 +506,9 @@ fn send(
     // caller will check its copy against. A file that cannot be read, or is not a
     // regular file, is refused by name here rather than after the manifest has promised
     // something.
-    let manifest = match describe(&target, path) {
+    let manifest = match describe(&target, &target.display().to_string()) {
         Ok(manifest) => manifest,
-        Err(failure) => return Response::Sealed(wire::reply_refused(&failure.to_string())),
+        Err(failure) => return Response::Sealed(wire::reply_failure(&failure.diagnostic())),
     };
 
     let mut sealed = Vec::new();

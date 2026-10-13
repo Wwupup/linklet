@@ -318,3 +318,13 @@ protocol's message count, replaced by T11. Its item 2 now depends on the choice 
 above. **Both edits belong in the commit that implements the transfer**, because a
 defence list that describes a design nobody is using is worse than no list -- it is
 believed.
+
+## Protocol 3 completion facts
+
+A completed transfer carries the receiving host's actual destination, bytes and
+SHA-256. The client verifies a push confirmation against the original manifest
+and adds the actual source path; pulls report both resolved paths. Filesystem
+errors retain their OS category. After a mutating request may have arrived, a
+lost or invalid acceptance/completion is `unknown/result_unknown`, never a claim
+that nothing ran. The client does not retry. A lost final push confirmation can
+therefore coexist with a correctly committed file.
