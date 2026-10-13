@@ -254,15 +254,14 @@ fn a_file_that_is_not_utf8_is_decoded_by_a_rule_that_is_named() {
         .expect("the agent should answer");
 
     assert!(search.searched, "the file was read: {search:#?}");
-    assert_eq!(
-        search.encoding,
-        if cfg!(windows) {
-            Encoding::Oem
-        } else {
-            Encoding::Latin1
-        },
-        "the label has to say which rule was applied, and it differs by platform: {search:#?}"
-    );
+    if cfg!(windows) {
+        assert!(
+            matches!(search.encoding, Encoding::CodePage(_)),
+            "{search:#?}"
+        );
+    } else {
+        assert_eq!(search.encoding, Encoding::Latin1);
+    }
 
     // **The lines, exactly, and not just "last is in there".** This file ends with a newline
     // and has three lines; a reading that produced four would mean an empty line was invented,

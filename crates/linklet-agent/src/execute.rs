@@ -23,16 +23,8 @@ use linklet_core::wire::{KILLED_BY_DEADLINE, RunOutcome, RunRequest, Text};
 ///   argument. Whoever wrote it is responsible for it, in the same way they would
 ///   be at a prompt -- a tool that "helpfully" re-quoted would be a second
 ///   interpretation of a string the caller already decided on.
-/// - **No output limit of its own, and a limit it does meet.** A command that writes a
-///   gigabyte writes a gigabyte, and this function will hold all of it: bounded output is a
-///   real need and belongs in the wire protocol as a field, not as a silent truncation
-///   here. What bounds it today is the reply: it is one frame, so `MAX_PAYLOAD` (16 MiB)
-///   is the real ceiling, and `server::run_reply` is where that is applied -- a command
-///   past it is **refused by name**, with both stream sizes in the reason, rather than
-///   reported as a dropped connection. That refusal is the fix for the defect
-///   `docs/ROADMAP.md` M10 records, and the measurement that found it was 20,000,000 bytes
-///   of output, the command exiting 0 on the target, and the caller told "could not reach
-///   the agent".
+/// - Each pipe is drained continuously and retains at most one mebibyte of raw
+///   tail bytes. Counts and truncation travel with the result under protocol 2.
 pub fn run(request: &RunRequest) -> RunOutcome {
     let started = Instant::now();
     let deadline = Duration::from_secs(request.timeout_seconds);
@@ -166,11 +158,64 @@ fn kill_tree(pid: u32) {
 /// command wrote and whether any byte had to be replaced, so a caller reading mojibake
 /// is told it is mojibake. `docs/ROADMAP.md` M10 is the defect this closes.
 fn read_all(mut pipe: impl Read) -> Text {
-    let mut bytes = Vec::new();
-    let _ = pipe.read_to_end(&mut bytes);
-    Text::from_bytes(&bytes)
+    let mut capture = linklet_core::output::Capture::default();
+    let mut buffer = [0; 8192];
+    loop {
+        match pipe.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => capture.push(&buffer[..count]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let (bytes, total, encoding) = capture.finish();
+    linklet_adapters::decode_text(
+        &bytes,
+        total,
+        encoding,
+        linklet_adapters::TextSource::Command,
+    )
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn large_output_keeps_the_end_in_bounded_memory() {
+        let mut bytes = vec![b'x'; 17 * 1024 * 1024];
+        bytes.extend_from_slice(b"END");
+        let result = read_all(std::io::Cursor::new(&bytes));
+        assert_eq!(result.byte_count(), bytes.len());
+        assert!(result.as_str().len() <= 1024 * 1024);
+        assert!(result.as_str().ends_with("END"));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn both_large_streams_drain_and_return_their_tail() {
+        let result = run(&RunRequest {
+            command: r#"powershell.exe -NoProfile -NonInteractive -Command "$b=[Text.Encoding]::ASCII.GetBytes(('x'*8192));$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();for($i=0;$i -lt 2200;$i++){$o.Write($b,0,$b.Length);$e.Write($b,0,$b.Length)};$b=[Text.Encoding]::ASCII.GetBytes('END');$o.Write($b,0,3);$e.Write($b,0,3)""#.into(),
+            timeout_seconds: 15,
+        });
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        for stream in [&result.stdout, &result.stderr] {
+            assert_eq!(stream.byte_count(), 2200 * 8192 + 3);
+            assert_eq!(stream.retained_bytes(), 1024 * 1024);
+            assert!(stream.as_str().ends_with("END"));
+            assert!(stream.is_truncated());
+        }
+        assert!(linklet_core::wire::reply_fits(
+            &linklet_core::wire::encode_run_reply(&result),
+            linklet_core::wire::reply_ceiling()
+        ));
+    }
+
+    #[test]
+    fn utf16_output_decodes_before_utf8() {
+        let result = read_all(std::io::Cursor::new([0xff, 0xfe, 0x2d, 0x4e, 0x87, 0x65]));
+        assert_eq!(result.as_str(), "\u{4e2d}\u{6587}");
+    }
 }

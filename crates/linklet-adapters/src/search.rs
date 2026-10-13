@@ -16,20 +16,10 @@
 //!
 //! # The fallback that says which rule it used
 //!
-//! A file that is not UTF-8 and carries no mark is decoded with **the machine's OEM code
-//! page**, which is what a Windows console program wrote it with. `std` has no way to do
-//! that on this platform, so it is done the way the target already does everything else:
-//! through a program that knows, run with its own environment. **The label travels with the
-//! text**, so a reader who sees nonsense knows which rule produced it.
+//! Unicode is decoded first; Windows fallback uses the system ANSI code page,
+//! labelled with its actual number. Only captured bytes are sent to the decoder.
 
 use std::path::Path;
-
-// **Windows only, because the program it starts exists only there.** Ungated, this import is an
-// unused one on the other platform, which `cargo clippy -- -D warnings` rejects -- so the gate
-// that turns a warning into a failure is what found it, on Linux, where `cargo test` had been
-// green for weeks.
-#[cfg(windows)]
-use std::process::Command;
 
 use linklet_core::search::{
     Direction, Encoding, Limit, Noun, Pattern, Search, lines_of, scan, sniff,
@@ -165,26 +155,15 @@ fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, S
 
     let encoding = sniff(&bytes);
 
-    // **Only UTF-8 is decoded here, and everything else is asked for.** `std` has no code page
-    // tables; the target's own shell does, so a file that is not UTF-8 is read a second time
-    // through it. That is slower and it is the honest version: the alternative is a
-    // hand-written table for one code page that would be wrong for every machine that uses
-    // another.
-    //
-    // The decode returns the label as well as the text, because on one of the two platforms
-    // the rule that was applied is **not** the one `sniff` named. See `decode_legacy`.
-    let (text, encoding) = match encoding {
-        Encoding::Utf8 | Encoding::Utf8Bom => match String::from_utf8(bytes.clone()) {
-            Ok(text) => (text, encoding),
-            // `sniff` said UTF-8 because every byte was valid, so this cannot fail; if it
-            // ever does, the reading is refused rather than reported as text.
-            Err(error) => return Err(format!("cannot decode {path}: {error}")),
-        },
-        _ => decode_legacy(target, path, &bytes, encoding)?,
-    };
+    let decoded = crate::decode_text(&bytes, bytes.len(), encoding, crate::TextSource::File);
+    if let Some(error) = decoded.decode_error() {
+        return Err(format!("cannot decode {path}: {error}"));
+    }
+    let encoding = Encoding::named(decoded.encoding()).ok_or("unknown decoder encoding")?;
+    let text = decoded.as_str();
 
     Ok(Read {
-        lines: lines_of(&text),
+        lines: lines_of(text),
         encoding,
         bytes_read: bytes.len() as u64,
         file_bytes: Some(file_bytes),
@@ -216,7 +195,8 @@ fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Ve
         .map_err(|error| format!("cannot seek: {error}"))?;
 
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    file.take(MAX_BYTES)
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read: {error}"))?;
 
     // The window starts mid-line, so everything before the first terminator is a fragment.
@@ -228,103 +208,22 @@ fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Ve
     Ok(bytes)
 }
 
-/// Decodes a file that is not UTF-8 and carries no mark, **and says which rule did it**.
-///
-/// Two platforms, two rules, and the label is not the same on both -- which is why this returns
-/// the encoding rather than letting the caller keep what `sniff` said. `sniff` can only say "not
-/// text I can name" ([`Encoding::Oem`], because that is the one thing observable from the
-/// bytes); which *rule* turns them into characters is a fact about the machine, and it is
-/// decided here.
-///
-/// # Windows: the machine's code page
-///
-/// Through PowerShell, which has the code page tables `std` does not and which is already on
-/// every Windows target this runs against. **The bytes are written out and read back rather than
-/// being decoded in place**, because what is wanted is the *text* of a file that may be any
-/// legacy code page, and asking the operating system for it beats guessing. The label is
-/// [`Encoding::Oem`]: a rule was applied, and its name is a fact about the machine rather than a
-/// number this side can know.
-///
-/// # Everywhere else: one byte per character
-///
-/// **A Linux machine has no code page to ask for, and this is the honest answer to that rather
-/// than a refusal.** Its default encoding is UTF-8, so the bytes that reach here are precisely
-/// the ones that are not; there is no table the machine owns that turns them into characters.
-/// [`linklet_core::search::decode_latin1`] is the rule that always applies: total, reversible,
-/// and labelled [`Encoding::Latin1`] so a reader shown mojibake knows which rule produced it.
-///
-/// The decoding happens **in memory, over the bytes this already read**, so a non-UTF-8 file is
-/// read once and is subject to the same ceiling and the same end-of-file window as a UTF-8 one.
-/// The Windows path cannot say that: it hands the file's *path* to another program, which reads
-/// the whole thing regardless of the ceiling. That is a real difference between the two and it
-/// is named here rather than left to be discovered.
-///
-/// # Errors
-///
-/// A sentence when the rule could not be applied. **A decoding this cannot do is a failure to
-/// search and not a file with no matches**, which is the distinction this module is arranged
-/// around.
-fn decode_legacy(
-    target: &Path,
-    path: &str,
-    bytes: &[u8],
-    sniffed: Encoding,
-) -> Result<(String, Encoding), String> {
-    #[cfg(windows)]
-    {
-        let _ = bytes;
-        // `-Encoding Default` is the machine's ANSI code page, which for console output on a
-        // Chinese Windows is 936 and on an English one is 1252. **It is not the OEM code page**
-        // -- `Get-Content` has no spelling for that -- and the difference is stated in the
-        // label the caller reads rather than papered over: the label says which rule was used.
-        let script = format!(
-            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; \
-             Get-Content -LiteralPath '{}' -Raw -Encoding Default",
-            target.display().to_string().replace('\'', "''")
-        );
-
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .map_err(|error| format!("cannot read {path} as the machine's code page: {error}"))?;
-
-        if !output.status.success() {
-            let complaint = String::from_utf8_lossy(&output.stderr);
-            return Err(format!(
-                "cannot read {path} as the machine's code page: {}",
-                complaint.trim()
-            ));
-        }
-
-        let text = String::from_utf8(output.stdout)
-            .map_err(|error| format!("the machine's own text was not UTF-8: {error}"))?;
-
-        // **One line terminator comes off, because it is the transport's and not the file's.**
-        // `Get-Content -Raw` hands back the file's bytes and PowerShell then writes that string
-        // to stdout with a newline of its own, so the text arriving here is the file plus one
-        // terminator. Left on, it is a line the file does not have: a search reports one more
-        // match than there are lines, and the last one is empty. Measured rather than reasoned
-        // about -- the same GBK file gave three lines on Linux and four on Windows, and the
-        // fourth was PowerShell's.
-        //
-        // Exactly one, and neither a trim nor a loop: a file that genuinely ends with two
-        // newlines has a blank last line and must keep it.
-        let text = text
-            .strip_suffix("\r\n")
-            .or_else(|| text.strip_suffix('\n'))
-            .unwrap_or(&text)
-            .to_string();
-
-        Ok((text, sniffed))
-    }
-
-    #[cfg(not(windows))]
-    {
-        // Named and unused, as `target` and `sniffed` are: this platform decodes in memory and
-        // has no error to report, so `path` reaches the sentence above only on Windows.
-        let _ = target;
-        let _ = path;
-        let _ = sniffed;
-        Ok((linklet_core::search::decode_latin1(bytes), Encoding::Latin1))
+#[cfg(test)]
+mod bounded_tests {
+    use super::*;
+    #[test]
+    fn legacy_decoding_never_reads_outside_the_selected_window() {
+        let path =
+            std::env::temp_dir().join(format!("linklet-decode-window-{}.txt", std::process::id()));
+        let mut bytes = vec![b'x'; MAX_BYTES as usize];
+        bytes[..6].copy_from_slice(b"\xffHEAD\n");
+        bytes.extend_from_slice(b"\nOUTSIDE\xff\n");
+        std::fs::write(&path, bytes).expect("fixture");
+        let first = read_lines(&path, "fixture", Direction::First).expect("first window");
+        let last = read_lines(&path, "fixture", Direction::Last).expect("last window");
+        std::fs::remove_file(path).expect("cleanup");
+        assert!(!first.lines.iter().any(|line| line.contains("OUTSIDE")));
+        assert!(!last.lines.iter().any(|line| line.contains("HEAD")));
+        assert!(first.bytes_read <= MAX_BYTES && last.bytes_read <= MAX_BYTES);
     }
 }

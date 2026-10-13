@@ -13,6 +13,14 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Changed
 
+- Next minor: protocol 2 replaces flat command streams with objects containing
+  text, total_bytes, retained_bytes, encoding, truncated, lossy, and decode_error.
+  Upgrade both binaries together; protocol 1 is rejected during the handshake.
+- Command output retains the last 1 MiB of each stream and keeps draining after
+  that limit. Truncation preserves the command status. Unicode and Windows code
+  pages are decoded explicitly; file fallback converts only the bounded bytes
+  already read, without reopening the file. No full logs are saved automatically.
+
 - **Breaking:** removed `linklet-agent --root`. File tools use absolute paths directly
   and resolve relative paths, including `..`, from the startup working directory.
   Other Windows drives and ordinary UNC shares are allowed under the agent account

@@ -34,6 +34,7 @@ pub mod frame;
 pub mod listing;
 pub mod log;
 mod outcome;
+pub mod output;
 mod probe;
 pub mod process;
 pub mod search;

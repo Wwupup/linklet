@@ -115,12 +115,8 @@ fn an_agent_that_predates_the_version_field_is_read_as_the_oldest_protocol() {
     let (port, agent) = agent_that_says(old);
     let outcome = probe(&address(port), Duration::from_secs(2));
 
-    if let Err(error) = &outcome {
-        assert!(
-            !error.to_string().contains("docs/VERSIONING.md"),
-            "an agent at the oldest protocol must not be refused as a skew: {error}"
-        );
-    }
+    let error = outcome.expect_err("protocol 1 must be refused before any command");
+    assert!(error.to_string().contains("docs/VERSIONING.md"));
 
     agent.join().expect("the fake agent finishes");
 }

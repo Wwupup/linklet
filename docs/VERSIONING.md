@@ -10,6 +10,11 @@ be deployed as a pair. Nothing here is published to a registry, and no crate is 
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
+Current development uses **protocol 2**, planned for the next minor release.
+Command streams are metadata objects with bounded output tails. Upgrade the host
+and agent together; protocol 1 peers are refused before a command is accepted.
+This change is not a release or deployment.
+
 ## What the number means
 
 `0.x.y`, and while the major is 0 the minor is the interesting one.
@@ -50,9 +55,9 @@ host that cannot use what it is talking to should say so once, at the start, rat
 caller discover it from whichever operation happens to need a newer feature. `docs/decisions.md`
 D2 records what the release before this one cost, which was nothing at all.
 
-**The upgrade order is therefore: the agent first.** A new agent serves an old host, so having
-the target ahead of the tool is the state that always works; a host ahead of its agents is the
-state that gets refused, with a sentence saying so.
+**Upgrade both ends together when the protocol number changes.** Neither direction
+of a protocol mismatch is accepted. A rolling upgrade can leave a pair temporarily
+unavailable until both binaries have been replaced.
 
 ## Cutting a release
 

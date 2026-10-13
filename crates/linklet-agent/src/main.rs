@@ -25,14 +25,8 @@
 //!   opens two connections and does two handshakes. A session that outlived a
 //!   connection would need a table and an eviction policy, and an eviction policy is
 //!   a way to be exhausted.
-//! - **No output cap, and a ceiling it does not get to choose.** A command that
-//!   writes a gigabyte writes a gigabyte, and the agent holds all of it before it
-//!   knows the reply will not fit. What it does about that is refuse by name with
-//!   both stream sizes in the reason, rather than closing the connection and leaving
-//!   the caller to conclude the network failed -- see `server::run_reply`. Holding
-//!   the bytes at all is the part a streaming reply would remove, and that is a
-//!   protocol change rather than this one; `docs/ROADMAP.md` M10 records it as the
-//!   shape not taken.
+//! - **No streaming reply.** Each stream retains its final mebibyte of raw bytes;
+//!   protocol 2 reports total size, truncation, encoding, and decoding loss.
 
 #![forbid(unsafe_code)]
 

@@ -31,11 +31,8 @@ use std::fmt::Write as _;
 
 /// What an encoding is, as far as this can tell.
 ///
-/// A closed set of things a Windows-machine file actually is, and **not a code page
-/// number**: the number belongs to the machine that read the file, and putting it on the
-/// wire would be publishing a fact about a target nobody asked about. `Oem` carries the
-/// number's *absence* rather than a guess, which is the difference between "read as the
-/// machine's code page" and "read as code page 936".
+/// Unicode labels describe the bytes; CodePage records the actual Windows
+/// fallback. Oem is a sniffing result until the adapter selects a code page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Encoding {
     /// Valid UTF-8, with no byte-order mark.
@@ -65,6 +62,8 @@ pub enum Encoding {
     /// shape as an agent refusing an `op` it does not know, which is the case that document says
     /// does not raise the protocol number.
     Latin1,
+    /// The actual Windows code page used by the decoder.
+    CodePage(u16),
 }
 
 impl Encoding {
@@ -72,7 +71,7 @@ impl Encoding {
     ///
     /// The words a reader needs are "which rule was applied", so `Oem` says what it means
     /// rather than naming a code page it does not know.
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> String {
         match self {
             Self::Utf8 => "utf-8",
             Self::Utf8Bom => "utf-8 with a byte-order mark",
@@ -80,7 +79,9 @@ impl Encoding {
             Self::Utf16Be => "utf-16 big-endian",
             Self::Oem => "the machine's OEM code page",
             Self::Latin1 => "iso-8859-1, one byte per character",
+            Self::CodePage(page) => return format!("cp{page}"),
         }
+        .to_string()
     }
 
     /// The encoding a name refers to, or `None`.
@@ -95,7 +96,10 @@ impl Encoding {
             "utf-16be" => Some(Self::Utf16Be),
             "oem" => Some(Self::Oem),
             "latin-1" => Some(Self::Latin1),
-            _ => None,
+            _ => name
+                .strip_prefix("cp")
+                .and_then(|n| n.parse().ok())
+                .map(Self::CodePage),
         }
     }
 
@@ -104,7 +108,7 @@ impl Encoding {
     /// Separate from [`Encoding::as_str`] because the two have different readers: this one
     /// is parsed by a program, and that one is read by a person who has just seen the
     /// output come out wrong.
-    pub fn tag(self) -> &'static str {
+    pub fn tag(self) -> String {
         match self {
             Self::Utf8 => "utf-8",
             Self::Utf8Bom => "utf-8-bom",
@@ -112,7 +116,9 @@ impl Encoding {
             Self::Utf16Be => "utf-16be",
             Self::Oem => "oem",
             Self::Latin1 => "latin-1",
+            Self::CodePage(page) => return format!("cp{page}"),
         }
+        .to_string()
     }
 }
 
@@ -579,10 +585,10 @@ mod tests {
             Encoding::Oem,
             Encoding::Latin1,
         ] {
-            assert_eq!(Encoding::named(encoding.tag()), Some(encoding));
+            assert_eq!(Encoding::named(&encoding.tag()), Some(encoding));
             assert!(!encoding.as_str().is_empty());
         }
-        assert_eq!(Encoding::named("cp936"), None);
+        assert_eq!(Encoding::named("cp936"), Some(Encoding::CodePage(936)));
     }
 
     #[test]

@@ -150,7 +150,7 @@ pub fn handshake_to_json(public: &[u8]) -> Value {
 ///
 /// `docs/VERSIONING.md` is the whole policy. `docs/decisions.md` D2 records the cost of the
 /// version this replaces, which did not negotiate at all.
-pub const PROTOCOL_VERSION: i64 = 1;
+pub const PROTOCOL_VERSION: i64 = 2;
 
 /// What a peer speaks when its handshake has no `protocol` field.
 ///
@@ -205,138 +205,125 @@ pub fn handshake_public_from_json(value: &Value) -> Result<Vec<u8>, WireError> {
     from_hex(text)
 }
 
-/// What a command wrote to one stream, and whether it was text.
-///
-/// **A `String` cannot carry "these bytes are not text", and that was the defect.**
-/// A command that emitted the four bytes `D6 D0 CE C4` -- GBK for two CJK characters --
-/// reached the caller as four `U+FFFD`, and no field in the reply said the output was
-/// not text. `docs/ROADMAP.md` M10 is the whole of it: the defect is **not which guess
-/// is made but that the guess was silent**, and on the Windows targets this tool is for
-/// that is the difference between reading a program's error and reading mojibake.
-///
-/// So the bytes are decoded here, once, and the fact that something was replaced travels
-/// with the text instead of being dropped at the point of decoding. What it deliberately
-/// does **not** do is guess a code page: decoding with the machine's OEM code page is
-/// what the sibling project does, and it is a real improvement, but it is a decision
-/// about which encoding to assume -- and the second defect is that a decision was made
-/// silently, not that the wrong one was.
-///
-/// The byte count is the count the command wrote, which is **not** the length of the
-/// text: a replaced byte becomes three bytes of UTF-8, and a multi-byte character that
-/// survives keeps its own length in bytes and loses it in characters.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// Decoded output from one command stream, with raw-byte accounting.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Text {
-    /// The bytes as text, with anything undecodable replaced.
     value: String,
-    /// How many bytes the command wrote.
     byte_count: usize,
-    /// Whether any of them had to be replaced.
+    retained_bytes: usize,
+    encoding: String,
     lossy: bool,
+    decode_error: Option<String>,
 }
-
+impl Default for Text {
+    fn default() -> Self {
+        Self::from_bytes(b"")
+    }
+}
 impl Text {
-    /// Decodes what a command wrote, recording whether anything was lost.
-    ///
-    /// Lossy rather than strict, and the same way round as `String::from_utf8_lossy`:
-    /// a command that writes one invalid byte must not cost the caller the other ten
-    /// thousand that were fine. What was missing before is the second half -- that the
-    /// replacement is now *recorded* rather than merely visible to someone who knows
-    /// what `U+FFFD` means.
+    /// Decodes UTF-8 bytes, marking invalid bytes as lossy.
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        match std::str::from_utf8(bytes) {
-            Ok(text) => Self {
-                value: text.to_string(),
-                byte_count: bytes.len(),
-                lossy: false,
-            },
-            Err(_) => Self {
-                value: String::from_utf8_lossy(bytes).into_owned(),
-                byte_count: bytes.len(),
-                lossy: true,
-            },
+        Self::decoded(
+            String::from_utf8_lossy(bytes).into_owned(),
+            bytes.len(),
+            bytes.len(),
+            "utf-8".into(),
+            std::str::from_utf8(bytes).is_err(),
+            None,
+        )
+    }
+    /// Constructs decoded output. Counts describe raw bytes before decoding;
+    /// retained bytes must not exceed total bytes.
+    pub fn decoded(
+        value: String,
+        total_bytes: usize,
+        retained_bytes: usize,
+        encoding: String,
+        lossy: bool,
+        decode_error: Option<String>,
+    ) -> Self {
+        Self {
+            value,
+            byte_count: total_bytes,
+            retained_bytes,
+            encoding,
+            lossy,
+            decode_error,
         }
     }
-
-    /// The text, with replacements where the bytes were not text.
+    /// The retained output as text.
     pub fn as_str(&self) -> &str {
         &self.value
     }
-
-    /// Whether any byte had to be replaced to make this text.
-    ///
-    /// The field the defect was about: a caller that reads this can tell an answer from
-    /// a guess, and one that does not still gets the text it would have got before.
+    /// Whether decoding replaced invalid bytes.
     pub fn is_lossy(&self) -> bool {
         self.lossy
     }
-
-    /// How many bytes the command wrote.
-    ///
-    /// The size of the output rather than of the text, which is what a person asking
-    /// "how much did it print" means, and what a refusal about a reply too large to
-    /// frame has to compare against a ceiling.
+    /// Total bytes emitted, including discarded output.
     pub fn byte_count(&self) -> usize {
         self.byte_count
     }
-
-    /// Why this text is not the whole answer, or `None` when it is.
-    ///
-    /// A sentence rather than a flag because it is read by a person looking at a
-    /// rendered command, and it names what happened instead of leaving them to work out
-    /// what a replacement character means.
+    /// Raw bytes retained before trimming incomplete boundary characters.
+    pub fn retained_bytes(&self) -> usize {
+        self.retained_bytes
+    }
+    /// Actual encoding used, such as utf-8 or cp936.
+    pub fn encoding(&self) -> &str {
+        &self.encoding
+    }
+    /// Whether earlier output was discarded.
+    pub fn is_truncated(&self) -> bool {
+        self.retained_bytes < self.byte_count
+    }
+    /// Why a decoder failed, if a lossy fallback was necessary.
+    pub fn decode_error(&self) -> Option<&str> {
+        self.decode_error.as_deref()
+    }
     fn loss_note(&self) -> Option<&'static str> {
         self.lossy.then_some(
             "some bytes were not text, and are shown as replacement characters rather than dropped",
         )
     }
 }
-
 impl std::fmt::Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.value)
     }
 }
-
-/// Reads a text field and its byte count out of a run outcome.
-///
-/// # Errors
-///
-/// [`WireError::BadRequest`] naming the field when the text is missing or is not a
-/// string. **The count and the loss flag are optional on purpose**: an agent older than
-/// this change sends neither, and a host that demanded them would refuse a reply it can
-/// read perfectly well -- the count falls back to the text's own length, which is exact
-/// when the text is not lossy and is the only thing left to say when it is.
 fn text_from_json(value: &Value, field: &str) -> Result<Text, WireError> {
-    let text = value
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| WireError::BadRequest(format!("{field}: missing or not a string")))?;
-
-    let byte_count = match value.get(format!("{field}_bytes")).map(Value::as_i64) {
-        Some(Some(bytes)) if bytes >= 0 => bytes as usize,
-        Some(_) => {
-            return Err(WireError::BadRequest(format!(
-                "{field}_bytes: not a count of bytes"
-            )));
-        }
-        None => text.len(),
+    let stream = &value[field];
+    let bad = || WireError::BadRequest(format!("{field}: invalid protocol 2 stream metadata"));
+    let text = stream["text"].as_str().ok_or_else(bad)?;
+    let total = stream["total_bytes"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(bad)?;
+    let retained = stream["retained_bytes"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or_else(bad)?;
+    let encoding = stream["encoding"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(bad)?;
+    let truncated = stream["truncated"].as_bool().ok_or_else(bad)?;
+    let lossy = stream["lossy"].as_bool().ok_or_else(bad)?;
+    if retained > total || truncated != (retained < total) {
+        return Err(bad());
+    }
+    let decode_error = match stream.get("decode_error") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(error)) => Some(error.clone()),
+        _ => return Err(bad()),
     };
-
-    let lossy = match value.get(format!("{field}_not_utf8")) {
-        Some(Value::Bool(lossy)) => *lossy,
-        Some(_) => {
-            return Err(WireError::BadRequest(format!(
-                "{field}_not_utf8: not true or false"
-            )));
-        }
-        None => false,
-    };
-
-    Ok(Text {
-        value: text.to_string(),
-        byte_count,
+    Ok(Text::decoded(
+        text.into(),
+        total,
+        retained,
+        encoding.into(),
         lossy,
-    })
+        decode_error,
+    ))
 }
 
 /// Why a message was not the shape this protocol defines.
@@ -983,16 +970,7 @@ pub fn run_request_from_json(value: &Value) -> Result<RunRequest, WireError> {
     })
 }
 
-/// The outcome as JSON.
-///
-/// Each stream is written as its text, the number of bytes the command wrote, and
-/// whether any of them had to be replaced -- `docs/ROADMAP.md` M10, where the defect is
-/// that a guess about encoding was silent. The two extra fields are always written, so a
-/// host reading a reply does not have to infer them from the text.
-///
-/// **They are optional on the reading side**, because an agent older than this change
-/// sends only the text. A reply that can be read is not refused for a field that was not
-/// invented when it was written.
+/// The outcome as protocol 2 JSON, including explicit per-stream metadata.
 pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
     let mut entries = Map::new();
     entries.insert(
@@ -1003,12 +981,15 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
         },
     );
     for (field, text) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
-        entries.insert(field.to_string(), serde_json::json!(text.as_str()));
         entries.insert(
-            format!("{field}_bytes"),
-            serde_json::json!(text.byte_count() as i64),
+            field.to_string(),
+            serde_json::json!({
+                "text": text.as_str(), "total_bytes": text.byte_count(),
+                "retained_bytes": text.retained_bytes(), "encoding": text.encoding(),
+                "truncated": text.is_truncated(), "lossy": text.is_lossy(),
+                "decode_error": text.decode_error(),
+            }),
         );
-        entries.insert(format!("{field}_not_utf8"), Value::Bool(text.is_lossy()));
     }
     entries.insert(
         "duration_ms".to_string(),
@@ -1031,9 +1012,7 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
 /// [`WireError::BadRequest`] for anything that is not the shape above. A missing
 /// `exit_code` *field* is an error; a present `null` is a `None`, because those
 /// are different messages and only one of them means "killed or never started".
-/// `stdout` and `stderr` carry a byte count and a loss flag that an older agent does
-/// not send. A reply that can be read is not refused for a field that did not exist
-/// when it was written, so those two default to the text's own length and to "clean".
+/// Both stream objects must carry the protocol 2 metadata.
 pub fn run_outcome_from_json(value: &Value) -> Result<RunOutcome, WireError> {
     let exit_code = match value.get("exit_code") {
         None => {
@@ -2117,10 +2096,24 @@ pub fn render_run(outcome: &RunOutcome) -> String {
     out.push_str(&format!("took {} ms\n", outcome.duration_ms));
 
     for (name, stream) in [("stdout", &outcome.stdout), ("stderr", &outcome.stderr)] {
-        if stream.as_str().is_empty() {
+        if stream.as_str().is_empty() && !stream.is_truncated() && stream.decode_error().is_none() {
             continue;
         }
         out.push_str(&format!("{name}:\n"));
+        if stream.encoding() != "utf-8" || stream.is_truncated() {
+            out.push_str(&format!(
+                "  encoding: {}; retained {} of {} bytes\n",
+                stream.encoding(),
+                stream.retained_bytes(),
+                stream.byte_count()
+            ));
+        }
+        if stream.is_truncated() {
+            out.push_str("  truncated: showing the output tail; earlier bytes were discarded\n");
+        }
+        if let Some(error) = stream.decode_error() {
+            out.push_str(&format!("  decoding failed: {error}\n"));
+        }
         if let Some(note) = stream.loss_note() {
             out.push_str(&format!("  {note}\n"));
         }

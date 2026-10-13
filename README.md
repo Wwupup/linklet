@@ -97,6 +97,13 @@ $ linklet ps --agent 10.0.0.5:8787 --name app.exe
 1 of 214 match, filter name=app.exe
 ```
 
+`exec` returns the last 1 MiB of raw bytes from each output stream, with total and
+retained byte counts, encoding, truncation, and decoding-loss metadata. Larger
+output is drained and discarded; truncation does not change the exit code.
+Unicode is detected first; Windows command output falls back to its console
+code page (system OEM without a console). File reads fall back to system ANSI.
+Both binaries must use protocol 2; upgrade both ends together.
+
 `spawn` is not `exec` with a flag. **`exec` waits** for the command and returns its output,
 which is right for a build step and wrong for a program meant to keep running: the request,
 the connection and the agent's pipes are held until it exits. `spawn` starts the program with

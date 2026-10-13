@@ -115,12 +115,12 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
 fn a_null_exit_code_and_a_missing_one_are_different_messages() {
     // In prose these read the same. They are not: `null` is "the agent looked and
     // there is no code", missing is "this is not the shape I sent".
-    let with_null = serde_json::json!({
-        "exit_code": Value::Null,
-        "stdout": "",
-        "stderr": "",
-        "duration_ms": 0i64,
-        "reason": "failed to start",
+    let with_null = wire::run_outcome_to_json(&RunOutcome {
+        exit_code: None,
+        stdout: wire::Text::default(),
+        stderr: wire::Text::default(),
+        duration_ms: 0,
+        reason: Some("failed to start".into()),
     });
     assert_eq!(
         wire::run_outcome_from_json(&with_null)
@@ -678,23 +678,10 @@ fn a_run_whose_output_was_not_utf8_says_so_after_the_trip() {
 }
 
 #[test]
-fn a_reply_from_before_this_field_existed_still_decodes() {
-    // The four fields a run reply has always had, with no byte count and no loss
-    // flag. An agent older than this change sends exactly this, and refusing it
-    // would be a version skew that breaks a working pair for a field it does not
-    // need.
-    let older = serde_json::json!({
-        "exit_code": 0i64,
-        "stdout": "ok",
-        "stderr": "",
-        "duration_ms": 1i64,
-        "reason": Value::Null,
-    });
-
-    let outcome = wire::run_outcome_from_json(&older).expect("a reply this version understands");
-    assert_eq!(outcome.stdout.as_str(), "ok");
-    assert_eq!(outcome.stdout.byte_count(), 2);
-    assert!(!outcome.stdout.is_lossy());
+fn protocol_one_flat_output_is_rejected() {
+    let older =
+        serde_json::json!({"exit_code":0,"stdout":"ok","stderr":"","duration_ms":1,"reason":null});
+    assert!(wire::run_outcome_from_json(&older).is_err());
 }
 
 // --- looking at what is running ----------------------------------------------
@@ -1207,4 +1194,21 @@ fn the_identity_result_carries_a_name_and_a_version() {
         "linklet-agent"
     );
     assert!(matches!(reply, Reply::Result(_)));
+}
+
+#[test]
+fn command_streams_have_protocol_two_metadata() {
+    let value = wire::run_outcome_to_json(&wire::RunOutcome {
+        exit_code: Some(0),
+        stdout: wire::Text::from_bytes(b"hello"),
+        stderr: wire::Text::default(),
+        duration_ms: 1,
+        reason: None,
+    });
+    assert!(value["stdout"].is_object());
+    assert_eq!(value["stdout"]["total_bytes"], 5);
+    assert_eq!(value["stdout"]["retained_bytes"], 5);
+    assert_eq!(value["stdout"]["encoding"], "utf-8");
+    assert_eq!(value["stdout"]["truncated"], false);
+    assert_eq!(wire::PROTOCOL_VERSION, 2);
 }
