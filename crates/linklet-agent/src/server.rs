@@ -77,6 +77,7 @@ pub fn serve_connection(
     expected: &Token,
     paths: &Destination,
     log: &RequestLog,
+    pairing: Option<&PairingState>,
 ) {
     let mut connection = Connection::with_budget(stream, HELLO_BUDGET);
 
@@ -88,6 +89,12 @@ pub fn serve_connection(
         }
     };
 
+    if let Ok(value) = wire::parse_body(&hello)
+        && value.get("pairing").is_some()
+    {
+        serve_pairing(&mut connection, &value, expected, pairing);
+        return;
+    }
     let session = match begin_session(&hello, expected) {
         Ok((reply, session)) => {
             if connection
@@ -593,4 +600,87 @@ fn begin_session(hello: &[u8], expected: &Token) -> Result<(Value, Box<dyn Seale
         wire::reply_result(wire::handshake_to_json(ours.as_bytes())),
         established,
     ))
+}
+
+/// One password record and one global budget for all pairing connections.
+pub struct PairingState {
+    server: linklet_adapters::pairing::PairingServer,
+    budget: std::sync::Mutex<linklet_core::pairing::PairingBudget>,
+    started: Instant,
+}
+impl PairingState {
+    pub fn new(code: &str) -> Result<Self, String> {
+        Ok(Self {
+            server: linklet_adapters::pairing::PairingServer::new(code)?,
+            budget: std::sync::Mutex::new(Default::default()),
+            started: Instant::now(),
+        })
+    }
+}
+fn serve_pairing(
+    connection: &mut Connection,
+    hello: &Value,
+    token: &Token,
+    state: Option<&PairingState>,
+) {
+    let begin = || -> Result<_, String> {
+        let state = state.ok_or("pairing is disabled when an explicit token is configured")?;
+        let message = linklet_core::pairing::read_message(hello)?;
+        state
+            .budget
+            .lock()
+            .map_err(|_| "pairing budget is unavailable")?
+            .attempt(state.started.elapsed())
+            .map_err(|wait| {
+                format!(
+                    "pairing rate limit; retry in {} seconds",
+                    wait.as_secs().saturating_add(1)
+                )
+            })?;
+        state.server.accept(&message)
+    };
+    let (reply, pending) = match begin() {
+        Ok(value) => value,
+        Err(reason) => {
+            let _ = connection.write_frame(
+                Kind::Hello,
+                wire::reply_refused(&reason).to_string().as_bytes(),
+            );
+            return;
+        }
+    };
+    if connection
+        .write_frame(
+            Kind::Hello,
+            wire::reply_result(linklet_core::pairing::message(&reply))
+                .to_string()
+                .as_bytes(),
+        )
+        .is_err()
+    {
+        return;
+    }
+    let finish = || -> Result<Box<dyn Sealed>, String> {
+        let bytes = connection
+            .read_frame(Kind::Hello)
+            .map_err(|e| e.to_string())?;
+        let value = wire::parse_body(&bytes).map_err(|e| e.to_string())?;
+        pending.finish(&linklet_core::pairing::read_message(&value)?)
+    };
+    match finish() {
+        Ok(mut session) => {
+            let reply = wire::reply_result(
+                serde_json::json!({"token":token.expose(), "name":"linklet-agent", "version":env!("CARGO_PKG_VERSION")}),
+            );
+            let _ = write_reply(connection, session.as_mut(), &reply);
+        }
+        Err(_) => {
+            let _ = connection.write_frame(
+                Kind::Sealed,
+                wire::reply_refused("pairing authentication failed")
+                    .to_string()
+                    .as_bytes(),
+            );
+        }
+    }
 }

@@ -214,9 +214,8 @@ pub struct AgentAddress {
     /// Optional in the type and required in practice: the token is what
     /// authenticates the handshake, so a call without one is refused before a socket
     /// is opened. It is optional here because an address is built in places that do
-    /// not know about the environment -- the MCP surface reads the token from the
-    /// environment once, at startup -- and a type that could not be built without a
-    /// secret would have to be given a fake one.
+    /// not know about configuration. CLI and MCP resolve explicit or saved credentials
+    /// before calling this library. A caller can also supply its own token.
     pub token: Option<Token>,
 }
 
@@ -792,7 +791,7 @@ fn begin(
 ) -> Result<(Connection, Box<dyn Sealed>), CallError> {
     let Some(token) = address.token.as_ref() else {
         return Err(CallError::BadAddress(
-            "a sealed call needs a token: set LINKLET_TOKEN, or pass --agent with one".to_string(),
+            "a sealed call needs a token: pair through CLI/MCP, or set LINKLET_TOKEN".to_string(),
         ));
     };
 
@@ -981,4 +980,61 @@ impl From<WireError> for CallError {
     fn from(error: WireError) -> Self {
         CallError::Protocol(error.to_string())
     }
+}
+
+/// Authenticates a permanent six-digit code and returns a strong credential plus target identity.
+/// Nothing is persisted here. The caller must save the token privately and never display it.
+pub fn pair(agent: &str, code: &str) -> Result<(Token, String), CallError> {
+    linklet_core::pairing::validate_code(code).map_err(CallError::Local)?;
+    let address = AgentAddress::new(agent)?;
+    let (message, pending) =
+        linklet_adapters::pairing::PairingClient::start(code).map_err(CallError::Local)?;
+    let mut connection = connect(&address, HANDSHAKE_ALLOWANCE)?;
+    connection
+        .write_frame(
+            Kind::Hello,
+            linklet_core::pairing::message(&message)
+                .to_string()
+                .as_bytes(),
+        )
+        .map_err(transport)?;
+    let frame = connection.read_frame(Kind::Hello).map_err(transport)?;
+    let value = match decode_reply(&frame)? {
+        Reply::Result(v) => v,
+        Reply::Refused(r) => return Err(CallError::Refused(r)),
+    };
+    let message = linklet_core::pairing::read_message(&value).map_err(CallError::Protocol)?;
+    let (proof, mut session) = pending.finish(code, &message).map_err(CallError::Refused)?;
+    connection
+        .write_frame(
+            Kind::Hello,
+            linklet_core::pairing::message(&proof)
+                .to_string()
+                .as_bytes(),
+        )
+        .map_err(transport)?;
+    let frame = connection.read_frame(Kind::Sealed).map_err(transport)?;
+    let mut plaintext = Vec::new();
+    session
+        .open_into(&frame, &mut plaintext)
+        .map_err(|_| CallError::Refused("pairing authentication failed".into()))?;
+    let value = match decode_reply(&plaintext)? {
+        Reply::Result(v) => v,
+        Reply::Refused(r) => return Err(CallError::Refused(r)),
+    };
+    let token = Token::new(
+        value["token"]
+            .as_str()
+            .ok_or_else(|| protocol("pairing reply has no token".into()))?,
+    )
+    .map_err(|e| protocol(e.to_string()))?;
+    let name = value["name"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| protocol("pairing reply has no name".into()))?;
+    let version = value["version"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| protocol("pairing reply has no version".into()))?;
+    Ok((token, format!("{name} {version}")))
 }

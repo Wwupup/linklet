@@ -10,13 +10,12 @@ the rules; this explains them.
 
 ## Installing it
 
-Three fields, and they are the same in every client -- only the file they go in differs:
+Two fields, and they are the same in every client -- only the file they go in differs:
 
 ```json
 {
   "command": "C:\\linklet\\linklet.exe",
-  "args": ["mcp"],
-  "env": { "LINKLET_TOKEN_FILE": "C:\\linklet\\token.txt" }
+  "args": ["mcp"]
 }
 ```
 
@@ -30,36 +29,38 @@ out for the two clients this was set up with, together with the skill that carri
 the calls go in**. That order is the half a tool description cannot hold -- see "What has been
 measured, and what has not" at the end of this file for the experiment that found the boundary.
 
-## The token, and where it may come from
+## Pairing and credentials
 
-**The token is read from the environment, or from the file that variable names, and never from
-a tool argument** -- an argument would put the secret in the conversation, which is the one
-place it outlives the session. In a client configuration, prefer `LINKLET_TOKEN_FILE` over
-`LINKLET_TOKEN`: the second writes the secret into a file that gets copied, shared and
-committed, and the first writes a path.
+Start the target with `linklet-agent`, then call `pair` with its address and the
+six-digit code shown on its terminal:
 
-The file's first line is the secret, and a byte-order mark and the line ending are not part of
-it, so a file written by `Set-Content -Encoding utf8` holds exactly what was typed into it. **A
-secret is named once**: a token file and a token together are refused rather than ordered,
-because the two are two answers to one question and whichever lost would be the one the
-operator believed was in force.
+```json
+{"agent":"10.0.0.5:8787","code":"083614"}
+```
 
-**A wrong token is an authentication refusal.** `probe` reports missing or unreadable
-local token configuration separately (exit 2). Other authenticated calls also report
-configuration details on stderr. Token configuration does not disable `check`,
-`discover`, or `testbed`, which need no secret.
+A new controller can pair unattended with the same permanent code. The code must
+be a string, including leading zeros. The MCP server saves the strong credential
+for its OS account; future calls load it per target. CLI uses the same store.
+Long-term tokens never enter tool arguments or results. The short code deliberately
+does enter the conversation. [Pairing](pairing.md) covers protection and reset.
 
-Run `linklet probe --agent <host:port>` before wiring a client up. It completes a handshake and
-reads a reply, so it answers whether the token and the agent agree (exit 0) rather than whether
-something is listening. `docs/smoke.md` says what the five codes mean and why the difference
-from `check` matters.
+An explicit `LINKLET_TOKEN` or `LINKLET_TOKEN_FILE` overrides saved credentials.
+Remove these variables for automatic pairing. Both set together, an unreadable
+file, or an invalid explicit token is an error; it never falls back to saved state.
+Token files use their first line, excluding a BOM and line ending. `check`,
+`discover` and `testbed` need no credential.
+
+`probe` confirms authenticated identity, including name and version. Pairing failures
+and failed persistence set `isError=true`; credentials are saved only after mutual
+authentication. Rate limits return the cooldown and never block normal paired calls.
 
 ## The surface
 
-Thirteen tools, one per intent.
+Fourteen tools, one per intent.
 
 | tool | question | required arguments |
 |---|---|---|
+| `pair` | authenticate a code and remember the target | `agent`, `code` |
 | `check` | does each `host:port` accept a TCP connection | `targets` |
 | `testbed` | does a machine match a specification file | `spec`, `target` |
 | `exec` | run and wait on one or several agents | `command`, exactly one of `agent` or `agents` |

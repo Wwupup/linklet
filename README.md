@@ -24,7 +24,7 @@ $ echo $?
 ```
 
 ```console
-$ export LINKLET_TOKEN=$(some-secret-of-at-least-16-bytes)
+$ linklet pair --agent 10.0.0.5:8787 --code 083614
 $ linklet exec --agent 10.0.0.5:8787 "build.cmd --release"
 exit 0
 took 2411 ms
@@ -218,7 +218,7 @@ difference matters to whoever is reading:
 | `no answer within 5 s` | nothing came back at all -- off, filtered, or slow |
 
 `exec` runs one command on one machine and reports its exit code, how long it
-took, and what it printed. It needs an agent on the target and a shared token.
+took, and what it printed. It needs a running target agent and a saved pairing credential or explicit token.
 
 ### Exit codes
 
@@ -254,22 +254,43 @@ On Windows, open a terminal as the account whose permissions the agent should us
 
 ```powershell
 Set-Location C:\work
-C:\linklet\linklet-agent.exe --port 8787 --token-file C:\linklet\token.txt
+C:\linklet\linklet-agent.exe
 ```
 
 On Linux:
 
 ```sh
 cd /srv/work
-/opt/linklet/linklet-agent --port 8787 --token-file /etc/linklet/token.txt
+/opt/linklet/linklet-agent
 ```
 
 The startup directory is the base for relative paths. Absolute paths and parent
 components use the process account's normal filesystem access. Choose an elevated
 terminal only when the intended operations require that account's privileges.
 The process is available while running and offline after it exits. No installation,
-autostart, supervision, or automatic restart is performed. Configure the same token
-on the caller and allow the selected TCP port through the target firewall.
+autostart, supervision, or automatic restart is performed. Allow the selected TCP
+port (default 8787) through the target firewall.
+
+First start generates and displays a permanent six-digit pairing code. Later starts
+reuse it. The code and strong command credential live in the running account's
+Windows `%LOCALAPPDATA%/linklet`, or Linux `$XDG_CONFIG_HOME/linklet` (default
+`~/.config/linklet`), independent of the startup directory.
+
+On each controller, pair once using the displayed code:
+
+```sh
+linklet pair --agent 10.0.0.5:8787 --code 083614
+linklet probe --agent 10.0.0.5:8787
+```
+
+A new controller can pair unattended with the same code. Subsequent CLI and MCP
+calls automatically load the credential saved for that host:port, including batches
+with different targets. The address is still required; `discover` finds LAN listeners.
+
+To revoke all controllers, stop the target and run `linklet-agent init`. This rotates
+the code and credential, then starts normally. Initialization refuses while the saved
+state belongs to a running agent. Explicit token flags/environment remain available
+and disable target pairing. See [pairing](docs/pairing.md) for storage and protocol details.
 
 ## Calling it from an agent
 
@@ -280,28 +301,25 @@ starts the process and talks to it.
 ```json
 {
   "command": "C:\\linklet\\linklet.exe",
-  "args": ["mcp"],
-  "env": { "LINKLET_TOKEN_FILE": "C:\\linklet\\token.txt" }
+  "args": ["mcp"]
 }
 ```
 
-Those three fields are the whole installation, and which file the entry goes in is the
-client's business: `integrations/` has the entry to paste for DSH and the same three
+Those two fields are the whole installation, and which file the entry goes in is the
+client's business: `integrations/` has the entry to paste for DSH and the same two
 fields for ZCode, with the skill that goes beside them. **`command` names the
 executable and not a shell command**: an MCP client spawns it without a shell, which is
 one thing a native `.exe` does not need a wrapper for.
 
-Thirteen tools, one per intent: `check`, `testbed`, `exec`, `ps`, `kill`, `spawn`,
+Fourteen tools, one per intent: `pair`, `check`, `testbed`, `exec`, `ps`, `kill`, `spawn`,
 `grep`, `tail`, `ls`, `push`, `pull`, `discover` and `probe`. They are the operations the commands above
 perform, so a reader who knows one knows the other.
 
-**The token comes from the environment, or from the file that variable names, and
-never from a tool argument** -- an argument would put the secret in the
-conversation. `LINKLET_TOKEN_FILE` is the field to prefer here, because
-`LINKLET_TOKEN` in the same place writes the secret into a file that gets copied,
-shared and committed. `linklet probe --agent <host:port>` is the check to run before
-wiring a client up: it completes a handshake, so it answers whether the token and the
-agent agree.
+Call `pair` with `{"agent":"10.0.0.5:8787","code":"083614"}` once. Keep the
+code as a string so leading zeros survive. The MCP server saves the long-term
+credential for its OS account and never returns it as a tool result. Explicit
+`LINKLET_TOKEN` or `LINKLET_TOKEN_FILE` overrides saved credentials; remove them
+for automatic pairing. The six-digit code is the only credential tool argument.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
 and the two places a caller goes wrong. `integrations/` is in this repository, and a

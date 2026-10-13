@@ -12,6 +12,7 @@ the change that made it wrong.
 | How do I write a commit? | `docs/COMMITS.md` |
 | Why does a rule exist? | `docs/rationale.md` |
 | Why is it built this way? | `docs/decisions.md` |
+| How do startup, pairing and reset work? | `docs/pairing.md` |
 | How does the wire format work? | `docs/framing.md` |
 | What does a version number mean, and what is a release? | `docs/VERSIONING.md` |
 | Why did this command fail in a way that looks like a bug? | `docs/machine.md` |
@@ -71,6 +72,7 @@ message, or nothing.
 | `docs/INDEX.md` | current | this file |
 | `docs/rationale.md` | decision | why each rule exists, read when changing one |
 | `docs/decisions.md` | decision | the choices that are not obvious from the code |
+| `docs/pairing.md` | current | permanent pairing, account storage and reset |
 | `docs/framing.md` | rule | the frame format, and the defences that live outside it |
 | `docs/transfer.md` | rule | moving a file: the design and its fourteen failure modes |
 | `docs/review-m1.md` | decision | the standard M1 was judged against, unedited |

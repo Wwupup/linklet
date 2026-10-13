@@ -123,6 +123,9 @@ impl std::error::Error for ToolError {}
 /// machine that is not ready is a successful one, and only the implementation
 /// knows which it is holding.
 pub trait ToolRunner {
+    /// Pairs a target with a six-digit code and saves its credential locally.
+    fn pair(&self, agent: &str, code: &str) -> ToolOutcome;
+
     /// Whether each target accepts a connection.
     fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome;
 
@@ -374,6 +377,16 @@ pub const MAX_DESCRIPTION_CHARS: usize = 120;
 /// description that has to explain which of `from` and `to` is local this time.
 pub fn tools() -> Vec<Tool> {
     vec![
+        Tool {
+            name: "pair",
+            description: "Pair by six-digit code and remember the target.",
+            input_schema: serde_json::json!({
+                "type":"object", "properties":{
+                    "agent":{"type":"string", "description":"host:port"},
+                    "code":{"type":"string", "pattern":"^[0-9]{6}$", "description":"six digits, including leading zeros"}
+                }, "required":["agent","code"], "additionalProperties":false
+            }),
+        },
         Tool {
             name: "check",
             description: "Report TCP reachability for host:port targets.",
@@ -771,6 +784,16 @@ pub fn dispatch(
     runner: &dyn ToolRunner,
 ) -> Result<ToolOutcome, ToolError> {
     match name {
+        "pair" => {
+            reject_unknown(arguments, &["agent", "code"])?;
+            let agent = required_str(arguments, "agent")?;
+            let code = required_str(arguments, "code")?;
+            crate::pairing::validate_code(&code).map_err(|problem| ToolError::BadArgument {
+                name: "code",
+                problem,
+            })?;
+            Ok(runner.pair(&agent, &code))
+        }
         "discover" => {
             reject_unknown(arguments, &["port", "networks", "targets"])?;
             let port = optional_int(arguments, "port", 8787, 65535)? as u16;

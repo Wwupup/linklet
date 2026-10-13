@@ -11,6 +11,16 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+### Added
+
+- Next minor: zero-argument target startup generates a permanent six-digit pairing
+  code and a strong saved credential. New controllers can pair unattended through
+  CLI or MCP `pair`; later calls load the saved per-target token automatically.
+- `linklet-agent init` rotates both secrets and starts again after the old process
+  has stopped, revoking all paired controllers. Pairing uses OPAQUE and a shared
+  attempt budget. Explicit tokens remain available and disable target pairing.
+  Protocol 2 command behavior is unchanged; no release or deployment is performed.
+
 ### Changed
 
 - Next minor: help and version queries exit 0. Single exec preserves the remote
@@ -18,7 +28,7 @@ to answer one question: **what can I do now that I could not do before?**
 - Probe now verifies authenticated usability: 0 valid identity, 1 connection
   failure, 2 arguments/local configuration, 3 authentication/protocol rejection,
   4 timeout/invalid reply. Success includes remote name and version.
-- MCP now exposes 13 tools, adding discover and probe. Exec takes exactly one of
+- MCP now exposes 14 tools, adding discover, probe and pair. Exec takes exactly one of
   agent or agents; batches keep the 256-target limit, concurrency 4, and input
   order. Failed commands and timeouts set isError; truncation alone does not.
 

@@ -35,6 +35,9 @@ pub fn requested(arguments: &[String]) -> Option<String> {
         "ls" => {
             "ls --agent <host:port> --from <remote-directory>\nList files using the agent account permissions."
         }
+        "pair" => {
+            "pair --agent <host:port> --code <six-digits>\nPair and remember this target for CLI and MCP calls."
+        }
         "probe" => {
             "probe --agent <host:port>\nAuthenticate and request identity. Exit: 0 usable, 1 connection failed, 2 arguments/local configuration, 3 authentication/protocol version refused, 4 timeout/invalid reply. No automatic restart."
         }
@@ -48,7 +51,7 @@ pub fn requested(arguments: &[String]) -> Option<String> {
             "pull --agent <host:port> --from <remote-file> --to <local-file>\nTransfer one file and verify its digest."
         }
         "mcp" => {
-            "mcp\nServe tools over stdin/stdout. Tokens come from LINKLET_TOKEN or LINKLET_TOKEN_FILE."
+            "mcp\nServe tools over stdin/stdout. Credentials are remembered per target after pairing. LINKLET_TOKEN or LINKLET_TOKEN_FILE explicitly override them."
         }
         _ => return None,
     };

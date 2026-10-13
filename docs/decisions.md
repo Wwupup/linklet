@@ -231,3 +231,18 @@ is performed. Special-file checks and verified temporary-file transfers still ap
 This deliberately breaks old launch arguments. Set the launcher working directory to
 preserve relative path locations; there is no compatibility alias or new configuration.
 The wire encoding does not change.
+
+## D6. The permanent six-digit code authorizes unattended pairing.
+
+A new controller must be able to connect with the same code without somebody at
+the target. A one-time code or local confirmation would remove that requested
+capability. Startup therefore keeps a permanent code but generates a separate
+256-bit credential for command connections. OPAQUE proves knowledge of the code
+before that credential is encrypted and delivered. A shared online attempt budget
+limits guessing; normal paired calls do not consume it. The code is deliberately
+accepted in MCP arguments, while long-term credentials stay in account storage.
+
+`init` rotates the code and command credential under the same exclusive store
+lock the running agent holds. This revokes all controllers, without introducing
+controller identities, selective revocation, services or automatic restart.
+`docs/pairing.md` records the protocol and the limits of a short permanent secret.

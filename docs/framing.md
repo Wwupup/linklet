@@ -52,6 +52,10 @@ message, then a boundary can be reinterpreted, and that is the smuggling shape.
 Refusing to buffer means the question never arises -- there is no state in which
 surplus bytes exist, however far ahead the sender has run.
 
+Pairing also uses two inbound messages: the OPAQUE request and client proof, with
+a sealed credential reply after authentication. See `docs/pairing.md`. It never
+dispatches commands.
+
 A connection carries at most **two** messages -- the hello, and one sealed request that
 answers it -- **unless that request is a transfer.** A transfer is a manifest plus one
 chunk per mebibyte, so its message count is not a protocol constant and item 9's
@@ -118,6 +122,7 @@ carries a localised message that would otherwise be the sentence a user reads.
   size: `chunks_for(bytes)` reads, each of which may take the full budget. A
   whole-connection deadline is what would close it, and it needs a number this project
   has not chosen.
-- **No rate limiting.** A peer that connects, is refused, and reconnects in a loop
-  costs the agent a thread each time. Bounded by the operating system's backlog and
-  nothing this project controls.
+- **Connections are not rate limited.** Pairing cryptographic attempts have a global
+  budget (five initially, then one per minute); raw connections and ordinary command
+  handshakes can still cost a thread each time. The operating system backlog bounds
+  pending connections, not all live threads.

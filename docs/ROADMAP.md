@@ -620,6 +620,15 @@ look.
 `linklet` has one instance of this pattern -- exit 1 against exit 3 -- and it needs
 several more before its answers can be trusted on a machine it does not control.
 
+## Permanent pairing -- implemented for the next minor
+
+Default startup now creates or reuses a six-digit code and strong token in account
+configuration. CLI/MCP `pair` remembers each target; a new controller can pair
+unattended with the same permanent code. `linklet-agent init` rotates both secrets
+after the old process stops. OPAQUE and a global attempt budget protect pairing;
+normal operations retain strong-token authentication. See `docs/pairing.md`.
+This does not add per-controller identities or selective revocation.
+
 ## M9 -- identities, and being able to change the cipher
 
 Parked. The token authenticates the channel and says nothing about *which* caller it

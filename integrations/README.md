@@ -62,20 +62,20 @@ not trigger, the usual cause is a description that does not name the situation.
 
 ## Configure the MCP server
 
-Three fields, and every client wants the same three:
+Two fields are required; credentials are remembered after pairing:
 
 | field | value |
 |---|---|
 | `command` | the path to `linklet.exe`, and **not** a shell command |
 | `args` | `["mcp"]` |
-| `env` | `LINKLET_TOKEN_FILE`, naming a file whose first line is the shared secret |
+| `env` | optional explicit `LINKLET_TOKEN_FILE`; omit for automatic pairing |
 
 **DSH.** Paste `dsh/mcp-entry.yml` into the top-level array of the profile's
 `cordis.patch.yml` (`%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`) and
-replace the two paths in it. That file carries the notes about why the entry looks
+replace the executable path in it. That file carries the notes about why the entry looks
 the way it does.
 
-**ZCode.** The same three fields go under `mcp.servers` in the client's config file
+**ZCode.** The same fields go under `mcp.servers` in the client's config file
 (`%USERPROFILE%\.zcode\cli\config.json`, or `<repo>\.zcode\config.json`), which
 `lanlink`'s own `integrations/zcode/README.md` documents in full:
 
@@ -85,8 +85,7 @@ the way it does.
     "servers": {
       "linklet": {
         "command": "C:\\linklet\\linklet.exe",
-        "args": ["mcp"],
-        "env": { "LINKLET_TOKEN_FILE": "C:\\linklet\\token.txt" }
+        "args": ["mcp"]
       }
     }
   }
@@ -96,33 +95,23 @@ the way it does.
 The ZCode shape is second-hand -- it is `lanlink`'s, not measured here -- and the DSH
 entry is the one this repository has been set up with.
 
-**Any other client** takes the same three fields. Two things to check when it does
+**Any other client** takes the same fields. Two things to check when it does
 not work: the path in `command` is the executable rather than a wrapper, and the file
 the client reads is not one that gets committed, because a token file keeps the
 secret out of it and `LINKLET_TOKEN` in the same place would not.
 
-## The token
+## Pair once
 
-The first line of the token file is the secret; a byte-order mark and the line ending
-are not part of it, so `Set-Content C:\linklet\token.txt -Value $secret` needs no
-care. Both ends read `LINKLET_TOKEN_FILE`, so one file named on each side is the whole
-configuration.
+Start the target, then call MCP `pair` with `agent` and its displayed six-digit
+`code`, for example `{"agent":"10.0.0.5:8787","code":"083614"}`. Use the actual
+displayed code as a string. Even a new controller can pair unattended. The MCP
+server saves the strong credential under its OS account; later operations and CLI
+calls use it automatically. `probe` then confirms authenticated name and version.
 
-```powershell
-# On the host, and on every target, with the same value:
-Set-Content C:\linklet\token.txt -Value '<at least sixteen bytes>' -Encoding ascii
-```
-
-**Name one source.** With both `LINKLET_TOKEN_FILE` and `LINKLET_TOKEN` set, the
-agent refuses to start and the host reports it and presents no token at all: the two
-are two answers to one question, and whichever silently won would be the one the
-operator did not believe was in force.
-
-**Check it before wiring a client up.** `linklet probe --agent <host:port>` completes
-a handshake and reads a reply, so it answers whether the secret and the agent agree
-(exit 0) rather than whether something is listening. `check` cannot answer that: a
-wedged agent keeps its listening socket open and reads as `live` -- `docs/smoke.md`
-has the measurement.
+Explicit `LINKLET_TOKEN` / `LINKLET_TOKEN_FILE` override saved credentials; remove
+them for the automatic flow. They remain an option for manually provisioned tokens,
+which must match on both ends. Both variables at once are refused. Long-term tokens
+are never MCP arguments or results. See `docs/pairing.md` for reset and storage.
 
 ## First, the agent has to be on the target
 
@@ -136,7 +125,7 @@ New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
 New-Item -ItemType Directory -Force C:\linklet\transfers
 Set-Location C:\linklet\transfers
-C:\linklet\linklet-agent.exe --port 8787 --token-file C:\linklet\token.txt
+C:\linklet\linklet-agent.exe
 ```
 
 **The log is kept for you**, at `logs/agent.log` beside `linklet-agent.exe`, and it
@@ -144,12 +133,11 @@ rolls over at a mebibyte keeping three older files. Nothing has to be passed for
 `--log <file>` moves it and `--no-log` turns it off, and the log is where the request
 that never finished is named -- see `docs/smoke.md`.
 
-**An agent with no secret at all refuses to start and says so**, which is the cheapest
-place to find out -- the alternative is a port that accepts connections and refuses
-every caller. File tools accept absolute paths or resolve relative paths from the startup
-directory, with the agent account permissions. The firewall rule is the one step
-nothing here can do for you: an agent cannot open a port on a machine it has not been
-installed on yet.
+With no explicit token, the agent generates and saves credentials on first start
+and prints a permanent six-digit code. Later starts reuse it. Stop the process and
+run `linklet-agent init` to rotate both secrets and revoke all paired controllers.
+Initialization refuses while the same account store is still in use. File tools
+use the startup directory for relative paths and the process account permissions.
 
 Keep the ordinary agent process running in the intended account and startup
 directory. Exiting it makes the target offline. This workflow installs no service,

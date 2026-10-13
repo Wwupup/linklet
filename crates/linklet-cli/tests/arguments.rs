@@ -63,6 +63,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("push", "--agent"),
     ("pull", "--agent"),
     ("probe", "--agent"),
+    ("pair", "--agent"),
 ];
 
 /// The commands that end in a command tail: everything after their own options goes to the
@@ -297,7 +298,7 @@ fn a_command_with_nothing_to_do_says_what_it_wanted() {
 fn help_for_every_command_and_version_succeed() {
     for command in [
         "", "check", "testbed", "exec", "spawn", "ps", "kill", "grep", "tail", "ls", "probe",
-        "discover", "push", "pull", "mcp",
+        "discover", "push", "pull", "mcp", "pair",
     ] {
         for flag in ["-h", "--help"] {
             let args = if command.is_empty() {

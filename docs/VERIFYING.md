@@ -82,7 +82,7 @@ publishing something quietly wrong:
 
 **One archive, `linklet-<version>.zip`**, holding `bin/<target-triple>/` for both platforms plus the
 payload that is copied out of the tag: `README.md`, `CHANGELOG.md`, `LICENSE`, `docs/MCP.md`,
-`docs/machine.md`, `docs/smoke.md` and `integrations/`. `SHA256SUMS` sits beside the archive and
+`docs/pairing.md`, `docs/machine.md`, `docs/smoke.md` and `integrations/`. `SHA256SUMS` sits beside the archive and
 never inside it -- a digest inside the thing it verifies cannot be used to verify it. Release notes
 are generated from a template in the script and **point at** `CHANGELOG.md` rather than copying it,
 because a second copy is a second thing to keep in step.
@@ -149,3 +149,19 @@ RUSTFLAGS="-D warnings" pwsh -NoProfile -File tools/verify.ps1
 
 Optional actionlint was unavailable on PATH on both platforms. No push, CI run,
 release, deployment, or new LAN smoke test was performed.
+
+## Permanent pairing verification (2026-10-13)
+
+The automatic startup, permanent-code pairing, account credential storage and
+14-tool MCP surface passed all four shared gates on Windows and WSL2 Ubuntu,
+running as `ww` in WSL with the same command above. Integration tests cover new
+controllers pairing with the same code, separate target tokens in CLI/MCP batches,
+wrong-code refusal, global throttling without disrupting paired calls, reset
+exclusion while running, and old-token revocation after initialization. Adapter
+tests cover replay/tamper rejection, atomic replacement, corrupt state and private
+Windows ACLs / Linux modes. Initial startup and MCP dispatch tests were observed
+failing before implementation. Windows repeated ACL updates and an existing Linux
+directory were observed failing their permission checks before the fixes.
+
+These are local process/socket tests on each OS, not a new LAN smoke result.
+No release, deployment, push or GitHub CI run was performed.

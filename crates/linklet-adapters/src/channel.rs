@@ -294,3 +294,16 @@ impl Sealed for Session {
 
 /// The length of the tag this channel appends, for a caller sizing a reply.
 pub const OVERHEAD_BYTES: usize = TAG_BYTES;
+
+/// A separate HKDF salt isolates pairing keys from command-channel keys.
+pub(crate) fn pairing_session(
+    key: &[u8],
+    controller: bool,
+) -> Result<Box<dyn Sealed>, ChannelError> {
+    let role = if controller { Role::Host } else { Role::Agent };
+    Ok(Box::new(session_from(
+        b"linklet pairing opaque-v1 encrypted credentials",
+        key,
+        role,
+    )?))
+}

@@ -20,9 +20,11 @@
 
 mod channel;
 mod connection;
+pub mod credentials;
 mod discovery;
 mod listing;
 mod mcp;
+pub mod pairing;
 mod processes;
 mod search;
 mod system;

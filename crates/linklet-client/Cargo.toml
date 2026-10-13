@@ -17,7 +17,6 @@ linklet-core = { path = "../linklet-core" }
 # because a reader believes it. The test finds the binary on disk and says so
 # when it cannot, which is the honest version of the same intent.
 
-[dev-dependencies]
 serde_json.workspace = true
 
 [lints]

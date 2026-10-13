@@ -1,6 +1,6 @@
 ---
 name: linklet
-description: Use when deploying, starting, inspecting or debugging a program on a Windows or Linux test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (check, testbed, discover, probe, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent on each target.
+description: Use when deploying, starting, inspecting or debugging a program on a Windows or Linux test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (pair, check, testbed, discover, probe, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent on each target.
 ---
 
 # Driving linklet
@@ -21,7 +21,10 @@ take `agent`, an address written `host:port`; `exec` also accepts an `agents` ar
 
 1. **Know the address.** Use an address from the conversation or call `discover`
    with `port` and optionally `targets: true`. This establishes TCP reachability.
-2. **Authenticate before relying on the connection.** Call `probe` with `agent`.
+2. **Pair if needed.** Call `pair` with `agent` and the user-provided six-digit
+   `code` as a string. New controllers can pair unattended; later calls use the saved
+   credential automatically. Never request a long-term token as a tool argument.
+   Then authenticate by calling `probe` with `agent`.
    It succeeds only with a valid identity, including name and version. CLI codes
    are 0 usable, 1 connection failed, 2 local configuration, 3 authentication or
    protocol refused, and 4 timeout or invalid reply. No automatic restart occurs.

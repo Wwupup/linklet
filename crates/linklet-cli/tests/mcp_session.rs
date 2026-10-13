@@ -231,7 +231,7 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     // Six, asserted here as well as in the core. The core test checks the list
     // and the dispatcher agree; this one checks the list survives the wire, which
     // is the part a session can fail at and a unit test cannot.
-    assert_eq!(tools.len(), 13, "the surface is thirteen tools: {tools:#?}");
+    assert_eq!(tools.len(), 14, "the surface is fourteen tools: {tools:#?}");
     let names: Vec<Option<&str>> = tools
         .iter()
         .map(|tool| tool.get("name").and_then(Value::as_str))
@@ -239,6 +239,7 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     assert_eq!(
         names,
         vec![
+            Some("pair"),
             Some("check"),
             Some("testbed"),
             Some("exec"),

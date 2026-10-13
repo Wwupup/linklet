@@ -72,6 +72,7 @@ usage:
   linklet-agent [--port <port>] [--log <file> | --no-log]
 
 options:
+  init            rotate saved code and credentials, then start; stop the agent first
   --port <port>   the port to listen on (default 8787)
   --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
   --token-file <file>  read the secret from the first line of this file (or
@@ -86,6 +87,10 @@ options:
   --version      print the version
   -h, --help      print this
 
+With no explicit token, startup creates or reuses this account's permanent six-digit
+pairing code and displays it. Pair from a controller once; credentials are remembered.
+Explicit --token/--token-file (or their environment variables) disable pairing.
+
 File paths are absolute, or relative to the directory the agent was started in.
 Access is limited by this process's operating-system permissions.
 ";
@@ -98,9 +103,11 @@ fn main() {
     let mut token_file: Option<String> = std::env::var("LINKLET_TOKEN_FILE").ok();
     let mut log_path: Option<String> = std::env::var("LINKLET_LOG").ok();
     let mut no_log = false;
+    let mut reset = false;
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
         match argument.as_str() {
+            "init" if !reset => reset = true,
             "--version" => {
                 println!("linklet-agent {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -179,17 +186,39 @@ fn main() {
         None => token,
     };
 
-    // Checked before the port is bound, so that a bad secret is a startup failure
-    // rather than a surprise at the first caller. A configuration error should be
-    // loud when it is made.
-    let Some(token) = token else {
+    if reset && token.is_some() {
         eprintln!(
-            "linklet-agent: no token. Pass --token <secret>, name a --token-file, or set \
-             LINKLET_TOKEN.\\n\\
-             Anyone who can reach this port will be able to run commands without one."
+            "linklet-agent: init manages saved credentials; remove explicit token configuration first"
         );
         std::process::exit(2);
+    }
+    let managed = if token.is_none() {
+        let result = linklet_adapters::credentials::config_dir().and_then(|path| {
+            linklet_adapters::credentials::AgentCredentials::acquire(&path, reset)
+        });
+        match result {
+            Ok(credentials) => Some(credentials),
+            Err(error) => {
+                eprintln!("linklet-agent: {error}");
+                std::process::exit(2);
+            }
+        }
+    } else {
+        None
     };
+    let token = token
+        .or_else(|| managed.as_ref().map(|c| c.token().expose().to_string()))
+        .unwrap_or_default();
+    let pairing =
+        managed.as_ref().map(
+            |credentials| match server::PairingState::new(credentials.code()) {
+                Ok(state) => std::sync::Arc::new(state),
+                Err(error) => {
+                    eprintln!("linklet-agent: {error}");
+                    std::process::exit(2);
+                }
+            },
+        );
     let token = match Token::new(token) {
         Ok(token) => token,
         Err(error) => {
@@ -306,6 +335,10 @@ fn main() {
         ),
     }
 
+    if let Some(credentials) = &managed {
+        println!("Pairing code: {}", credentials.code());
+    }
+
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -315,7 +348,10 @@ fn main() {
                 let token = token.clone();
                 let paths = paths.clone();
                 let log = request_log.clone();
-                std::thread::spawn(move || server::serve_connection(stream, &token, &paths, &log));
+                let pairing = pairing.clone();
+                std::thread::spawn(move || {
+                    server::serve_connection(stream, &token, &paths, &log, pairing.as_deref())
+                });
             }
             // One failed accept is not a reason to stop serving. The listener is
             // still bound and the next caller may be fine.

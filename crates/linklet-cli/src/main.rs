@@ -62,6 +62,7 @@ usage:
   linklet grep --agent <host:port> --from <remote> --pattern <text> [options]
   linklet tail --agent <host:port> --from <remote> [--lines <n>]
   linklet ls --agent <host:port> --from <remote>
+  linklet pair --agent <host:port> --code <six-digits>
   linklet probe --agent <host:port>
   linklet discover [--port <port>] [--networks] [--targets]
   linklet push --agent <host:port> --from <local> --to <remote>
@@ -250,6 +251,10 @@ fn dispatch(arguments: &[String]) -> i32 {
             return i32::from(ExitCode::USAGE);
         }
         return run_mcp();
+    }
+
+    if arguments.first().map(String::as_str) == Some("pair") {
+        return run_pair(&arguments[1..]);
     }
 
     if arguments.first().map(String::as_str) == Some("testbed") {
@@ -514,6 +519,9 @@ impl CommandOutcome {
 struct LiveRunner;
 
 impl ToolRunner for LiveRunner {
+    fn pair(&self, agent: &str, code: &str) -> ToolOutcome {
+        pair_on(agent, code).tool
+    }
     fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
         exec_across(agents, command, timeout, token_from_environment().as_ref()).tool
     }
@@ -628,10 +636,7 @@ fn exec_at(
     timeout_seconds: u64,
     token: Option<&Token>,
 ) -> Result<wire::RunOutcome, linklet_client::CallError> {
-    let mut address = AgentAddress::new(agent)?;
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
+    let address = configured_address(agent, token)?;
 
     let request = RunRequest {
         command: command.to_string(),
@@ -1204,13 +1209,10 @@ fn run_ls(arguments: &[String]) -> i32 {
 ///
 /// Shared by the command and the tool.
 fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> CommandOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     match linklet_client::ls(&address, request) {
         Ok(listing) => CommandOutcome::answered(
@@ -1340,13 +1342,10 @@ fn run_tail(arguments: &[String]) -> i32 {
 ///
 /// Shared by the command and the tool.
 fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> CommandOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     match linklet_client::grep(&address, request) {
         Ok(search) => CommandOutcome::answered(
@@ -1359,13 +1358,10 @@ fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> Command
 
 /// Reads the end of a file on an agent's machine and renders it.
 fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> CommandOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     match linklet_client::tail(&address, request) {
         Ok(search) => CommandOutcome::answered(
@@ -1432,13 +1428,10 @@ fn run_spawn(arguments: &[String]) -> i32 {
 ///
 /// Shared by the command and the tool, like `ps_on` and `kill_on`.
 fn spawn_on(agent: &str, request: &SpawnRequest, token: Option<&Token>) -> ToolOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return ToolOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     match linklet_client::spawn(&address, request) {
         // `started <pid>`, and the word is chosen: "started" is what this side knows, where
@@ -1534,13 +1527,10 @@ fn run_kill(arguments: &[String]) -> i32 {
 /// Shared by the command and the tool, like `ps_on`, so that the two cannot disagree about
 /// what a refusal looks like.
 fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> CommandOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     match linklet_client::kill(&address, request) {
         Ok(report) => CommandOutcome::answered(
@@ -1559,13 +1549,10 @@ fn ps_on(
     filter: &linklet_core::process::Filter,
     token: Option<&Token>,
 ) -> CommandOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     match linklet_client::ps(&address, filter) {
         Ok(listing) => CommandOutcome::answered(
@@ -1590,13 +1577,10 @@ fn transfer_on(
     to: &str,
     token: Option<&Token>,
 ) -> ToolOutcome {
-    let mut address = match AgentAddress::new(agent) {
+    let address = match configured_address(agent, token) {
         Ok(address) => address,
         Err(error) => return ToolOutcome::failed(render_call_error(&error)),
     };
-    if let Some(token) = token {
-        address = address.with_token(token.clone());
-    }
 
     let result = match direction {
         // `from` is the local path on a push, and `to` is the remote one.
@@ -1619,26 +1603,25 @@ fn transfer_on(
 /// is the same variable the agent reads, so a bench with both ends on one machine
 /// needs it set once.
 ///
-/// **A secret is named once.** When both are set, that is reported and the run goes
-/// ahead with no token at all; ordering them silently would make the loser the
+/// **A secret is named once.** When both are set, authenticated calls are refused.
+/// Ordering them silently would make the loser the
 /// source the operator believed was in force, and the symptom of that is a caller
 /// being told its token is wrong when the one it offered was right for one of the
 /// two. For the same reason a file that was named and cannot be read is not
 /// answered from the environment -- that would authenticate with a secret nobody
 /// named.
 ///
-/// A token problem never stops the run, and that is the same decision the message
-/// below has always made: an unusable token is reported and treated as absent, and
-/// the caller finds out from the agent refusing the session, which is the same
-/// thing that happens when the token is simply wrong -- one message for one problem
-/// is better than two. It is also what keeps `check` and `testbed` working, since
-/// neither needs a secret at all and a misconfigured token must not take away a
-/// capability that never used it.
-fn configured_token() -> Result<Token, String> {
+/// Explicit configuration is validated before any authenticated call. Absence
+/// allows a per-target saved credential; invalid explicit configuration never falls
+/// back. Local discovery and reachability do not consult credentials.
+fn configured_token() -> Result<Option<Token>, String> {
     let file = std::env::var("LINKLET_TOKEN_FILE").ok();
     let secret = std::env::var("LINKLET_TOKEN").ok();
     if file.is_some() && secret.is_some() {
         return Err("LINKLET_TOKEN_FILE and LINKLET_TOKEN are both set; choose one".into());
+    }
+    if file.is_none() && secret.is_none() {
+        return Ok(None);
     }
     let (source, secret) = match file {
         Some(path) => {
@@ -1654,22 +1637,92 @@ fn configured_token() -> Result<Token, String> {
             secret.ok_or("set LINKLET_TOKEN or LINKLET_TOKEN_FILE")?,
         ),
     };
-    Token::new(secret).map_err(|e| format!("{source} is unusable: {e}"))
+    Token::new(secret)
+        .map(Some)
+        .map_err(|e| format!("{source} is unusable: {e}"))
 }
 
 fn token_from_environment() -> Option<Token> {
     configured_token()
         .map_err(|error| eprintln!("linklet: {error}"))
         .ok()
+        .flatten()
 }
 
 fn probe_on(agent: &str) -> CommandOutcome {
-    match configured_token() {
+    match token_for(agent) {
         Ok(token) => probe::run_probe(agent, Some(&token)),
         Err(error) => {
             let mut outcome = CommandOutcome::failed(error);
             outcome.code = i32::from(ExitCode::USAGE);
             outcome
         }
+    }
+}
+
+fn token_for(agent: &str) -> Result<Token, String> {
+    if let Some(token) = configured_token()? {
+        return Ok(token);
+    }
+    let directory = linklet_adapters::credentials::config_dir()?;
+    linklet_adapters::credentials::saved_token(&directory, agent)?
+        .ok_or_else(|| format!("no saved credential for {agent}; run linklet pair --agent {agent} --code <six-digits>, or set LINKLET_TOKEN / LINKLET_TOKEN_FILE"))
+}
+fn configured_address(
+    agent: &str,
+    token: Option<&Token>,
+) -> Result<AgentAddress, linklet_client::CallError> {
+    let address = AgentAddress::new(agent)?;
+    let token = match token {
+        Some(token) => token.clone(),
+        None => token_for(agent).map_err(linklet_client::CallError::Local)?,
+    };
+    Ok(address.with_token(token))
+}
+fn pair_on(agent: &str, code: &str) -> CommandOutcome {
+    let result = (|| {
+        linklet_core::pairing::validate_code(code).map_err(linklet_client::CallError::Local)?;
+        let directory = linklet_adapters::credentials::config_dir()
+            .map_err(linklet_client::CallError::Local)?;
+        let (token, identity) = linklet_client::pair(agent, code)?;
+        linklet_adapters::credentials::save_token(&directory, agent, &token)
+            .map_err(linklet_client::CallError::Local)?;
+        Ok(format!(
+            "paired with {agent} ({identity}); credential saved for this account"
+        ))
+    })();
+    match result {
+        Ok(text) => CommandOutcome::answered(text, 0),
+        Err(error) => {
+            let code = match &error {
+                linklet_client::CallError::Local(_) | linklet_client::CallError::BadAddress(_) => 2,
+                linklet_client::CallError::Connect(_) => 1,
+                linklet_client::CallError::Refused(_)
+                | linklet_client::CallError::VersionMismatch(_) => 3,
+                _ => 4,
+            };
+            CommandOutcome {
+                tool: ToolOutcome::failed(render_call_error(&error)),
+                code,
+            }
+        }
+    }
+}
+fn run_pair(arguments: &[String]) -> i32 {
+    let flags = [Flag::takes_value("--agent"), Flag::takes_value("--code")];
+    let args = match read(arguments, &flags, Strictness::Strict) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+    let (Some(agent), Some(code)) = (args.value("--agent"), args.value("--code")) else {
+        eprintln!("linklet: pair needs --agent <host:port> and --code <six-digits>");
+        return 2;
+    };
+    let outcome = pair_on(agent, code);
+    if outcome.tool.is_error {
+        eprintln!("linklet: {}", outcome.tool.text);
+        outcome.code
+    } else {
+        outcome.report()
     }
 }

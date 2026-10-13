@@ -1138,7 +1138,7 @@ fn the_removed_root_option_is_rejected() {
 fn the_agent_refuses_to_start_without_a_usable_token() {
     // A configuration error should be loud when it is made, not at the first
     // caller. This is the startup check, over a real process.
-    for (label, environment) in [("missing", None), ("too short", Some("short"))] {
+    for (label, environment) in [("empty", Some("")), ("too short", Some("short"))] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_linklet-agent"));
         command.args(["--port", "0"]);
         match environment {

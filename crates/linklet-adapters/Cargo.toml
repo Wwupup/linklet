@@ -13,6 +13,11 @@ hkdf = "0.13.0"
 linklet-core = { path = "../linklet-core" }
 sha2 = "0.11.0"
 x25519-dalek = { version = "3.0.0", features = ["getrandom", "static_secrets"] }
+opaque-ke = { version = "4.0.1", default-features = false, features = ["argon2", "ristretto255"] }
+
+rand = "0.8.5"
+sha2-legacy = { package = "sha2", version = "0.10" }
+argon2 = "0.5"
 
 [lints]
 workspace = true

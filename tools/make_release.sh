@@ -71,6 +71,7 @@ payload=(
     CHANGELOG.md
     LICENSE
     docs/MCP.md
+    docs/pairing.md
     docs/machine.md
     docs/smoke.md
     integrations

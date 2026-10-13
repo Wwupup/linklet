@@ -62,6 +62,9 @@ impl FakeRun {
 }
 
 impl ToolRunner for FakeRun {
+    fn pair(&self, agent: &str, code: &str) -> ToolOutcome {
+        ToolOutcome::ok(format!("{agent} {code}"))
+    }
     fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
         self.exec(&agents.join(","), command, timeout)
     }
@@ -242,7 +245,7 @@ fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out()
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_thirteen_tools() {
+fn there_are_exactly_fourteen_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -278,7 +281,7 @@ fn there_are_exactly_thirteen_tools() {
     // directory and a directory that is not there are the same `Vec` and opposite facts.
     assert_eq!(
         tools().len(),
-        13,
+        14,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
@@ -288,8 +291,8 @@ fn there_are_exactly_thirteen_tools() {
     assert_eq!(
         names,
         vec![
-            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep", "tail",
-            "ls", "discover", "probe"
+            "pair", "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep",
+            "tail", "ls", "discover", "probe"
         ]
     );
 }
@@ -578,6 +581,9 @@ fn bad_news_is_not_an_error() {
     // about: the capability worked and the answer was unwelcome.
     struct Down;
     impl ToolRunner for Down {
+        fn pair(&self, _agent: &str, _code: &str) -> ToolOutcome {
+            ToolOutcome::ok("paired")
+        }
         fn exec_many(&self, _agents: &[String], _command: &str, _timeout: u64) -> ToolOutcome {
             ToolOutcome::failed("offline")
         }
@@ -1024,7 +1030,7 @@ fn discovery_probe_and_batch_exec_are_callable() {
         )
         .is_ok()
     );
-    assert_eq!(tools().len(), 13);
+    assert_eq!(tools().len(), 14);
 }
 
 #[test]
@@ -1039,4 +1045,31 @@ fn exec_targets_are_exclusive_nonempty_and_bounded() {
     ] {
         assert!(dispatch("exec", &arguments, &fake).is_err(), "{arguments}");
     }
+}
+
+#[test]
+fn pairing_takes_a_six_digit_string_and_no_long_term_secret() {
+    let runner = FakeRun::default();
+    let result = dispatch(
+        "pair",
+        &serde_json::json!({"agent":"host:8787","code":"000017"}),
+        &runner,
+    );
+    assert!(result.is_ok(), "{result:?}");
+    for code in [
+        serde_json::json!(123456),
+        serde_json::json!("12345"),
+        serde_json::json!("1234567"),
+        serde_json::json!("abcdef"),
+    ] {
+        assert!(
+            dispatch(
+                "pair",
+                &serde_json::json!({"agent":"host:8787","code":code}),
+                &runner
+            )
+            .is_err()
+        );
+    }
+    assert!(dispatch("pair", &serde_json::json!({"agent":"host:8787","code":"000017","token":"must-not-be-accepted"}), &runner).is_err());
 }
