@@ -11,15 +11,17 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+## [0.4.0] -- 2026-10-13
+
 ### Added
 
-- Next minor: all 14 MCP tools declare validated outputSchema and return structuredContent.
+- All 14 MCP tools declare validated outputSchema and return structuredContent.
   Stable error categories distinguish known failures from unknown results after
   possible execution. Pair and probe return authenticated target process context.
   Query counts, byte windows, partial process fields and completeness are explicit;
   MCP presentation trimming preserves these facts.
 
-- Next minor: zero-argument target startup generates a permanent six-digit pairing
+- Zero-argument target startup generates a permanent six-digit pairing
   code and a strong saved credential. New controllers can pair unattended through
   CLI or MCP `pair`; later calls load the saved per-target token automatically.
 - `linklet-agent init` rotates both secrets and starts again after the old process
@@ -27,7 +29,7 @@ to answer one question: **what can I do now that I could not do before?**
   attempt budget.
   Pairing credentials remain valid through the protocol 3 upgrade.
 
-- Next minor: exec/spawn accept per-call cwd and either a shell command or a
+- Exec/spawn accept per-call cwd and either a shell command or a
   direct program with literal args. Standard input is closed. MCP shares a fixed
   32 KiB content budget, preserving status and counts; CLI capacity is unchanged.
 - Spawn observes for 500 ms by default (0..5000; zero skips observation). Replies
@@ -40,16 +42,16 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Changed
 
-- **Breaking, next minor:** protocol 3 adds typed failures and target context.
+- **Breaking:** protocol 3 adds typed failures and target context.
   Upgrade both binaries together; saved pairing credentials remain valid.
-  MCP negotiates its supported 2025-06-18 version. No release or deployment.
+  MCP negotiates its supported 2025-06-18 version.
 
-- **Breaking, next minor:** removed `LINKLET_TOKEN`, `LINKLET_TOKEN_FILE`, and
+- **Breaking:** removed `LINKLET_TOKEN`, `LINKLET_TOKEN_FILE`, and
   agent `--token` / `--token-file`. Pairing and saved per-target credentials are
   the only setup path. Old environment variables are ignored; old flags exit 2.
   Existing pairing state remains valid.
 
-- Next minor: help and version queries exit 0. Single exec preserves the remote
+- Help and version queries exit 0. Single exec preserves the remote
   exit code (including full Windows statuses); batches exit 1 if any target fails.
 - Probe now verifies authenticated usability: 0 valid identity, 1 connection
   failure, 2 arguments/local configuration, 3 authentication/protocol rejection,
@@ -58,7 +60,7 @@ to answer one question: **what can I do now that I could not do before?**
   agent or agents; batches keep the 256-target limit, concurrency 4, and input
   order. Failed commands and timeouts set isError; truncation alone does not.
 
-- Next minor: protocol 3 command streams are objects containing
+- Protocol 3 command streams are objects containing
   text, total_bytes, retained_bytes, encoding, truncated, lossy, and decode_error.
   Upgrade both binaries together; protocols 1 and 2 are rejected during the handshake.
 - Command output retains the last 1 MiB of each stream and keeps draining after
@@ -74,7 +76,15 @@ to answer one question: **what can I do now that I could not do before?**
 - MCP `testbed.spec`, `push.from` and `pull.to` now accept local absolute paths and
   parent components. Remote file tools share the agent path rules. Device and stream
   checks, file-type checks, transfer limits and digest verification remain in place.
-  The CLI removal belongs in the next minor release alongside protocol 3.
+
+- **A transfer's result says the digest was compared, because it was.** The line after a
+  `push` or `pull` now ends with `(verified)`, and the two tools' descriptions say
+  `verified by digest` -- the receiving side has always made that comparison before the
+  file went under its real name, and what was missing was any sentence saying so. A bare
+  digest reads as an invitation to hash the file at the other end, which costs a round
+  trip for a comparison already made, and for a file that has changed in between -- a log
+  still being written, the normal case for a pull -- it manufactures a mismatch about the
+  file moving on rather than about the copy.
 
 ### Fixed
 
@@ -96,16 +106,12 @@ to answer one question: **what can I do now that I could not do before?**
   status wording such as `stopped early`. CLI status comes from typed results.
 - MCP replies preserve unsigned integer request IDs without rounding.
 
-### Changed
+### Verification limits
 
-- **A transfer's result says the digest was compared, because it was.** The line after a
-  `push` or `pull` now ends with `(verified)`, and the two tools' descriptions say
-  `verified by digest` -- the receiving side has always made that comparison before the
-  file went under its real name, and what was missing was any sentence saying so. A bare
-  digest reads as an invitation to hash the file at the other end, which costs a round
-  trip for a comparison already made, and for a file that has changed in between -- a log
-  still being written, the normal case for a pull -- it manufactures a mismatch about the
-  file moving on rather than about the copy.
+- The source passed all four required gates on Windows and WSL Ubuntu as `ww`;
+  ordinary and elevated Linux permission cases were exercised. Windows UAC, a
+  new independent model experiment, and a second physical LAN target were not
+  exercised for this release. Published binary checks are recorded after download.
 
 ## [0.3.0] -- 2026-10-05
 

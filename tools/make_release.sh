@@ -72,6 +72,8 @@ payload=(
     LICENSE
     docs/MCP.md
     docs/pairing.md
+    docs/AI-EVALUATION.md
+    docs/VERIFYING.md
     docs/machine.md
     docs/smoke.md
     integrations
@@ -197,8 +199,8 @@ linklet-@VERSION@/
 ```
 
 **Each binary is built by the platform it runs on** rather than cross-compiled, and both come from
-the tag. The agent and the tool should come from the same release; **the agent may be ahead of the
-tool and not behind it**, which is `docs/VERSIONING.md`'s rule and its reason.
+the tag. **Upgrade the agent and controller together: this release uses command protocol 3,
+and protocol 1 or 2 peers are refused before execution.** Saved pairing credentials remain valid.
 
 **On Linux the two files are already executable**, and the archive records that. Some unzip tools
 restore it and some do not; if `bin/x86_64-unknown-linux-gnu/linklet` arrives without the bit,

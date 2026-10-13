@@ -10,15 +10,15 @@ be deployed as a pair. Nothing here is published to a registry, and no crate is 
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
-Current development uses **protocol 3**, planned for the next minor release.
+Release **0.4.0 uses protocol 3**.
 Typed results, per-call execution modes/directories, incremental log cursors and
 startup observation accompany bounded command streams.
 Upgrade the host and agent together; protocol 1 and 2 peers are refused before a
 command is accepted. Existing saved pairing credentials remain valid.
-This change is not a release or deployment. Permanent pairing adds a separate
+Permanent pairing adds a separate
 `opaque-v1` hello without reusing existing fields, its original introduction kept command protocol 2.
 Older agents reject the new hello. Both binaries need the new build to pair; this
-addition belongs to the next minor release. See `docs/pairing.md`.
+addition ships in 0.4.0. See `docs/pairing.md`.
 
 ## What the number means
 
@@ -236,15 +236,16 @@ state on the target that a version writes:
   format a version owns.
 - Nothing on the target records which tool talked to it.
 
-A target running a newer agent than the tool is the safe direction, per the upgrade order above,
-so a rollback of the *tool* alone leaves the deployment working.
+Roll back both binaries together when their command protocol differs. Saved pairing
+credentials survive the protocol 3 upgrade, but protocol 1 and 2 peers cannot execute
+commands against a protocol 3 peer.
 
 ## What this deliberately does not have
 
 - **No published crates.** Nothing here is a library anyone depends on, and publishing five
   crates would create a compatibility surface for a tool with one deployment at a time.
 - **No release matrix.** The support statement is one sentence: **the agent and the tool should
-  be from the same release, and the agent may be ahead.** A matrix of "host 0.3 supports agent
+  be from the same release.** A matrix of "host 0.3 supports agent
   0.2 and above" needs back-versioned tests that this repository has no machine to run.
 - **No conventional-commits automation.** `docs/COMMITS.md` fixes the commit format and
   `crates/linklet-core/tests/commit_message.rs` enforces it, so a generated changelog is

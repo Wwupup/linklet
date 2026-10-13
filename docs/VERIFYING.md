@@ -82,7 +82,8 @@ publishing something quietly wrong:
 
 **One archive, `linklet-<version>.zip`**, holding `bin/<target-triple>/` for both platforms plus the
 payload that is copied out of the tag: `README.md`, `CHANGELOG.md`, `LICENSE`, `docs/MCP.md`,
-`docs/pairing.md`, `docs/machine.md`, `docs/smoke.md` and `integrations/`. `SHA256SUMS` sits beside the archive and
+`docs/pairing.md`, `docs/AI-EVALUATION.md`, `docs/VERIFYING.md`, `docs/machine.md`,
+`docs/smoke.md` and `integrations/`. `SHA256SUMS` sits beside the archive and
 never inside it -- a digest inside the thing it verifies cannot be used to verify it. Release notes
 are generated from a template in the script and **point at** `CHANGELOG.md` rather than copying it,
 because a second copy is a second thing to keep in step.
