@@ -128,14 +128,15 @@ has the measurement.
 
 **No release and no tool here can put it there**, and that is a decision rather than a
 gap: the first copy is a file copy, and doing it by hand once is how an operator finds
-out what a deployment actually consists of. On the target, once:
+out what a deployment actually consists of. On the target, configure the firewall from an elevated terminal, then start the
+agent from the account whose permissions it should use:
 
 ```powershell
-mkdir C:\linklet\transfers
-Set-Location C:\linklet\transfers
-linklet-agent.exe --port 8787 --token-file C:\linklet\token.txt
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
+New-Item -ItemType Directory -Force C:\linklet\transfers
+Set-Location C:\linklet\transfers
+C:\linklet\linklet-agent.exe --port 8787 --token-file C:\linklet\token.txt
 ```
 
 **The log is kept for you**, at `logs/agent.log` beside `linklet-agent.exe`, and it
@@ -150,22 +151,17 @@ directory, with the agent account permissions. The firewall rule is the one step
 nothing here can do for you: an agent cannot open a port on a machine it has not been
 installed on yet.
 
-Then make it survive the console: `docs/smoke.md` has the `schtasks` recipe. An agent
-started from a console dies with that console, and the port it was listening on is then
-silently dropped rather than refused -- which reads exactly like a firewall that was
-never opened.
-
-**Nothing restarts it for you.** There is no supervisor any more, and that is a decision
-rather than a gap: a script pretending to be a service is worse than the platform's own
-answer, and the platform has one. The caller driving this tool is what notices -- `probe`
-is the call that tells a dead agent from a wedged one, and it is step 2 of the skill
-below.
+Keep the ordinary agent process running in the intended account and startup
+directory. Exiting it makes the target offline. This workflow installs no service,
+autostart task, supervisor, or automatic restart. Authenticate with probe before
+using it; the tool returns the remote name and version on success. Upgrade both
+binaries together for protocol 2.
 
 ## Reference
 
-- `docs/MCP.md` -- the eleven tools, the two places a caller goes wrong, and the
+- `docs/MCP.md` -- the thirteen tools, the two places a caller goes wrong, and the
   protocol decisions
 - `skills/linklet/SKILL.md` -- the shipped skill, readable as plain documentation if
   you would rather not install it
-- `docs/smoke.md` -- the target side in full: the firewall, the scheduler, the log,
+- `docs/smoke.md` -- the target side in full: the firewall, the process, the log,
   and what was measured on a real machine

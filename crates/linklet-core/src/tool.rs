@@ -137,6 +137,15 @@ pub trait ToolRunner {
     /// before it ever sees a socket.
     fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome;
 
+    /// Executes on 1..=256 agents, with concurrency four and input-order results.
+    fn exec_many(&self, agents: &[String], command: &str, timeout_seconds: u64) -> ToolOutcome;
+
+    /// Finds TCP listeners on local networks; this does not authenticate them.
+    fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome;
+
+    /// Verifies authentication and a valid identity reply from one agent.
+    fn probe(&self, agent: &str) -> ToolOutcome;
+
     /// Copies one local file to the agent, and reports what landed there.
     ///
     /// `to` is a path on the **agent's** side and is not resolved or checked here: the
@@ -335,7 +344,7 @@ fn optional_int(
     if value < 1 {
         return Err(ToolError::BadArgument {
             name,
-            problem: format!("{value} is not a positive number of seconds"),
+            problem: format!("{value} is not a positive integer"),
         });
     }
     let value = value as u64;
@@ -367,7 +376,7 @@ pub fn tools() -> Vec<Tool> {
     vec![
         Tool {
             name: "check",
-            description: "Report whether each host:port accepts a TCP connection.",
+            description: "Report TCP reachability for host:port targets.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -389,7 +398,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "testbed",
-            description: "Report whether a machine matches a testbed specification file.",
+            description: "Validate a local machine against a specification file.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -412,7 +421,7 @@ pub fn tools() -> Vec<Tool> {
             // has to say what runs the command, because "run a command" alone
             // would leave a reader unsure whether it runs here or there -- and
             // that is the one thing a caller must know before using it.
-            description: "Run a command on a remote linklet agent and return its output.",
+            description: "Run remote commands and return bounded output.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -420,9 +429,14 @@ pub fn tools() -> Vec<Tool> {
                         "type": "string",
                         "description": "the agent's host:port, for example 10.0.0.5:8787"
                     },
+                    "agents": {
+                        "type": "array", "items": {"type":"string", "minLength":1},
+                        "minItems": 1, "maxItems": 256,
+                        "description": "host:port entries; concurrency 4, results in input order"
+                    },
                     "command": {
                         "type": "string",
-                        "description": "the command line, as it would be typed in cmd.exe"
+                        "description": "the command line for the target shell: cmd.exe on Windows, sh on Linux"
                     },
                     "timeout": {
                         "type": "integer",
@@ -431,7 +445,8 @@ pub fn tools() -> Vec<Tool> {
                         "maximum": 600
                     }
                 },
-                "required": ["agent", "command"],
+                "required": ["command"],
+                "oneOf": [{"required":["agent"]}, {"required":["agents"]}],
                 "additionalProperties": false
             }),
         },
@@ -440,7 +455,7 @@ pub fn tools() -> Vec<Tool> {
             // "verified by digest" is the one fact a caller otherwise plans around: an agent
             // that reads this as an ordinary copy hashes the file at the other end itself,
             // which is a round trip for a comparison the receiving side already made.
-            description: "Copy one local file to a remote linklet agent, verified by digest.",
+            description: "Copy a local file to a remote agent; verify its digest.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -465,7 +480,7 @@ pub fn tools() -> Vec<Tool> {
             name: "pull",
             // The same word as `push`, and for the same reason: the receiving side here is
             // the host, and a caller that does not know it checks anyway.
-            description: "Copy one file from a remote linklet agent to here, verified by digest.",
+            description: "Copy a remote file here and verify its digest.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -494,7 +509,7 @@ pub fn tools() -> Vec<Tool> {
             // it says how many it examined, so an empty answer is readable -- is in the
             // result rather than in the description, which is the right place for it:
             // `docs/MCP.md` refuses a description that has to teach a manual.
-            description: "List processes on a remote linklet agent's machine.",
+            description: "List remote processes matching the given filters.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -532,7 +547,7 @@ pub fn tools() -> Vec<Tool> {
             // not both optional even though neither is marked required: one of them has to be
             // given. A schema cannot say "one of" without `oneOf`, which costs more to read
             // than the six words this adds.
-            description: "Stop processes on a remote linklet agent's machine, by pid or by name.",
+            description: "Stop remote processes selected by pid or exact name.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -567,7 +582,7 @@ pub fn tools() -> Vec<Tool> {
             // and it cannot be said in the description's budget without becoming a manual.
             // So the description says what it does and where, and the word "started" in the
             // result is what tells a caller this is not `exec`: nothing was waited for.
-            description: "Start a program on a remote linklet agent's machine, and return at once.",
+            description: "Start a remote program with output in a named file.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -593,7 +608,7 @@ pub fn tools() -> Vec<Tool> {
             // Both halves in one short sentence, because either alone is a different tool:
             // it finds matching lines, and it does so **on the remote machine**, without
             // bringing the file here.
-            description: "Find lines matching text in a file on a remote agent's machine.",
+            description: "Find literal text in a remote file.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -637,7 +652,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "tail",
-            description: "Read the last lines of a file on a remote agent's machine.",
+            description: "Read the last lines of a remote file.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -665,7 +680,7 @@ pub fn tools() -> Vec<Tool> {
             // What it lists and where, in one sentence. "List a directory" alone would leave
             // a reader unsure whether the directory is here or there, which is the one thing
             // a caller must know before using it -- the same argument as `exec`'s.
-            description: "List a directory on a remote linklet agent's machine.",
+            description: "List a remote directory or file.",
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -681,6 +696,24 @@ pub fn tools() -> Vec<Tool> {
                 "required": ["agent", "path"],
                 "additionalProperties": false
             }),
+        },
+        Tool {
+            name: "discover",
+            description: "Find local-network TCP listeners; unauthenticated.",
+            input_schema: serde_json::json!({
+                "type":"object", "properties": {
+                    "port":{"type":"integer","minimum":1,"maximum":65535,"default":8787},
+                    "networks":{"type":"boolean","default":false,"description":"list local interfaces without scanning"},
+                    "targets":{"type":"boolean","default":false,"description":"return a comma-separated host:port list"}
+                }, "additionalProperties":false
+            }),
+        },
+        Tool {
+            name: "probe",
+            description: "Authenticate a remote agent and return name/version.",
+            input_schema: serde_json::json!({"type":"object","properties":{
+                "agent":{"type":"string","minLength":1,"description":"the agent's host:port"}
+            },"required":["agent"],"additionalProperties":false}),
         },
     ]
 }
@@ -738,6 +771,24 @@ pub fn dispatch(
     runner: &dyn ToolRunner,
 ) -> Result<ToolOutcome, ToolError> {
     match name {
+        "discover" => {
+            reject_unknown(arguments, &["port", "networks", "targets"])?;
+            let port = optional_int(arguments, "port", 8787, 65535)? as u16;
+            let boolean = |name| match arguments.get(name) {
+                None => Ok(false),
+                Some(Value::Bool(value)) => Ok(*value),
+                Some(_) => Err(ToolError::BadArgument {
+                    name,
+                    problem: "expected a boolean".into(),
+                }),
+            };
+            Ok(runner.discover(port, boolean("networks")?, boolean("targets")?))
+        }
+        "probe" => {
+            reject_unknown(arguments, &["agent"])?;
+            let agent = required_str(arguments, "agent")?;
+            Ok(runner.probe(&agent))
+        }
         "check" => {
             reject_unknown(arguments, &["targets", "timeout"])?;
             let specs = targets_from(arguments)?;
@@ -751,8 +802,13 @@ pub fn dispatch(
             Ok(runner.testbed(&spec, &target))
         }
         "exec" => {
-            reject_unknown(arguments, &["agent", "command", "timeout"])?;
-            let agent = required_str(arguments, "agent")?;
+            reject_unknown(arguments, &["agent", "agents", "command", "timeout"])?;
+            if arguments.get("agent").is_some() == arguments.get("agents").is_some() {
+                return Err(ToolError::BadArgument {
+                    name: "agent",
+                    problem: "provide agent or agents, not both".into(),
+                });
+            }
             let command = required_str(arguments, "command")?;
             if command.trim().is_empty() {
                 return Err(ToolError::BadArgument {
@@ -770,7 +826,35 @@ pub fn dispatch(
                 DEFAULT_EXEC_TIMEOUT_SECONDS,
                 crate::wire::MAX_TIMEOUT_SECONDS,
             )?;
-            Ok(runner.exec(&agent, &command, timeout))
+            if arguments.get("agent").is_some() {
+                let agent = required_str(arguments, "agent")?;
+                if agent.trim().is_empty() {
+                    return Err(ToolError::BadArgument {
+                        name: "agent",
+                        problem: "empty".into(),
+                    });
+                }
+                Ok(runner.exec(&agent, &command, timeout))
+            } else {
+                let bad = || ToolError::BadArgument {
+                    name: "agents",
+                    problem: "expected 1..=256 nonempty host:port strings".into(),
+                };
+                let values = arguments["agents"]
+                    .as_array()
+                    .filter(|a| !a.is_empty() && a.len() <= crate::fanout::MAX_TARGETS)
+                    .ok_or_else(bad)?;
+                let agents = values
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(str::to_string)
+                            .ok_or_else(bad)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(runner.exec_many(&agents, &command, timeout))
+            }
         }
         "push" => {
             reject_unknown(arguments, &["agent", "from", "to"])?;

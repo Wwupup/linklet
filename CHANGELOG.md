@@ -18,6 +18,10 @@ to answer one question: **what can I do now that I could not do before?**
 - Probe now verifies authenticated usability: 0 valid identity, 1 connection
   failure, 2 arguments/local configuration, 3 authentication/protocol rejection,
   4 timeout/invalid reply. Success includes remote name and version.
+- MCP now exposes 13 tools, adding discover and probe. Exec takes exactly one of
+  agent or agents; batches keep the 256-target limit, concurrency 4, and input
+  order. Failed commands and timeouts set isError; truncation alone does not.
+
 - Next minor: protocol 2 replaces flat command streams with objects containing
   text, total_bytes, retained_bytes, encoding, truncated, lossy, and decode_error.
   Upgrade both binaries together; protocol 1 is rejected during the handshake.

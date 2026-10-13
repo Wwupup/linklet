@@ -1,6 +1,6 @@
 ---
 name: linklet
-description: Use when deploying, starting, inspecting or debugging a program on a Windows or Linux test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (check, testbed, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent on each target.
+description: Use when deploying, starting, inspecting or debugging a program on a Windows or Linux test machine through linklet - putting a build on a target, stopping the previous run, starting something that outlives the call, reading or searching a log on the target, or collecting evidence when a call fails. Requires the linklet MCP server (check, testbed, discover, probe, exec, push, pull, ps, kill, spawn, grep, tail, ls) and a running linklet-agent on each target.
 ---
 
 # Driving linklet
@@ -12,28 +12,22 @@ look like bugs.
 There are two sides. The **host** is the machine you are on, where the MCP server
 runs. Each **target** is a machine running a `linklet-agent`. **Targets may be Windows
 or Linux**, and the two are handled the same way from here; the commands you send are
-not, because they run in the target's own shell (`cmd` or `sh`). Every tool but `check`
-and `testbed` takes `agent`, an address written `host:port` -- that is the only way a
-tool names a machine, and there is no tool that finds one (see below).
+not, because they run in the target's own shell (`cmd` or `sh`). Remote operations
+take `agent`, an address written `host:port`; `exec` also accepts an `agents` array.
+`check` takes target addresses, `discover` finds local-network listeners, and
+`testbed` checks the local machine.
 
 ## Before anything else
 
-1. **Know the address.** The MCP surface has no discovery tool -- `discover` is a
-   command and not a tool -- so the addresses come from the conversation, or from
-   `linklet discover --port <port> --targets` run in a shell, which prints the
-   `host:port` list every tool takes.
-2. **`check` answers reachability, not health.** It opens a connection and closes it,
-   so a wedged agent keeps its listening socket and reads as `live` while every real
-   call times out. `linklet probe --agent <addr>` completes a handshake and reads a
-   reply, and its exit codes are the answer: **0 answered, 1 nothing listening, 2 the
-   spec could not be read, 4 something is listening and did not answer.** When a call
-   times out, run `probe` before believing anything about the network -- `docs/smoke.md`
-   has the measurement where `check` said `live` and `probe` said exit 4.
-3. **`testbed` is the one tool that is not about a target.** It checks the machine the
-   server runs on against a specification file; its `target` argument is a label in
-   the output, not an address to check. Each tool that does act on a target says "on a
-   remote agent's machine" in its description and this one does not, which is the
-   signal to read before handing it an address.
+1. **Know the address.** Use an address from the conversation or call `discover`
+   with `port` and optionally `targets: true`. This establishes TCP reachability.
+2. **Authenticate before relying on the connection.** Call `probe` with `agent`.
+   It succeeds only with a valid identity, including name and version. CLI codes
+   are 0 usable, 1 connection failed, 2 local configuration, 3 authentication or
+   protocol refused, and 4 timeout or invalid reply. No automatic restart occurs.
+3. **`testbed` checks the local machine.** It reads a specification file on the
+   machine running the MCP server; its `target` argument is a label in the output.
+   Read each tool's target arguments before handing it an address.
 4. **A refusal is not an empty answer.** `the token is missing or wrong` is about the
    secret, and the server's own stderr names the file it could not read or the two
    sources it was given -- it is a configuration problem on this side, and no amount
@@ -41,7 +35,7 @@ tool names a machine, and there is no tool that finds one (see below).
 
 ## A round of joint debugging, in order
 
-1. **`check`** -- the target answers, and it is the machine you think it is.
+1. **`probe`** -- authenticate the target and confirm its name and version.
 2. **`ps`** with `name` (a **substring**) -- is the program under test still running.
    Read the summary line, never the list alone.
 3. **`kill`** it -- by `pid` from that listing, or by `name`, which is **exact** and
@@ -146,15 +140,14 @@ tool names a machine, and there is no tool that finds one (see below).
 3. **Report what you observed, not what you conclude.** The raw reply, the summary
    line and the log tail are the useful part; "it failed" is not.
 
-## Run it from the command line when the surface does not have it
+## CLI and MCP parity
 
-Three operations exist on the host binary and not as tools, and two of them are on the
-path above: `linklet discover --port <port> --targets` (which machines are there, as
-the `host:port` list every tool takes) and `linklet probe --agent <addr>` (is this
-agent working, or only listening). The third is `linklet exec --agents a:1,b:2
-<command>`, which runs one command across several machines and reports each one in the
-order given -- the MCP `exec` takes a single `agent`. `linklet --help` lists the rest
-of the command line.
+Discovery and authenticated probing are available as tools and commands. MCP
+exec accepts exactly one of agent or agents; the array has at most 256 entries,
+runs four at once, and preserves input order. Failed commands and timeouts set
+isError, including any failure in a batch. Truncation alone is not an error:
+each stream retains its final 1 MiB and reports the discarded size. Use the
+target shell's syntax and keep secrets in the environment or a token file.
 
 ## Reference
 

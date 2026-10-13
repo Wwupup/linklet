@@ -231,7 +231,7 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
     // Six, asserted here as well as in the core. The core test checks the list
     // and the dispatcher agree; this one checks the list survives the wire, which
     // is the part a session can fail at and a unit test cannot.
-    assert_eq!(tools.len(), 11, "the surface is eleven tools: {tools:#?}");
+    assert_eq!(tools.len(), 13, "the surface is thirteen tools: {tools:#?}");
     let names: Vec<Option<&str>> = tools
         .iter()
         .map(|tool| tool.get("name").and_then(Value::as_str))
@@ -249,7 +249,9 @@ fn the_tool_list_holds_one_tool_with_a_short_description() {
             Some("spawn"),
             Some("grep"),
             Some("tail"),
-            Some("ls")
+            Some("ls"),
+            Some("discover"),
+            Some("probe")
         ]
     );
 
@@ -455,7 +457,7 @@ fn blank_lines_are_ignored_rather_than_answered() {
 #[test]
 fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
     let token = "test-token-0123456789";
-    let scratch = Scratch::new(format!("linklet-mcp-files-{}", std::process::id()));
+    let scratch = Scratch::new(format!("linklet mcp \u{4e2d} files {}", std::process::id()));
     let work = scratch.path().join("work");
     std::fs::create_dir(&work).expect("the agent's startup directory");
     let local = scratch.path().join("source.bin");
@@ -507,7 +509,7 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
             ),
             (
                 "spawn",
-                serde_json::json!({"agent": address, "command": "echo spawned", "output": output_arg}),
+                serde_json::json!({"agent": address, "command": if cfg!(windows) { format!("type \"{}\"", remote.display()) } else { format!("cat \"{}\"", remote.display()) }, "output": output_arg}),
             ),
             (
                 "pull",
@@ -524,6 +526,23 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
             (
                 "tail",
                 serde_json::json!({"agent": address, "path": remote_arg}),
+            ),
+            (
+                "exec",
+                serde_json::json!({"agent":address,"command":if cfg!(windows) { format!("type \"{}\"", remote.display()) } else { format!("cat \"{}\"", remote.display()) }}),
+            ),
+            (
+                "exec",
+                serde_json::json!({"agents":[address,address],"command":"exit 7"}),
+            ),
+            ("probe", serde_json::json!({"agent":address})),
+            (
+                "exec",
+                serde_json::json!({"agent":address,"command":"exit 7"}),
+            ),
+            (
+                "exec",
+                serde_json::json!({"agent":address,"timeout":1,"command":if cfg!(windows) { "ping -n 30 127.0.0.1 >NUL" } else { "sleep 30" }}),
             ),
         ];
         let messages: Vec<String> = calls
@@ -550,18 +569,36 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
     let _ = agent.wait();
 
     for (calls, replies, remote, collected, output) in runs {
-        for (i, (tool, _)) in calls.iter().enumerate() {
+        for (i, (tool, arguments)) in calls.iter().enumerate() {
             let reply = reply_for(&replies, (i + 1) as i64);
             let result = reply.get("result").expect("a tool result");
             assert_eq!(
                 result.get("isError").and_then(Value::as_bool),
-                Some(false),
+                Some(arguments["command"] == "exit 7" || arguments["timeout"] == 1),
                 "{tool}: {result}"
             );
             let text = result["content"][0]["text"].as_str().expect("text");
             match *tool {
                 "push" | "pull" => assert!(text.contains("(verified)"), "{text}"),
-                "grep" | "tail" => assert!(text.contains("crossed"), "{text}"),
+                "probe" => {
+                    assert!(text.contains("linklet-agent"), "{text}");
+                    assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+                }
+                "exec" if arguments["command"] == "exit 7" => {
+                    assert_eq!(
+                        text.matches("exit 7").count(),
+                        if arguments.get("agents").is_some() {
+                            2
+                        } else {
+                            1
+                        },
+                        "{text}"
+                    )
+                }
+                "exec" if arguments["timeout"] == 1 => {
+                    assert!(text.contains("no exit code"), "{text}")
+                }
+                "exec" | "grep" | "tail" => assert!(text.contains("crossed"), "{text}"),
                 "ls" => assert!(text.contains("1 of 1"), "{text}"),
                 _ => {}
             }
@@ -614,4 +651,32 @@ fn escaped_request_ids_stay_on_one_line_and_round_trip() {
         replies[0].get("id").and_then(Value::as_str),
         Some(id.as_str())
     );
+}
+
+#[test]
+fn discovery_uses_the_cli_network_listing_and_probe_errors_are_tool_errors() {
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
+        .args(["discover", "--networks"])
+        .output()
+        .expect("CLI discovery");
+    let discover = request(
+        1,
+        "tools/call",
+        r#"{"name":"discover","arguments":{"networks":true}}"#,
+    );
+    let probe = request(
+        2,
+        "tools/call",
+        r#"{"name":"probe","arguments":{"agent":"127.0.0.1:1"}}"#,
+    );
+    let replies = session_with_token(&[&discover, &probe], Some("test-token-0123456789"));
+    let result = &reply_for(&replies, 1)["result"];
+    assert_eq!(result["isError"], !output.status.success());
+    if output.status.success() {
+        assert_eq!(
+            result["content"][0]["text"].as_str().expect("text").trim(),
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+    assert_eq!(reply_for(&replies, 2)["result"]["isError"], true);
 }

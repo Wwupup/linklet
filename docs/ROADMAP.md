@@ -23,7 +23,7 @@ and `docs/transfer.md` T1.
 Protocol 2 keeps the last 1 MiB per command stream, with byte counts, encoding,
 truncation, and decoding loss. Windows quoting is preserved; file decoding reads
 only its bounded window. Probe verifies authenticated identity. Batches fail if
-any command fails. CLI and MCP execution share failure reporting.
+any command fails. CLI and the 13 MCP tools share these results.
 
 The agent is an ordinary process: startup makes it available and exit makes it
 offline. No service installation, autostart, supervision, or automatic restart is

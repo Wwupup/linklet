@@ -124,3 +124,15 @@ workflow can be linted and its shell parsed locally and nothing more -- `tools/v
 3. If a new action is added: read its `action.yml` and check `runs.using`.
 4. **A workflow change cannot be tested by reading it.** Push it and read the run -- that is what
    `docs/VERSIONING.md`'s list of what to check before pushing is for.
+
+## Execution reliability verification (2026-10-13)
+
+The protocol 2, bounded-output, CLI status, and 13-tool MCP changes passed
+`tools/verify.ps1` on Windows: formatting, Clippy with warnings denied, all
+workspace tests, and documentation with warnings denied. Process and socket
+regressions ran locally; this run does not claim a new LAN smoke result.
+
+Linux verification was not run: the available WSL Ubuntu environment has no
+Cargo. The existing Ubuntu CI job remains the Linux gate; no push or CI run was
+triggered for this change. Optional actionlint was unavailable on PATH. No
+release or deployment was performed.

@@ -514,6 +514,16 @@ impl CommandOutcome {
 struct LiveRunner;
 
 impl ToolRunner for LiveRunner {
+    fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
+        exec_across(agents, command, timeout, token_from_environment().as_ref()).tool
+    }
+    fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome {
+        discover_on(port, networks, targets).tool
+    }
+    fn probe(&self, agent: &str) -> ToolOutcome {
+        probe_on(agent).tool
+    }
+
     fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome {
         match check_specs(targets, budget, MAX_TARGETS) {
             Ok(reports) => ToolOutcome::ok(tool_text(&reports)),

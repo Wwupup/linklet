@@ -291,8 +291,8 @@ fields for ZCode, with the skill that goes beside them. **`command` names the
 executable and not a shell command**: an MCP client spawns it without a shell, which is
 one thing a native `.exe` does not need a wrapper for.
 
-Eleven tools, one per intent: `check`, `testbed`, `exec`, `ps`, `kill`, `spawn`,
-`grep`, `tail`, `ls`, `push` and `pull`. They are the operations the commands above
+Thirteen tools, one per intent: `check`, `testbed`, `exec`, `ps`, `kill`, `spawn`,
+`grep`, `tail`, `ls`, `push`, `pull`, `discover` and `probe`. They are the operations the commands above
 perform, so a reader who knows one knows the other.
 
 **The token comes from the environment, or from the file that variable names, and

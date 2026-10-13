@@ -62,6 +62,16 @@ impl FakeRun {
 }
 
 impl ToolRunner for FakeRun {
+    fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
+        self.exec(&agents.join(","), command, timeout)
+    }
+    fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome {
+        ToolOutcome::ok(format!("{port} {networks} {targets}"))
+    }
+    fn probe(&self, agent: &str) -> ToolOutcome {
+        ToolOutcome::ok(agent)
+    }
+
     fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome {
         self.reachability_calls
             .borrow_mut()
@@ -232,7 +242,7 @@ fn the_kill_tool_carries_the_candidates_filter_so_one_build_can_be_singled_out()
 // --- the shape of the surface ------------------------------------------------
 
 #[test]
-fn there_are_exactly_eleven_tools() {
+fn there_are_exactly_thirteen_tools() {
     // The count is the assertion. Growing this list is a decision, and the way
     // to make it is to change this number and say in the commit why the new tool
     // earns its place -- which is exactly the conversation that was never had
@@ -268,7 +278,7 @@ fn there_are_exactly_eleven_tools() {
     // directory and a directory that is not there are the same `Vec` and opposite facts.
     assert_eq!(
         tools().len(),
-        11,
+        13,
         "adding a tool is a decision: change this number and explain in the commit \
          why the new question needs its own tool rather than belonging to this one"
     );
@@ -278,7 +288,8 @@ fn there_are_exactly_eleven_tools() {
     assert_eq!(
         names,
         vec![
-            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep", "tail", "ls"
+            "check", "testbed", "exec", "push", "pull", "ps", "kill", "spawn", "grep", "tail",
+            "ls", "discover", "probe"
         ]
     );
 }
@@ -567,6 +578,16 @@ fn bad_news_is_not_an_error() {
     // about: the capability worked and the answer was unwelcome.
     struct Down;
     impl ToolRunner for Down {
+        fn exec_many(&self, _agents: &[String], _command: &str, _timeout: u64) -> ToolOutcome {
+            ToolOutcome::failed("offline")
+        }
+        fn discover(&self, _port: u16, _networks: bool, _targets: bool) -> ToolOutcome {
+            ToolOutcome::ok("")
+        }
+        fn probe(&self, _agent: &str) -> ToolOutcome {
+            ToolOutcome::failed("offline")
+        }
+
         fn reachability(&self, _targets: &str, _budget: Duration) -> ToolOutcome {
             ToolOutcome::ok("dead a:1 nothing is listening on that port\n0 of 1 live")
         }
@@ -981,4 +1002,41 @@ fn the_exec_tool_needs_an_agent_and_a_non_empty_command() {
             ..
         })
     ));
+}
+
+#[test]
+fn discovery_probe_and_batch_exec_are_callable() {
+    let fake = FakeRun::default();
+    assert!(
+        dispatch(
+            "discover",
+            &serde_json::json!({"port":8787,"networks":true,"targets":false}),
+            &fake
+        )
+        .is_ok()
+    );
+    assert!(dispatch("probe", &serde_json::json!({"agent":"a:1"}), &fake).is_ok());
+    assert!(
+        dispatch(
+            "exec",
+            &serde_json::json!({"agents":["a:1","b:2"],"command":"echo hi"}),
+            &fake
+        )
+        .is_ok()
+    );
+    assert_eq!(tools().len(), 13);
+}
+
+#[test]
+fn exec_targets_are_exclusive_nonempty_and_bounded() {
+    let fake = FakeRun::default();
+    for arguments in [
+        serde_json::json!({"command":"echo hi"}),
+        serde_json::json!({"agent":"a:1","agents":["b:2"],"command":"echo hi"}),
+        serde_json::json!({"agents":[],"command":"echo hi"}),
+        serde_json::json!({"agents":[42],"command":"echo hi"}),
+        serde_json::json!({"agents":vec!["a:1";257],"command":"echo hi"}),
+    ] {
+        assert!(dispatch("exec", &arguments, &fake).is_err(), "{arguments}");
+    }
 }

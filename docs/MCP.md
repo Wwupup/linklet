@@ -56,13 +56,13 @@ from `check` matters.
 
 ## The surface
 
-Eleven tools, one per intent.
+Thirteen tools, one per intent.
 
 | tool | question | required arguments |
 |---|---|---|
 | `check` | does each `host:port` accept a TCP connection | `targets` |
 | `testbed` | does a machine match a specification file | `spec`, `target` |
-| `exec` | run a command on an agent's machine and wait for it | `agent`, `command` |
+| `exec` | run and wait on one or several agents | `command`, exactly one of `agent` or `agents` |
 | `ps` | what is running on an agent's machine | `agent` |
 | `kill` | stop processes on an agent's machine | `agent`, **and `pid` or `name`** |
 | `spawn` | start a program on an agent's machine, without waiting | `agent`, `command`, `output` |
@@ -71,6 +71,17 @@ Eleven tools, one per intent.
 | `ls` | list a path on an agent's machine | `agent`, `path` |
 | `push` | copy one local file to an agent | `agent`, `from`, `to` |
 | `pull` | copy one file back from an agent | `agent`, `from`, `to` |
+| `discover` | find TCP listeners on local networks | none; optional `port`, `networks`, `targets` |
+| `probe` | authenticate and obtain a valid remote identity | `agent` |
+
+`discover` establishes TCP reachability, not authentication. `probe` succeeds only
+with a valid authenticated identity, and includes the remote name and version.
+
+`exec.agents` accepts 1..=256 host:port strings, runs four at once, and returns
+results in input order, including duplicate targets. `agent` and `agents` are
+mutually exclusive. Command output retains the last 1 MiB per stream and names
+truncation, encoding, byte counts, and decoding loss. Protocol 2 requires both
+binaries to be upgraded together.
 
 ## The two places a caller goes wrong
 
@@ -106,7 +117,9 @@ Plain text, not JSON inside JSON: the protocol already wraps the result, a secon
 be a second thing to document, and a line of text is easier for a reader than an escaped string.
 
 `exec` sets `isError=true` for nonzero command exits, timeouts, or failed calls.
-Truncation alone does not fail execution. Empty query results are not errors.
+A batch is an error if any target fails. `probe` is an error unless authentication
+and identity validation succeed. Truncation alone does not fail an execution.
+An empty query result or an empty discovery scan is not an error.
 
 The same holds inside a result. `ps` on an empty machine answers with the counts that make the
 emptiness readable; `ls` distinguishes a directory that is empty from one that is not there;
@@ -139,7 +152,7 @@ option has been removed; setting the startup directory only selects a relative-p
 Remote file paths still pass through `Destination::resolve` for platform-specific
 checks: empty paths, NUL bytes, Windows devices, alternate streams and ambiguous names
 are refused. File-type validation, size limits and digest verification are unchanged.
-See `docs/transfer.md` T1. Authentication and the wire encoding are unchanged.
+See `docs/transfer.md` T1. Authentication is unchanged; command replies use protocol 2.
 
 ## Protocol decisions worth knowing
 
