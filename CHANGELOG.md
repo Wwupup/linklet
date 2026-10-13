@@ -705,6 +705,6 @@ skeleton and M5.
 - Concurrency across targets is not implemented: targets are checked one after
   another, so a run of ten unreachable machines takes ten timeouts.
 
-MCP now shares a fixed 32 KiB content budget across command output and complete
-query entries, retaining status, target and accounting metadata. CLI limits stay
-unchanged. Output truncation is explicit and does not change success.
+Execution improvements for the next minor release: exec/spawn accept cwd and
+mutually exclusive command or program/args. MCP uses a shared 32 KiB content
+budget; CLI keeps the target stream limits. Direct arguments are never joined.

@@ -127,7 +127,8 @@ impl Agent {
         run(
             &self.address,
             &RunRequest {
-                command: command.to_string(),
+                cwd: None,
+                command: command.into(),
                 timeout_seconds: 30,
             },
         )
@@ -214,7 +215,8 @@ fn a_killed_command_says_which_failure_it_was() {
     let outcome = run(
         &agent.address,
         &RunRequest {
-            command: a_long_command().to_string(),
+            cwd: None,
+            command: a_long_command().into(),
             timeout_seconds: 1,
         },
     )
@@ -233,9 +235,10 @@ fn an_error_the_agent_reports_does_not_look_like_a_command_result() {
     let result = run(
         &agent.address,
         &RunRequest {
+            cwd: None,
             // Beyond the protocol's own limit, so the agent refuses before
             // anything runs.
-            command: "echo x".to_string(),
+            command: "echo x".into(),
             timeout_seconds: wire::MAX_TIMEOUT_SECONDS + 1,
         },
     );
@@ -260,7 +263,8 @@ fn output_past_the_frame_ceiling_returns_a_bounded_tail() {
     let result = run(
         &agent.address,
         &RunRequest {
-            command: base64_of_zeroes(&workspace),
+            cwd: None,
+            command: base64_of_zeroes(&workspace).into(),
             timeout_seconds: 60,
         },
     )
@@ -293,7 +297,8 @@ fn no_agent_at_the_address_is_a_transport_error_and_not_a_result() {
     let error = run(
         &address,
         &RunRequest {
-            command: "echo x".to_string(),
+            cwd: None,
+            command: "echo x".into(),
             timeout_seconds: 5,
         },
     )
@@ -324,7 +329,8 @@ fn an_address_that_cannot_be_resolved_is_named() {
     let error = run(
         &address,
         &RunRequest {
-            command: "echo x".to_string(),
+            cwd: None,
+            command: "echo x".into(),
             timeout_seconds: 5,
         },
     )
@@ -348,7 +354,8 @@ fn the_client_gives_up_later_than_the_command_deadline() {
     let outcome = run(
         &agent.address,
         &RunRequest {
-            command: a_long_command().to_string(),
+            cwd: None,
+            command: a_long_command().into(),
             timeout_seconds: 1,
         },
     )
@@ -380,7 +387,8 @@ fn a_host_with_the_wrong_token_is_refused_and_the_command_never_runs() {
     let error = run(
         &wrong,
         &RunRequest {
-            command: "echo should-not-run".to_string(),
+            cwd: None,
+            command: "echo should-not-run".into(),
             timeout_seconds: 5,
         },
     )
@@ -413,7 +421,8 @@ fn a_host_with_no_token_against_a_secured_agent_is_refused_too() {
     let error = run(
         &no_token,
         &RunRequest {
-            command: "echo nope".to_string(),
+            cwd: None,
+            command: "echo nope".into(),
             timeout_seconds: 5,
         },
     )

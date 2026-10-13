@@ -447,3 +447,15 @@ Read `AGENTS.md` before your first commit -- it is the rules only, one screen lo
 | `crates/linklet-cli/` | argv in, text out, exit code |
 | `integrations/` | installing the MCP server in a client, and the skill an agent drives a machine by |
 | `docs/` | see `docs/INDEX.md`, which says what kind of document each one is |
+
+Execution can use a shell command or a literal program argument vector:
+
+~~~sh
+linklet exec --agent host:8787 --cwd /srv/app --program ./app --help
+linklet exec --agent host:8787 --cwd /srv/app 'make && make test'
+~~~
+
+Put all Linklet options before the command or --program. Following arguments,
+including --help, belong to the remote program. cwd is per call; it never changes
+the agent's startup directory. MCP results have a shared 32 KiB content budget;
+truncation is explicit and does not change a successful command's status.

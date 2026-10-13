@@ -148,3 +148,8 @@ binaries together for protocol 3.
   you would rather not install it
 - `docs/smoke.md` -- the target side in full: the firewall, the process, the log,
   and what was measured on a real machine
+
+Prefer program with args when invoking a known executable. Use command for shell
+builtins, pipelines, redirection, and Windows batch files. Set cwd explicitly
+when a command depends on a project directory. Read structuredContent; MCP text
+is a short summary and large content has explicit presentation_truncated flags.

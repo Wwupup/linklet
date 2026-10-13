@@ -373,7 +373,7 @@ fn answer(
         //
         // Resolve and validate output paths exactly as for every other file tool.
         Ok(Request::Spawn(spawn)) => Response::Sealed(match paths.resolve(&spawn.output) {
-            Ok(output) => match crate::spawn::start(&spawn.command, &output) {
+            Ok(output) => match crate::spawn::start(&spawn, &output) {
                 Ok(report) => wire::encode_spawn_reply(&report),
                 Err(reason) => wire::reply_refused(&reason),
             },

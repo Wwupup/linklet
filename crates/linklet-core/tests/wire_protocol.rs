@@ -44,6 +44,8 @@ fn run_outcome_from_body(body: &str) -> Result<RunOutcome, WireError> {
 fn a_command_that_ran_and_failed_is_an_outcome_and_not_an_error() {
     // The whole point, as one test. Exit code 1 reaches the caller as a fact.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(1),
         stdout: Text::default(),
         stderr: Text::from_bytes(b"usage: app [options]"),
@@ -68,6 +70,8 @@ fn a_command_that_never_started_has_no_exit_code_and_says_why() {
     // because otherwise the caller cannot tell this from a process that was
     // killed by its deadline.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: None,
         stdout: Text::default(),
         stderr: Text::default(),
@@ -93,6 +97,8 @@ fn a_deadline_kill_is_a_distinguished_reason_and_not_a_sentence() {
     // means nothing happened. Comparing prose would make that a fragile thing to
     // depend on, so the value is a constant.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: None,
         stdout: Text::from_bytes(b"half a build"),
         stderr: Text::default(),
@@ -116,6 +122,8 @@ fn a_null_exit_code_and_a_missing_one_are_different_messages() {
     // In prose these read the same. They are not: `null` is "the agent looked and
     // there is no code", missing is "this is not the shape I sent".
     let with_null = wire::run_outcome_to_json(&RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: None,
         stdout: wire::Text::default(),
         stderr: wire::Text::default(),
@@ -145,7 +153,8 @@ fn a_null_exit_code_and_a_missing_one_are_different_messages() {
 #[test]
 fn a_request_round_trips() {
     let request = RunRequest {
-        command: "build.cmd --release".to_string(),
+        cwd: None,
+        command: "build.cmd --release".into(),
         timeout_seconds: 900 % MAX_TIMEOUT_SECONDS,
     };
     let encoded = wire::run_request_to_json(&request).to_string();
@@ -233,6 +242,8 @@ fn a_result_that_holds_bad_news_is_still_a_result() {
     // command that exited 1 produced a result. If this ever decoded as a refusal, an
     // agent would retry a machine that had already answered.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(1),
         stdout: Text::default(),
         stderr: Text::from_bytes(b"usage: app [options]"),
@@ -292,7 +303,8 @@ fn every_request_round_trips_through_the_wire() {
     let requests = [
         Request::Identity,
         Request::Run(RunRequest {
-            command: "build.cmd --release".to_string(),
+            cwd: None,
+            command: "build.cmd --release".into(),
             timeout_seconds: 600,
         }),
         Request::Push(Manifest {
@@ -420,7 +432,8 @@ fn the_op_values_are_pinned_by_value() {
     );
     assert_eq!(
         wire::request_to_json(&Request::Run(RunRequest {
-            command: "echo hi".to_string(),
+            cwd: None,
+            command: "echo hi".into(),
             timeout_seconds: 5,
         }))
         .to_string(),
@@ -542,6 +555,8 @@ fn a_reply_that_fills_the_ceiling_can_still_be_framed() {
 /// An outcome whose stdout is `bytes` bytes of one character.
 fn outcome_of_stdout(bytes: usize) -> RunOutcome {
     RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(0),
         stdout: Text::from_bytes("x".repeat(bytes).as_bytes()),
         stderr: Text::default(),
@@ -657,6 +672,8 @@ fn a_run_whose_output_was_not_utf8_says_so_after_the_trip() {
     // bytes are not text", so the reply has to. A caller reading only the JSON must
     // be able to tell this reply from one whose output was clean.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(0),
         stdout: wire::Text::from_bytes(&NOT_UTF8),
         stderr: wire::Text::from_bytes(b""),
@@ -820,7 +837,8 @@ fn a_spawn_request_carries_the_command_and_where_its_output_goes() {
     use linklet_core::wire::SpawnRequest;
 
     let request = Request::Spawn(SpawnRequest {
-        command: "app.exe --serve".to_string(),
+        cwd: None,
+        command: "app.exe --serve".into(),
         output: r"logs\app.log".to_string(),
     });
 
@@ -844,13 +862,16 @@ fn a_spawn_reply_carries_the_pid_and_not_a_promise() {
     use linklet_core::wire::SpawnReport;
 
     let report = SpawnReport {
+        cwd: "/work".into(),
+        output: "/work/log".into(),
+        pid_kind: "shell".into(),
         pid: 5144,
-        command: "app.exe --serve".to_string(),
+        command: "app.exe --serve".into(),
     };
 
     assert_eq!(
         wire::spawn_report_to_json(&report).to_string(),
-        r#"{"command":"app.exe --serve","pid":5144}"#
+        r#"{"command":"app.exe --serve","cwd":"/work","output":"/work/log","pid":5144,"pid_kind":"shell"}"#
     );
 }
 
@@ -1087,6 +1108,8 @@ fn a_tail_count_past_the_ceiling_is_refused_rather_than_clamped() {
 #[test]
 fn a_successful_run_renders_the_exit_code_the_time_and_the_streams() {
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(0),
         stdout: Text::from_bytes(b"built 3 targets"),
         stderr: Text::default(),
@@ -1105,6 +1128,8 @@ fn both_streams_render_when_both_have_something() {
     // A program that writes to both is the normal case for a failing build, and
     // a renderer that shows only one of them loses half the diagnosis.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(1),
         stdout: Text::from_bytes(b"compiling"),
         stderr: Text::from_bytes(b"error: expected ';'"),
@@ -1122,6 +1147,8 @@ fn an_empty_stream_is_not_rendered_as_an_empty_heading() {
     // "stderr:" followed by nothing is a line that carries no information and
     // costs a reader attention.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(0),
         stdout: Text::from_bytes(b"ok"),
         stderr: Text::default(),
@@ -1136,6 +1163,8 @@ fn an_empty_stream_is_not_rendered_as_an_empty_heading() {
 #[test]
 fn a_killed_run_renders_its_reason_instead_of_an_exit_code() {
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: None,
         stdout: Text::default(),
         stderr: Text::default(),
@@ -1155,6 +1184,8 @@ fn the_rendered_text_carries_no_trailing_blank_line() {
     // double newline in the middle of a protocol body is the kind of thing that
     // looks fine until something parses it.
     let outcome = RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(0),
         stdout: Text::from_bytes(b"output without a newline"),
         stderr: Text::default(),
@@ -1203,6 +1234,8 @@ fn the_identity_result_carries_a_name_and_a_version() {
 #[test]
 fn command_streams_have_protocol_two_metadata() {
     let value = wire::run_outcome_to_json(&wire::RunOutcome {
+        cwd: "/work".into(),
+        error: None,
         exit_code: Some(0),
         stdout: wire::Text::from_bytes(b"hello"),
         stderr: wire::Text::default(),
@@ -1235,4 +1268,18 @@ fn protocol_three_refusals_carry_a_stable_category_and_phase() {
     assert_eq!(reply["error"]["phase"], "validate");
     assert_eq!(reply["error"]["message"], "example refusal");
     assert_eq!(linklet_core::wire::PROTOCOL_VERSION, 3);
+}
+
+#[test]
+fn direct_program_arguments_and_cwd_survive_the_wire() {
+    let value = serde_json::json!({"op":"run","program":"a path/program.exe",
+        "args":["","two words","--help","\"nested\"","\u{4e2d}"],"cwd":"../work","timeout_seconds":5});
+    let request = wire::request_from_json(&value).expect("direct execution is supported");
+    let encoded = wire::request_to_json(&request);
+    for field in ["program", "args", "cwd"] {
+        assert_eq!(encoded[field], value[field]);
+    }
+    let mut conflicting = value;
+    conflicting["command"] = "echo unsafe fallback".into();
+    assert!(wire::request_from_json(&conflicting).is_err());
 }

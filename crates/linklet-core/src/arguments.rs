@@ -40,17 +40,35 @@ pub struct Flag {
     /// value -- which is why a command that takes only switches cannot also take a tail
     /// without ambiguity, and why none of them do.
     pub value: bool,
+    /// Stop parsing options after this flag and its value.
+    pub ends_options: bool,
 }
 
 impl Flag {
+    /// A program selector whose following words are literal program arguments.
+    pub const fn starts_tail(name: &'static str) -> Self {
+        Self {
+            name,
+            value: true,
+            ends_options: true,
+        }
+    }
     /// A flag that must be followed by a value.
     pub const fn takes_value(name: &'static str) -> Self {
-        Self { name, value: true }
+        Self {
+            name,
+            value: true,
+            ends_options: false,
+        }
     }
 
     /// A flag that stands alone.
     pub const fn switch(name: &'static str) -> Self {
-        Self { name, value: false }
+        Self {
+            name,
+            value: false,
+            ends_options: false,
+        }
     }
 }
 
@@ -204,6 +222,10 @@ impl Args {
                 return Err(ParseError::Repeated {
                     flag: flag.name.to_string(),
                 });
+            }
+            if flag.ends_options {
+                args.words.extend_from_slice(&arguments[index..]);
+                break;
             }
         }
 

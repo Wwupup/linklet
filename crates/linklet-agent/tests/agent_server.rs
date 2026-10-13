@@ -404,7 +404,8 @@ fn run(agent: &Agent, command: &str) -> RunOutcome {
 /// Runs a command with an explicit deadline.
 fn run_with(agent: &Agent, command: &str, timeout_seconds: u64) -> RunOutcome {
     outcome(agent.sealed().ask(&Request::Run(RunRequest {
-        command: command.to_string(),
+        cwd: None,
+        command: command.into(),
         timeout_seconds,
     })))
 }
@@ -695,7 +696,8 @@ fn a_command_that_fails_is_an_outcome_and_not_an_error() {
     // time: a program that ran and reported a problem is a successful call.
     let agent = Agent::start();
     let reply = agent.sealed().ask(&Request::Run(RunRequest {
-        command: "exit 3".to_string(),
+        cwd: None,
+        command: "exit 3".into(),
         timeout_seconds: 30,
     }));
 
@@ -859,7 +861,8 @@ fn a_session_that_did_not_open_is_refused_in_the_clear_and_runs_nothing() {
     let agent = Agent::start();
     let mut conversation = agent.sealed_with(WRONG_TOKEN);
     let reply = conversation.ask(&Request::Run(RunRequest {
-        command: "echo should-not-run".to_string(),
+        cwd: None,
+        command: "echo should-not-run".into(),
         timeout_seconds: 5,
     }));
 
@@ -890,7 +893,8 @@ fn a_wrong_token_is_refused_the_same_way_as_a_missing_one() {
         .into_iter()
         .map(|token| {
             refusal(agent.sealed_with(token).ask(&Request::Run(RunRequest {
-                command: "echo nope".to_string(),
+                cwd: None,
+                command: "echo nope".into(),
                 timeout_seconds: 5,
             })))
         })

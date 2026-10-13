@@ -543,8 +543,8 @@ impl ToolRunner for LiveRunner {
     fn pair(&self, agent: &str, code: &str) -> ToolOutcome {
         pair_on(agent, code).tool
     }
-    fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
-        exec_across(agents, command, timeout).tool
+    fn exec_many(&self, agents: &[String], request: &RunRequest) -> ToolOutcome {
+        exec_across(agents, request).tool
     }
     fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome {
         discover_on(port, networks, targets).tool
@@ -589,9 +589,9 @@ impl ToolRunner for LiveRunner {
             "count":verdicts.len()}))
     }
 
-    fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
+    fn exec(&self, agent: &str, request: &RunRequest) -> ToolOutcome {
         // Credentials are loaded per target from the pairing store.
-        exec_on(agent, command, timeout_seconds).tool
+        exec_on(agent, request).tool
     }
 
     fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
@@ -638,17 +638,9 @@ impl ToolRunner for LiveRunner {
 /// nonzero exit remains a RunOutcome and is classified by command_result.
 fn exec_at(
     agent: &str,
-    command: &str,
-    timeout_seconds: u64,
+    request: &RunRequest,
 ) -> Result<wire::RunOutcome, linklet_client::CallError> {
-    let address = configured_address(agent)?;
-
-    let request = RunRequest {
-        command: command.to_string(),
-        timeout_seconds,
-    };
-
-    linklet_client::run(&address, &request)
+    linklet_client::run(&configured_address(agent)?, request)
 }
 
 /// Runs one command across several agents and reports each of them.
@@ -667,7 +659,7 @@ fn exec_at(
 /// are read out of the same run.
 ///
 /// A batch exits 0 only when every command exits 0; failures retain their details.
-fn exec_across(agents: &[String], command: &str, timeout_seconds: u64) -> CommandOutcome {
+fn exec_across(agents: &[String], request: &RunRequest) -> CommandOutcome {
     use linklet_core::fanout::{Fate, Task};
     if agents.is_empty() || agents.len() > linklet_core::fanout::MAX_TARGETS {
         let mut result =
@@ -685,10 +677,10 @@ fn exec_across(agents: &[String], command: &str, timeout_seconds: u64) -> Comman
         .enumerate()
         .map(|(index, agent)| {
             let agent = agent.clone();
-            let command = command.to_string();
+            let request = request.clone();
             let results = std::sync::Arc::clone(&results);
             Task::new(agent.clone(), move || {
-                let (fate, result) = match exec_at(&agent, &command, timeout_seconds) {
+                let (fate, result) = match exec_at(&agent, &request) {
                     Ok(outcome) => (Fate::Ran, command_result(&agent, outcome)),
                     Err(error) => {
                         let fate = if error.was_refused() {
@@ -767,28 +759,21 @@ fn command_result(agent: &str, outcome: wire::RunOutcome) -> CommandOutcome {
     );
     result.tool.target = Some(agent.into());
     result.tool.data = wire::run_outcome_to_json(&outcome);
-    if outcome.exit_code != Some(0) || outcome.reason.is_some() {
-        result.tool.fail(OperationError::new(
-            if outcome.reason.as_deref() == Some(wire::KILLED_BY_DEADLINE) {
-                ErrorCode::DeadlineExceeded
-            } else {
-                ErrorCode::CommandFailed
-            },
-            "execute",
-            outcome
-                .reason
-                .clone()
-                .unwrap_or_else(|| format!("command exited with {:?}", outcome.exit_code)),
-        ));
+    if let Some(error) = outcome.failure() {
+        result.tool.fail(error);
+        if result.code == 0 {
+            result.code = 1;
+        }
     }
+
     result
 }
 
 /// Runs a command on an agent and renders what it did.
 ///
 /// Shared by CLI and MCP; both call failures and unsuccessful commands are errors.
-fn exec_on(agent: &str, command: &str, timeout_seconds: u64) -> CommandOutcome {
-    match exec_at(agent, command, timeout_seconds) {
+fn exec_on(agent: &str, request: &RunRequest) -> CommandOutcome {
+    match exec_at(agent, request) {
         Ok(outcome) => command_result(agent, outcome),
         Err(error) => CommandOutcome::call_failed(agent, &error),
     }
@@ -907,65 +892,67 @@ fn run_testbed(arguments: &[String]) -> i32 {
 /// Single-target execution preserves the remote exit code. A call failure returns
 /// 3, which can also be a remote exit code; the result text distinguishes them.
 /// Batches return 0 only when every command exits 0.
+fn execution_arguments(
+    args: &Args,
+) -> Result<(linklet_core::execution::CommandSpec, Option<String>), i32> {
+    let mut value = if let Some(program) = args.value("--program") {
+        serde_json::json!({"program":program,"args":args.words()})
+    } else {
+        serde_json::json!({"command":args.tail()})
+    };
+    if let Some(cwd) = args.value("--cwd") {
+        value["cwd"] = cwd.into();
+    }
+    let parsed = linklet_core::execution::CommandSpec::from_json(&value)
+        .and_then(|command| Ok((command, linklet_core::execution::cwd_from_json(&value)?)));
+    parsed.map_err(|error| {
+        eprintln!("linklet: {error}");
+        i32::from(ExitCode::USAGE)
+    })
+}
 fn run_exec(arguments: &[String]) -> i32 {
-    // Options stop at the command or --, including names shared with remote flags.
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--agents"),
         Flag::takes_value("--timeout"),
+        Flag::takes_value("--cwd"),
+        Flag::starts_tail("--program"),
     ];
     let args = match read(arguments, &flags, Strictness::CommandTail) {
         Ok(args) => args,
         Err(code) => return code,
     };
-
-    let timeout = match number(&args, "--timeout") {
-        Ok(Some(got)) => got,
-        Ok(None) => DEFAULT_EXEC_TIMEOUT_SECONDS,
+    let timeout_seconds = match number(&args, "--timeout") {
+        Ok(value) => value.unwrap_or(DEFAULT_EXEC_TIMEOUT_SECONDS),
         Err(code) => return code,
     };
-
-    if !(1..=wire::MAX_TIMEOUT_SECONDS).contains(&timeout) {
+    if !(1..=wire::MAX_TIMEOUT_SECONDS).contains(&timeout_seconds) {
         eprintln!(
             "linklet: --timeout must be in 1..={}",
             wire::MAX_TIMEOUT_SECONDS
         );
-        return i32::from(ExitCode::USAGE);
+        return 2;
     }
-
-    // One target or several, and never both: a caller that gave both has two intentions and
-    // guessing between them would run a command somewhere it did not name.
     let single = args.value("--agent");
     let several = args.value("--agents");
-    if single.is_some() && several.is_some() {
-        eprintln!("linklet: give --agent for one machine or --agents for several, not both");
-        return i32::from(ExitCode::USAGE);
+    if single.is_some() == several.is_some() {
+        eprintln!("linklet: exec needs --agent for one machine or --agents for several, not both");
+        return 2;
     }
-
-    if several.is_some() {
-        if args.tail().trim().is_empty() {
-            eprintln!("linklet: exec needs a command");
-            return i32::from(ExitCode::USAGE);
-        }
-        return exec_across(&args.list("--agents"), &args.tail(), timeout).report();
-    }
-
-    let Some(agent) = single else {
-        eprintln!("linklet: exec needs --agent <host:port>, or --agents for several");
-        return i32::from(ExitCode::USAGE);
+    let (command, cwd) = match execution_arguments(&args) {
+        Ok(value) => value,
+        Err(code) => return code,
     };
-    if args.tail().trim().is_empty() {
-        eprintln!("linklet: exec needs a command");
-        return i32::from(ExitCode::USAGE);
+    let request = RunRequest {
+        command,
+        cwd,
+        timeout_seconds,
+    };
+    if let Some(agent) = single {
+        exec_on(agent, &request).report()
+    } else {
+        exec_across(&args.list("--agents"), &request).report()
     }
-
-    // Joined rather than taken one word at a time, so that the command is exactly
-    // what was typed after the options. A tool that reassembled a command line
-    // from pieces would be a second interpretation of the caller's quoting.
-    let command = args.tail();
-
-    let outcome = exec_on(agent, &command, timeout);
-    outcome.report()
 }
 
 /// Which way a transfer goes.
@@ -1410,7 +1397,12 @@ fn tail_on(agent: &str, request: &TailRequest) -> CommandOutcome {
 /// deploy loop is made of: `linklet ps` to look, `linklet kill` to stop it again.
 fn run_spawn(arguments: &[String]) -> i32 {
     // CommandTail leaves every argument after the command to the target shell.
-    let flags = [Flag::takes_value("--agent"), Flag::takes_value("--output")];
+    let flags = [
+        Flag::takes_value("--agent"),
+        Flag::takes_value("--output"),
+        Flag::takes_value("--cwd"),
+        Flag::starts_tail("--program"),
+    ];
     let args = match read(arguments, &flags, Strictness::CommandTail) {
         Ok(args) => args,
         Err(code) => return code,
@@ -1420,10 +1412,10 @@ fn run_spawn(arguments: &[String]) -> i32 {
         eprintln!("linklet: spawn needs --agent <host:port>");
         return i32::from(ExitCode::USAGE);
     };
-    if args.tail().trim().is_empty() {
-        eprintln!("linklet: spawn needs a command");
-        return i32::from(ExitCode::USAGE);
-    }
+    let (command, cwd) = match execution_arguments(&args) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
     // Required rather than defaulted, and the refusal says why: a program whose output goes
     // nowhere is a program the caller cannot look at afterwards, which is the one thing this
     // feature is for. A default like `linklet-spawn.log` in the agent's working directory
@@ -1438,7 +1430,8 @@ fn run_spawn(arguments: &[String]) -> i32 {
         // The command is exactly what was typed after the options, joined the way `exec`
         // joins it: a tool that reassembled a command line from pieces would be a second
         // interpretation of the caller's quoting.
-        command: args.tail(),
+        command,
+        cwd,
         output: output.to_string(),
     };
 

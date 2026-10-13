@@ -109,10 +109,10 @@ pub trait ToolRunner {
     /// crate stays the one deciding what a tool call means. An implementation
     /// builds the request; whether the request is well formed is decided here,
     /// before it ever sees a socket.
-    fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome;
+    fn exec(&self, agent: &str, request: &crate::wire::RunRequest) -> ToolOutcome;
 
     /// Executes on 1..=256 agents, with concurrency four and input-order results.
-    fn exec_many(&self, agents: &[String], command: &str, timeout_seconds: u64) -> ToolOutcome;
+    fn exec_many(&self, agents: &[String], request: &crate::wire::RunRequest) -> ToolOutcome;
 
     /// Finds TCP listeners on local networks; this does not authenticate them.
     fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome;
@@ -347,7 +347,7 @@ pub const MAX_DESCRIPTION_CHARS: usize = 120;
 /// first two are: a single tool would have two mutually exclusive argument sets and a
 /// description that has to explain which of `from` and `to` is local this time.
 pub fn tools() -> Vec<Tool> {
-    vec![
+    let mut tools = vec![
         Tool {
             name: "pair",
             description: "Pair by six-digit code and remember the target.",
@@ -699,7 +699,21 @@ pub fn tools() -> Vec<Tool> {
                 "agent":{"type":"string","minLength":1,"description":"the agent's host:port"}
             },"required":["agent"],"additionalProperties":false}),
         },
-    ]
+    ];
+    for tool in &mut tools {
+        if matches!(tool.name, "exec" | "spawn") {
+            let schema = &mut tool.input_schema;
+            schema["properties"]["program"] = serde_json::json!({"type":"string","minLength":1,"description":"Executable name or path. Literal args, no shell. Windows .cmd/.bat require command."});
+            schema["properties"]["args"] =
+                serde_json::json!({"type":"array","items":{"type":"string"},"default":[]});
+            schema["properties"]["cwd"] = serde_json::json!({"type":"string","minLength":1,"description":"Working directory for this call; relative to agent startup directory."});
+            if let Some(required) = schema["required"].as_array_mut() {
+                required.retain(|f| f != "command");
+            }
+            schema["allOf"] = serde_json::json!([{"oneOf":[{"required":["command"],"not":{"anyOf":[{"required":["program"]},{"required":["args"]}]}},{"required":["program"],"not":{"required":["command"]}}]}]);
+        }
+    }
+    tools
 }
 
 /// The tool list in the shape `tools/list` replies with.
@@ -800,18 +814,16 @@ pub fn dispatch(
             Ok(runner.testbed(&spec, &target))
         }
         "exec" => {
-            reject_unknown(arguments, &["agent", "agents", "command", "timeout"])?;
+            reject_unknown(
+                arguments,
+                &[
+                    "agent", "agents", "command", "program", "args", "cwd", "timeout",
+                ],
+            )?;
             if arguments.get("agent").is_some() == arguments.get("agents").is_some() {
                 return Err(ToolError::BadArgument {
                     name: "agent",
                     problem: "provide agent or agents, not both".into(),
-                });
-            }
-            let command = required_str(arguments, "command")?;
-            if command.trim().is_empty() {
-                return Err(ToolError::BadArgument {
-                    name: "command",
-                    problem: "empty".to_string(),
                 });
             }
             // The same ceiling the protocol enforces, checked here so that a
@@ -824,6 +836,13 @@ pub fn dispatch(
                 DEFAULT_EXEC_TIMEOUT_SECONDS,
                 crate::wire::MAX_TIMEOUT_SECONDS,
             )?;
+            let mut input = arguments.clone();
+            input["timeout_seconds"] = timeout.into();
+            let request =
+                crate::wire::run_request_from_json(&input).map_err(|e| ToolError::BadArgument {
+                    name: "command",
+                    problem: e.to_string(),
+                })?;
             if arguments.get("agent").is_some() {
                 let agent = required_str(arguments, "agent")?;
                 if agent.trim().is_empty() {
@@ -832,7 +851,7 @@ pub fn dispatch(
                         problem: "empty".into(),
                     });
                 }
-                Ok(runner.exec(&agent, &command, timeout))
+                Ok(runner.exec(&agent, &request))
             } else {
                 let bad = || ToolError::BadArgument {
                     name: "agents",
@@ -851,7 +870,7 @@ pub fn dispatch(
                             .ok_or_else(bad)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(runner.exec_many(&agents, &command, timeout))
+                Ok(runner.exec_many(&agents, &request))
             }
         }
         "push" => {
@@ -945,28 +964,20 @@ pub fn dispatch(
             Ok(runner.kill(&agent, &request))
         }
         "spawn" => {
-            reject_unknown(arguments, &["agent", "command", "output"])?;
+            reject_unknown(
+                arguments,
+                &["agent", "command", "program", "args", "cwd", "output"],
+            )?;
             let agent = required_str(arguments, "agent")?;
-            let command = required_str(arguments, "command")?;
-            if command.trim().is_empty() {
-                return Err(ToolError::BadArgument {
+            let request = crate::wire::spawn_request_from_json(arguments).map_err(|e| {
+                ToolError::BadArgument {
                     name: "command",
-                    problem: "empty".to_string(),
-                });
-            }
-            // **Required, and the same refusal the command line gives**: a program whose
-            // output goes nowhere cannot be looked at afterwards, which is the one thing this
-            // capability is for.
-            let output = required_str(arguments, "output")?;
-            if output.trim().is_empty() {
-                return Err(ToolError::BadArgument {
-                    name: "output",
-                    problem: "empty".to_string(),
-                });
-            }
-
-            Ok(runner.spawn(&agent, &crate::wire::SpawnRequest { command, output }))
+                    problem: e.to_string(),
+                }
+            })?;
+            Ok(runner.spawn(&agent, &request))
         }
+
         "grep" => {
             reject_unknown(
                 arguments,

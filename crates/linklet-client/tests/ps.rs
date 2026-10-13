@@ -390,7 +390,8 @@ fn start_a_marker(agent: &Agent, executable: &str) -> String {
         let _ = run(
             &address,
             &RunRequest {
-                command,
+                cwd: None,
+                command: command.into(),
                 timeout_seconds: 60,
             },
         );
@@ -573,10 +574,11 @@ fn a_spawn_returns_before_the_program_does_and_the_program_writes_its_own_file()
     let report = spawn(
         &agent.address,
         &SpawnRequest {
+            cwd: None,
             // The platform's own long-running program, so that the two tests that start one
             // cannot be confused for each other: each looks only for pids that were not there
             // before it started.
-            command: command.clone(),
+            command: command.clone().into(),
             output: output.to_string_lossy().into_owned(),
         },
     )
@@ -697,9 +699,10 @@ fn a_spawn_output_path_is_relative_to_the_startup_directory() {
     let report = spawn(
         &agent.address,
         &SpawnRequest {
+            cwd: None,
             // `echo` rather than a long-running program: this test is about where the file
             // goes, and a program that exits at once still exercises the path.
-            command: "echo relative".to_string(),
+            command: "echo relative".into(),
             // A relative path, which is what the protocol says this is and what every caller
             // sends: the tool's own schema calls it "a path on the target".
             //
@@ -733,9 +736,10 @@ fn a_spawn_onto_an_output_file_it_cannot_write_is_refused_and_starts_nothing() {
     let error = spawn(
         &agent.address,
         &SpawnRequest {
+            cwd: None,
             // A marker of its own again, so "nothing was started" cannot be about another
             // test's process: nothing in this test runs at all.
-            command: "arp -a".to_string(),
+            command: "arp -a".into(),
             output: directory.to_string_lossy().into_owned(),
         },
     )

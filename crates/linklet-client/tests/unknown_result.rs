@@ -48,6 +48,7 @@ fn delivered_command_without_reply_has_an_unknown_outcome() {
     let result = linklet_client::run(
         &address,
         &wire::RunRequest {
+            cwd: None,
             command: "side effect".into(),
             timeout_seconds: 1,
         },

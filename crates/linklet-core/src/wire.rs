@@ -292,7 +292,7 @@ impl std::fmt::Display for Text {
 }
 fn text_from_json(value: &Value, field: &str) -> Result<Text, WireError> {
     let stream = &value[field];
-    let bad = || WireError::BadRequest(format!("{field}: invalid protocol 2 stream metadata"));
+    let bad = || WireError::BadRequest(format!("{field}: invalid protocol 3 stream metadata"));
     let text = stream["text"].as_str().ok_or_else(bad)?;
     let total = stream["total_bytes"]
         .as_u64()
@@ -350,8 +350,10 @@ impl std::error::Error for WireError {}
 /// A command the host wants run on a target.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRequest {
-    /// The command line.
-    pub command: String,
+    /// Shell command or direct executable and literal arguments.
+    pub command: crate::execution::CommandSpec,
+    /// Per-call directory, resolved against the agent startup directory.
+    pub cwd: Option<String>,
     /// Seconds the agent may spend before it kills the process.
     pub timeout_seconds: u64,
 }
@@ -463,7 +465,9 @@ pub const MAX_TAIL_LINES: usize = 2000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnRequest {
     /// The command line, run through the same shell `run` uses.
-    pub command: String,
+    pub command: crate::execution::CommandSpec,
+    /// Per-call directory; output paths remain relative to the startup directory.
+    pub cwd: Option<String>,
     /// Where the program's output goes, as a path on the **agent's** side.
     ///
     /// **Required, and not a convenience.** A child that inherited the agent's pipes would
@@ -482,6 +486,12 @@ pub struct SpawnRequest {
 /// exists to remove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpawnReport {
+    /// Absolute invocation directory.
+    pub cwd: String,
+    /// Absolute output file path, resolved against startup directory.
+    pub output: String,
+    /// Whether PID denotes the shell or the directly started program.
+    pub pid_kind: String,
     /// The process identifier of what was started.
     pub pid: u32,
     /// The command line that was started, echoed.
@@ -534,6 +544,10 @@ pub enum Reply {
 /// has the exit code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutcome {
+    /// Absolute directory used for this invocation.
+    pub cwd: String,
+    /// Typed failure, including a deadline or unsuccessful exit.
+    pub error: Option<crate::result::OperationError>,
     /// The process's exit code, or `None` when it was killed or never ran.
     pub exit_code: Option<i32>,
     /// What it wrote to standard output.
@@ -549,6 +563,21 @@ pub struct RunOutcome {
     /// [`KILLED_BY_DEADLINE`] -- stated as a constant so the host is not
     /// pattern-matching on prose.
     pub reason: Option<String>,
+}
+
+impl RunOutcome {
+    /// The typed command failure, or an unsuccessful exit reported by the program.
+    pub fn failure(&self) -> Option<crate::result::OperationError> {
+        self.error.clone().or_else(|| {
+            (self.exit_code != Some(0)).then(|| {
+                crate::result::OperationError::new(
+                    crate::result::ErrorCode::CommandFailed,
+                    "execute",
+                    format!("command exited with {:?}", self.exit_code),
+                )
+            })
+        })
+    }
 }
 
 /// The reason recorded for a process the agent stopped at its deadline.
@@ -569,11 +598,11 @@ pub const MAX_TIMEOUT_SECONDS: u64 = 600;
 pub fn request_to_json(request: &Request) -> Value {
     match request {
         Request::Identity => serde_json::json!({ "op": OP_IDENTITY }),
-        Request::Run(run) => serde_json::json!({
-            "op": OP_RUN,
-            "command": run.command,
-            "timeout_seconds": run.timeout_seconds as i64,
-        }),
+        Request::Run(run) => {
+            let mut value = run_request_to_json(run);
+            value["op"] = OP_RUN.into();
+            value
+        }
         Request::Push(manifest) => {
             let mut entries = manifest_fields(manifest);
             entries.insert("op".to_string(), serde_json::json!(OP_PUSH));
@@ -618,11 +647,15 @@ pub fn request_to_json(request: &Request) -> Value {
             entries.insert("op".to_string(), serde_json::json!(OP_KILL));
             Value::Object(entries)
         }
-        Request::Spawn(spawn) => serde_json::json!({
-            "op": OP_SPAWN,
-            "command": spawn.command,
-            "output": spawn.output,
-        }),
+        Request::Spawn(spawn) => {
+            let mut value = spawn.command.to_json();
+            value["op"] = OP_SPAWN.into();
+            value["output"] = spawn.output.clone().into();
+            if let Some(cwd) = &spawn.cwd {
+                value["cwd"] = cwd.clone().into();
+            }
+            value
+        }
         Request::Grep(grep) => serde_json::json!({
             "op": OP_GREP,
             "path": grep.path,
@@ -926,10 +959,12 @@ pub fn reply_from_json(value: &Value) -> Result<Reply, WireError> {
 
 /// The request as JSON.
 pub fn run_request_to_json(request: &RunRequest) -> Value {
-    serde_json::json!({
-        "command": request.command,
-        "timeout_seconds": request.timeout_seconds as i64,
-    })
+    let mut value = request.command.to_json();
+    value["timeout_seconds"] = request.timeout_seconds.into();
+    if let Some(cwd) = &request.cwd {
+        value["cwd"] = cwd.clone().into();
+    }
+    value
 }
 
 /// A request from JSON.
@@ -940,15 +975,8 @@ pub fn run_request_to_json(request: &RunRequest) -> Value {
 /// on the other end of a socket and "invalid body" gives whoever is debugging it
 /// nothing to look at.
 pub fn run_request_from_json(value: &Value) -> Result<RunRequest, WireError> {
-    let command = value
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
-        .to_string();
-
-    if command.trim().is_empty() {
-        return Err(WireError::BadRequest("command: empty".to_string()));
-    }
+    let command = crate::execution::CommandSpec::from_json(value)?;
+    let cwd = crate::execution::cwd_from_json(value)?;
 
     let timeout_seconds = match value.get("timeout_seconds").map(Value::as_i64) {
         None => {
@@ -972,14 +1000,17 @@ pub fn run_request_from_json(value: &Value) -> Result<RunRequest, WireError> {
     };
 
     Ok(RunRequest {
+        cwd,
         command,
         timeout_seconds,
     })
 }
 
-/// The outcome as protocol 2 JSON, including explicit per-stream metadata.
+/// The outcome as protocol 3 JSON, including explicit per-stream metadata.
 pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
     let mut entries = Map::new();
+    entries.insert("cwd".into(), outcome.cwd.clone().into());
+    entries.insert("error".into(), serde_json::json!(outcome.error));
     entries.insert(
         "exit_code".to_string(),
         match outcome.exit_code {
@@ -1019,7 +1050,7 @@ pub fn run_outcome_to_json(outcome: &RunOutcome) -> Value {
 /// [`WireError::BadRequest`] for anything that is not the shape above. A missing
 /// `exit_code` *field* is an error; a present `null` is a `None`, because those
 /// are different messages and only one of them means "killed or never started".
-/// Both stream objects must carry the protocol 2 metadata.
+/// Both stream objects must carry the protocol 3 metadata.
 pub fn run_outcome_from_json(value: &Value) -> Result<RunOutcome, WireError> {
     let exit_code = match value.get("exit_code") {
         None => {
@@ -1055,6 +1086,9 @@ pub fn run_outcome_from_json(value: &Value) -> Result<RunOutcome, WireError> {
     };
 
     Ok(RunOutcome {
+        cwd: required_text(value, "cwd")?,
+        error: serde_json::from_value(value["error"].clone())
+            .map_err(|e| WireError::BadRequest(e.to_string()))?,
         exit_code,
         stdout,
         stderr,
@@ -1441,14 +1475,8 @@ pub fn encode_kill_reply(report: &crate::process::KillReport) -> Value {
 /// path is not optional for the reason [`SpawnRequest::output`] gives: a child with the
 /// agent's pipes keeps them open, which is the trap this request exists to avoid.
 pub fn spawn_request_from_json(value: &Value) -> Result<SpawnRequest, WireError> {
-    let command = value
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
-        .to_string();
-    if command.trim().is_empty() {
-        return Err(WireError::BadRequest("command: empty".to_string()));
-    }
+    let command = crate::execution::CommandSpec::from_json(value)?;
+    let cwd = crate::execution::cwd_from_json(value)?;
 
     let output = value
         .get("output")
@@ -1459,13 +1487,18 @@ pub fn spawn_request_from_json(value: &Value) -> Result<SpawnRequest, WireError>
         return Err(WireError::BadRequest("output: empty".to_string()));
     }
 
-    Ok(SpawnRequest { command, output })
+    Ok(SpawnRequest {
+        command,
+        cwd,
+        output,
+    })
 }
 
 /// A spawn report as JSON.
 pub fn spawn_report_to_json(report: &SpawnReport) -> Value {
     serde_json::json!({
         "pid": i64::from(report.pid),
+        "cwd": report.cwd, "output": report.output, "pid_kind": report.pid_kind,
         "command": report.command,
     })
 }
@@ -1501,7 +1534,13 @@ pub fn spawn_report_from_reply(reply: &Reply) -> Result<SpawnReport, WireError> 
         .ok_or_else(|| WireError::BadRequest("command: missing or not a string".to_string()))?
         .to_string();
 
-    Ok(SpawnReport { pid, command })
+    Ok(SpawnReport {
+        pid,
+        command,
+        cwd: required_text(value, "cwd")?,
+        output: required_text(value, "output")?,
+        pid_kind: required_text(value, "pid_kind")?,
+    })
 }
 
 /// A spawn report, wrapped as a reply.

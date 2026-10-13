@@ -49,7 +49,13 @@ use linklet_core::wire::SpawnReport;
 /// process exists is not an error** -- a program that exits immediately is a program that
 /// was started, and answering otherwise would be claiming to know something this function
 /// has not waited to see.
-pub fn start(command: &str, output: &Path) -> Result<SpawnReport, String> {
+pub fn start(
+    request: &linklet_core::wire::SpawnRequest,
+    output: &Path,
+) -> Result<SpawnReport, String> {
+    let (mut command, directory) =
+        crate::shell::invocation(&request.command, request.cwd.as_deref())
+            .map_err(|e| e.to_string())?;
     // Created or truncated, and both on purpose: the file is this program's output, and a
     // caller that starts the same command twice wants the second run's output rather than
     // the two interleaved. `create_new` would fail on the ordinary second start, and append
@@ -68,7 +74,7 @@ pub fn start(command: &str, output: &Path) -> Result<SpawnReport, String> {
         .try_clone()
         .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
 
-    let child = crate::shell::command_line(command)
+    let child = command
         // **The child's own file, not this process's pipes.** This is the whole difference:
         // a program that inherited the agent's stdout would hold it open for as long as it
         // runs, and the agent's thread would wait for a program that never exits -- the trap
@@ -77,13 +83,16 @@ pub fn start(command: &str, output: &Path) -> Result<SpawnReport, String> {
         .stdout(Stdio::from(file))
         .stderr(Stdio::from(errors))
         .spawn()
-        .map_err(|error| format!("cannot start {command:?}: {error}"))?;
+        .map_err(|error| format!("cannot start {:?}: {error}", request.command))?;
 
     // Deliberately not waited for, and the handle dropped: the child is not this process's
     // to reap, and `Child::drop` does not kill it. What is returned is the pid, which is
     // what the caller watches with `ps`.
     Ok(SpawnReport {
+        cwd: directory.to_string_lossy().into_owned(),
+        output: output.to_string_lossy().into_owned(),
+        pid_kind: request.command.pid_kind().into(),
         pid: child.id(),
-        command: command.to_string(),
+        command: request.command.to_string(),
     })
 }

@@ -65,8 +65,12 @@ impl ToolRunner for FakeRun {
     fn pair(&self, agent: &str, code: &str) -> ToolOutcome {
         ToolOutcome::ok(format!("{agent} {code}"))
     }
-    fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
-        self.exec(&agents.join(","), command, timeout)
+    fn exec_many(
+        &self,
+        agents: &[String],
+        request: &linklet_core::wire::RunRequest,
+    ) -> ToolOutcome {
+        self.exec(&agents.join(","), request)
     }
     fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome {
         ToolOutcome::ok(format!("{port} {networks} {targets}"))
@@ -89,11 +93,11 @@ impl ToolRunner for FakeRun {
         ToolOutcome::ok("testbed launch-smoke  target box\nREADY 1 of 1 requirements met")
     }
 
-    fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
+    fn exec(&self, agent: &str, request: &linklet_core::wire::RunRequest) -> ToolOutcome {
         self.exec_calls.borrow_mut().push((
             agent.to_string(),
-            command.to_string(),
-            timeout_seconds,
+            request.command.to_string(),
+            request.timeout_seconds,
         ));
         ToolOutcome::ok("exit 0\ntook 12 ms\nstdout:\nhello")
     }
@@ -584,7 +588,11 @@ fn bad_news_is_not_an_error() {
         fn pair(&self, _agent: &str, _code: &str) -> ToolOutcome {
             ToolOutcome::ok("paired")
         }
-        fn exec_many(&self, _agents: &[String], _command: &str, _timeout: u64) -> ToolOutcome {
+        fn exec_many(
+            &self,
+            _agents: &[String],
+            _request: &linklet_core::wire::RunRequest,
+        ) -> ToolOutcome {
             ToolOutcome::failed("offline")
         }
         fn discover(&self, _port: u16, _networks: bool, _targets: bool) -> ToolOutcome {
@@ -600,7 +608,7 @@ fn bad_news_is_not_an_error() {
         fn testbed(&self, _spec_path: &str, _target: &str) -> ToolOutcome {
             ToolOutcome::ok("NOT READY 0 of 1 requirements met")
         }
-        fn exec(&self, _agent: &str, _command: &str, _timeout_seconds: u64) -> ToolOutcome {
+        fn exec(&self, _agent: &str, _request: &linklet_core::wire::RunRequest) -> ToolOutcome {
             ToolOutcome::ok("exit 1\\ntook 3 ms\\nstderr:\\nfailed")
         }
         fn push(&self, _agent: &str, _from: &str, _to: &str) -> ToolOutcome {

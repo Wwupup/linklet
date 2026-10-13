@@ -62,5 +62,8 @@ pub use tool::{
 /// Authenticated remote process context.
 pub mod identity;
 
+/// Process invocation descriptions.
+pub mod execution;
+
 /// Bounded structured tool presentation.
 pub mod presentation;

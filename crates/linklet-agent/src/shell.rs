@@ -121,12 +121,21 @@ mod tests {
         std::fs::write(&input, "quoted file works").expect("fixture");
         let line = format!("type \"{}\"", input.display());
         let result = crate::execute::run(&linklet_core::wire::RunRequest {
-            command: line.clone(),
+            cwd: None,
+            command: line.clone().into(),
             timeout_seconds: 5,
         });
         assert_eq!(result.exit_code, Some(0), "{result:?}");
         assert_eq!(result.stdout.as_str(), "quoted file works");
-        crate::spawn::start(&line, &output).expect("spawn starts");
+        crate::spawn::start(
+            &linklet_core::wire::SpawnRequest {
+                command: line.into(),
+                cwd: None,
+                output: output.to_string_lossy().into_owned(),
+            },
+            &output,
+        )
+        .expect("spawn starts");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if std::fs::read(&output).unwrap_or_default() == b"quoted file works" {
@@ -149,4 +158,60 @@ mod tests {
         std::fs::remove_file(input).expect("remove fixture");
         std::fs::remove_dir(folder).expect("remove scratch directory");
     }
+}
+
+/// Builds one invocation without changing the agent's current directory.
+pub fn invocation(
+    spec: &linklet_core::execution::CommandSpec,
+    cwd: Option<&str>,
+) -> Result<(Command, std::path::PathBuf), linklet_core::result::OperationError> {
+    use linklet_core::{
+        execution::CommandSpec,
+        result::{ErrorCode, OperationError},
+    };
+    let directory = std::path::absolute(cwd.unwrap_or(".")).map_err(|e| {
+        linklet_adapters::failure::io(e, "resolve_cwd", std::path::Path::new(cwd.unwrap_or(".")))
+    })?;
+    let metadata = std::fs::metadata(&directory)
+        .map_err(|e| linklet_adapters::failure::io(e, "resolve_cwd", &directory))?;
+    if !metadata.is_dir() {
+        return Err(OperationError::new(
+            ErrorCode::InvalidArgument,
+            "resolve_cwd",
+            "cwd must be a directory",
+        ));
+    }
+    let mut command = match spec {
+        CommandSpec::Shell(line) => command_line(line),
+        CommandSpec::Direct { program, args } => {
+            let path = std::path::Path::new(program);
+            #[cfg(windows)]
+            if path
+                .extension()
+                .is_some_and(|s| s.eq_ignore_ascii_case("bat") || s.eq_ignore_ascii_case("cmd"))
+            {
+                return Err(OperationError::new(
+                    ErrorCode::InvalidArgument,
+                    "validate",
+                    "Windows batch files require command mode",
+                ));
+            }
+            let has_path = program.contains('/') || (cfg!(windows) && program.contains('\\'));
+            let executable = if path.is_relative() && has_path {
+                directory.join(path)
+            } else {
+                path.to_path_buf()
+            };
+            let mut command = Command::new(executable);
+            command.args(args);
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
+            command
+        }
+    };
+    command.current_dir(&directory).stdin(Stdio::null());
+    Ok((command, directory))
 }

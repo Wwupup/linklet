@@ -213,7 +213,18 @@ a tool does and cannot say **when to prefer it** over the obvious alternative, b
 sentence the rules above exist to keep out. A reader reached for `exec` with one line of `cmd`
 where `testbed` was intended, and that is a reasonable route, not a misreading.
 
-## Bounded presentation
+## Exact execution and presentation
+
+Both exec and spawn accept exactly one of command (a shell command line) or
+program with optional args (an array of literal strings). Empty arguments remain
+empty; shell metacharacters in args are not interpreted by Linklet. Windows
+batch files and shell builtins require command mode. cwd affects only this call;
+a relative cwd uses the startup directory. A program with a relative path uses
+that call's cwd. Standard input is closed for both execution modes.
+
+spawn.output remains relative to the agent startup directory, even when cwd is
+provided. Replies report the absolute cwd and output path and distinguish a shell
+PID from a directly started program PID.
 
 MCP shares 32 KiB of content across a result's command text and query entries.
 Batch streams get fair shares, with unused capacity redistributed. Command text

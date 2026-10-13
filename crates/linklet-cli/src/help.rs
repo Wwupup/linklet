@@ -15,10 +15,10 @@ pub fn requested(arguments: &[String]) -> Option<String> {
             "testbed check <spec-file> <target>\nCheck local requirements from a specification."
         }
         "exec" => {
-            "exec (--agent <host:port> | --agents <a,b,...>) [--timeout <1..600>] [--] <command...>\nOptions end at the command. Single-target execution preserves its exit code; a batch returns 0 only if all commands exit 0. Each stream keeps its last 1 MiB, with an explicit truncation notice."
+            "exec (--agent <host:port> | --agents <a,b,...>) [--timeout <1..600>] [--cwd <dir>] (<command...> | --program <exe> [args...])\nOptions end at the command or --program executable. Single-target execution preserves its exit code; a batch returns 0 only if all commands exit 0. Each stream keeps its last 1 MiB, with an explicit truncation notice."
         }
         "spawn" => {
-            "spawn --agent <host:port> --output <remote-file> [--] <command...>\nStart without waiting. Options end at the command; output goes to the named file. No restart or supervision."
+            "spawn --agent <host:port> --output <remote-file> [--cwd <dir>] (<command...> | --program <exe> [args...])\nStart without waiting. Options end at the command; output goes to the named file. No restart or supervision."
         }
         "ps" => {
             "ps --agent <host:port> [--name <text>] [--cmdline <text>] [--query <text>] [--exclude <text>]\nList matching processes."
@@ -58,6 +58,8 @@ pub fn requested(arguments: &[String]) -> Option<String> {
     let asked = if matches!(command, "exec" | "spawn") {
         let mut flags = vec![
             Flag::takes_value("--agent"),
+            Flag::takes_value("--cwd"),
+            Flag::starts_tail("--program"),
             Flag::switch("-h"),
             Flag::switch("--help"),
         ];

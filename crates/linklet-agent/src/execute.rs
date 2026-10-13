@@ -29,24 +29,32 @@ pub fn run(request: &RunRequest) -> RunOutcome {
     let started = Instant::now();
     let deadline = Duration::from_secs(request.timeout_seconds);
 
-    let mut child = match crate::shell::command_line(&request.command)
+    let failed = |error: linklet_core::result::OperationError, cwd: String| RunOutcome {
+        cwd,
+        reason: Some(error.message.clone()),
+        error: Some(error),
+        exit_code: None,
+        stdout: Text::default(),
+        stderr: Text::default(),
+        duration_ms: elapsed_ms(started),
+    };
+    let (mut command, directory) =
+        match crate::shell::invocation(&request.command, request.cwd.as_deref()) {
+            Ok(invocation) => invocation,
+            Err(error) => return failed(error, request.cwd.clone().unwrap_or_else(|| ".".into())),
+        };
+    let cwd = directory.to_string_lossy().into_owned();
+    let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
     {
         Ok(child) => child,
-        // No process, so no exit code, and the reason says which failure this is.
-        // `exit_code: None` with a reason of "failed to start" is a different
-        // fact from `exit_code: None` with a deadline, and the host acts on the
-        // difference.
         Err(error) => {
-            return RunOutcome {
-                exit_code: None,
-                stdout: Text::default(),
-                stderr: Text::default(),
-                duration_ms: elapsed_ms(started),
-                reason: Some(format!("cannot spawn: {error}")),
-            };
+            return failed(
+                linklet_adapters::failure::io(error, "spawn", &directory),
+                cwd,
+            );
         }
     };
 
@@ -100,6 +108,12 @@ pub fn run(request: &RunRequest) -> RunOutcome {
             // exit code for it would be the one thing this module must not do.
             Err(error) => {
                 return RunOutcome {
+                    cwd,
+                    error: Some(linklet_core::result::OperationError::new(
+                        linklet_core::result::ErrorCode::ResultUnknown,
+                        "wait",
+                        error.to_string(),
+                    )),
                     exit_code: None,
                     stdout: Text::default(),
                     stderr: Text::default(),
@@ -116,6 +130,14 @@ pub fn run(request: &RunRequest) -> RunOutcome {
 
     match (status, killed_by_deadline) {
         (Some(status), false) => RunOutcome {
+            cwd,
+            error: (!status.success()).then(|| {
+                linklet_core::result::OperationError::new(
+                    linklet_core::result::ErrorCode::CommandFailed,
+                    "execute",
+                    format!("command exited with {:?}", status.code()),
+                )
+            }),
             exit_code: status.code(),
             stdout,
             stderr,
@@ -133,6 +155,12 @@ pub fn run(request: &RunRequest) -> RunOutcome {
         // to write before that is still returned -- a killed build's output is
         // exactly what the caller wants to read.
         _ => RunOutcome {
+            cwd,
+            error: Some(linklet_core::result::OperationError::new(
+                linklet_core::result::ErrorCode::DeadlineExceeded,
+                "execute",
+                KILLED_BY_DEADLINE,
+            )),
             exit_code: None,
             stdout,
             stderr,
@@ -191,6 +219,7 @@ mod tests {
     #[test]
     fn both_large_streams_drain_and_return_their_tail() {
         let result = run(&RunRequest {
+            cwd: None,
             command: r#"powershell.exe -NoProfile -NonInteractive -Command "$b=[Text.Encoding]::ASCII.GetBytes(('x'*8192));$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();for($i=0;$i -lt 2200;$i++){$o.Write($b,0,$b.Length);$e.Write($b,0,$b.Length)};$b=[Text.Encoding]::ASCII.GetBytes('END');$o.Write($b,0,3);$e.Write($b,0,3)""#.into(),
             timeout_seconds: 15,
         });
@@ -211,6 +240,7 @@ mod tests {
     #[test]
     fn a_deadline_stops_large_output_and_keeps_the_partial_result() {
         let result = run(&RunRequest {
+            cwd: None,
             command: r#"powershell.exe -NoProfile -NonInteractive -Command "$b=[Text.Encoding]::ASCII.GetBytes(('x'*8192));$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();while($true){$o.Write($b,0,$b.Length);$e.Write($b,0,$b.Length)}""#.into(),
             timeout_seconds: 1,
         });
@@ -226,5 +256,30 @@ mod tests {
     fn utf16_output_decodes_before_utf8() {
         let result = read_all(std::io::Cursor::new([0xff, 0xfe, 0x2d, 0x4e, 0x87, 0x65]));
         assert_eq!(result.as_str(), "\u{4e2d}\u{6587}");
+    }
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::*;
+    #[test]
+    fn direct_program_uses_its_own_directory_and_closed_stdin() {
+        let cwd = std::env::temp_dir().join(format!("linklet cwd \u{4e2d} {}", std::process::id()));
+        std::fs::create_dir_all(&cwd).expect("directory");
+        let request = linklet_core::wire::run_request_from_json(&serde_json::json!({
+            "program": if cfg!(windows) {"cmd.exe"} else {"sh"},
+            "args": if cfg!(windows) {vec!["/D", "/C", "cd"]} else {vec!["-c", "pwd; read x || exit 0"]},
+            "cwd":cwd, "timeout_seconds":2
+        })).expect("request");
+        let result = run(&request);
+        std::fs::remove_dir(&cwd).expect("cleanup");
+        assert_eq!(result.exit_code, Some(0), "{result:?}");
+        assert!(
+            result
+                .stdout
+                .as_str()
+                .contains(&cwd.to_string_lossy().to_string()),
+            "{result:?}"
+        );
     }
 }
