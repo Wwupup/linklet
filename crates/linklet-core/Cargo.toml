@@ -8,6 +8,7 @@ description = "Pure decision logic for linklet: parsing, validation, policy. No 
 
 # Mature libraries are allowed for pure computation. See tests/architecture.rs.
 [dependencies]
+encoding_rs = "0.8"
 serde_json.workspace = true
 
 [lints]

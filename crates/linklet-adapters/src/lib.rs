@@ -39,5 +39,5 @@ pub use processes::{kill as kill_processes, list as list_processes, named as pro
 pub use search::{MAX_BYTES as MAX_SEARCH_BYTES, grep, tail};
 pub use system::SystemProber;
 pub use tcp::{MIN_BUDGET, TcpProbe, effective_budget};
-pub use text::{TextSource, decode_text};
+pub use text::{TextSource, decode_captured, decode_text};
 pub use transfer::{TransferFailure, describe, digest_of_file, part_path, receive_body, send_body};

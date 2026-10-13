@@ -69,10 +69,16 @@ fn declared_dependencies(crate_name: &str) -> Vec<String> {
 
 /// Reviewed core dependencies and the pure APIs used from each.
 /// This checks declared dependencies, not calls to I/O APIs in them or in std.
-const ALLOWED_DEPENDENCIES: &[(&str, &str)] = &[(
-    "serde_json",
-    "Value, in-memory JSON parsing and serialization; core does not use reader/writer APIs.",
-)];
+const ALLOWED_DEPENDENCIES: &[(&str, &str)] = &[
+    (
+        "encoding_rs",
+        "In-memory incremental decoders track multibyte boundaries in discarded output; no I/O APIs.",
+    ),
+    (
+        "serde_json",
+        "Value, in-memory JSON parsing and serialization; core does not use reader/writer APIs.",
+    ),
+];
 
 #[test]
 fn core_dependencies_have_a_reviewed_pure_use() {

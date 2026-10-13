@@ -150,22 +150,46 @@ fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, S
     }
 
     let file_bytes = metadata.len();
-    let bytes = read_bytes(target, direction, file_bytes)?;
-    let cut_short = (bytes.len() as u64) < file_bytes;
+    let window = read_bytes(target, direction, file_bytes)?;
+    let bytes = &window.bytes;
+    let cut_short = window.read < file_bytes;
+    let encoding = match sniff(&window.prefix) {
+        encoding @ (Encoding::Utf8Bom | Encoding::Utf16Le | Encoding::Utf16Be) => encoding,
+        _ => {
+            let skip = if window.offset > 0 {
+                bytes
+                    .iter()
+                    .take(3)
+                    .take_while(|b| **b & 0xc0 == 0x80)
+                    .count()
+            } else {
+                0
+            };
+            sniff(&bytes[skip..])
+        }
+    };
 
-    let encoding = sniff(&bytes);
-
-    let decoded = crate::decode_text(&bytes, bytes.len(), encoding, crate::TextSource::File);
+    let decoded = crate::decode_text(
+        bytes,
+        window.offset + bytes.len(),
+        encoding,
+        crate::TextSource::File,
+    );
     if let Some(error) = decoded.decode_error() {
         return Err(format!("cannot decode {path}: {error}"));
     }
     let encoding = Encoding::named(decoded.encoding()).ok_or("unknown decoder encoding")?;
     let text = decoded.as_str();
+    let text = if window.offset > 0 {
+        text.split_once('\n').map_or(text, |(_, rest)| rest)
+    } else {
+        text
+    };
 
     Ok(Read {
         lines: lines_of(text),
         encoding,
-        bytes_read: bytes.len() as u64,
+        bytes_read: window.read,
         file_bytes: Some(file_bytes),
         cut_short,
     })
@@ -176,41 +200,73 @@ fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, S
 /// **A file past the ceiling is read from the end when the end is what was asked for.** The
 /// alternative -- always the first sixteen megabytes -- answers "the last ERROR" about the
 /// beginning of the file, which is not a smaller answer but a wrong one.
-fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Vec<u8>, String> {
+struct Window {
+    bytes: Vec<u8>,
+    prefix: Vec<u8>,
+    offset: usize,
+    read: u64,
+}
+
+fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Window, String> {
     use std::io::{Read, Seek, SeekFrom};
-
-    let mut file = std::fs::File::open(target).map_err(|error| format!("cannot open: {error}"))?;
-
-    if file_bytes <= MAX_BYTES || direction == Direction::First {
-        let mut bytes = Vec::new();
-        let mut bounded = file.take(MAX_BYTES);
-        bounded
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("cannot read: {error}"))?;
-        return Ok(bytes);
-    }
-
-    let start = file_bytes - MAX_BYTES;
-    file.seek(SeekFrom::Start(start))
-        .map_err(|error| format!("cannot seek: {error}"))?;
-
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES)
+    let mut file = std::fs::File::open(target).map_err(|e| format!("cannot open: {e}"))?;
+    let mut prefix = Vec::new();
+    (&mut file)
+        .take(256)
+        .read_to_end(&mut prefix)
+        .map_err(|e| format!("cannot read: {e}"))?;
+    let remaining = MAX_BYTES - prefix.len() as u64;
+    let offset = if file_bytes > MAX_BYTES && direction == Direction::Last {
+        let start = file_bytes - remaining;
+        file.seek(SeekFrom::Start(start))
+            .map_err(|e| format!("cannot seek: {e}"))?;
+        start as usize
+    } else {
+        0
+    };
+    let mut bytes = if offset == 0 {
+        prefix.clone()
+    } else {
+        Vec::new()
+    };
+    file.take(remaining)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("cannot read: {error}"))?;
-
-    // The window starts mid-line, so everything before the first terminator is a fragment.
-    // Dropping it is what keeps the first reported line a whole line.
-    if let Some(first_break) = bytes.iter().position(|byte| *byte == b'\n') {
-        bytes.drain(..=first_break);
-    }
-
-    Ok(bytes)
+        .map_err(|e| format!("cannot read: {e}"))?;
+    let read = bytes.len() as u64 + if offset == 0 { 0 } else { prefix.len() as u64 };
+    Ok(Window {
+        bytes,
+        prefix,
+        offset,
+        read,
+    })
 }
 
 #[cfg(test)]
 mod bounded_tests {
     use super::*;
+    #[test]
+    fn a_utf16_tail_window_keeps_its_byte_order_and_character_boundary() {
+        let path =
+            std::env::temp_dir().join(format!("linklet-utf16-window-{}.txt", std::process::id()));
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend([b'x', 0].repeat(MAX_BYTES as usize / 2));
+        bytes.extend(
+            "\nTAIL\u{4e2d}\u{6587}\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        std::fs::write(&path, bytes).expect("fixture");
+        let last = read_lines(&path, "fixture", Direction::Last).expect("last window");
+        std::fs::remove_file(path).expect("cleanup");
+        assert_eq!(last.encoding, Encoding::Utf16Le);
+        assert!(
+            last.lines.iter().any(|line| line == "TAIL\u{4e2d}\u{6587}"),
+            "{:?}",
+            last.lines
+        );
+        assert!(last.bytes_read <= MAX_BYTES);
+    }
+
     #[test]
     fn legacy_decoding_never_reads_outside_the_selected_window() {
         let path =

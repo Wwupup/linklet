@@ -168,13 +168,7 @@ fn read_all(mut pipe: impl Read) -> Text {
             Err(_) => break,
         }
     }
-    let (bytes, total, encoding) = capture.finish();
-    linklet_adapters::decode_text(
-        &bytes,
-        total,
-        encoding,
-        linklet_adapters::TextSource::Command,
-    )
+    linklet_adapters::decode_captured(capture.finish())
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -211,6 +205,21 @@ mod tests {
             &linklet_core::wire::encode_run_reply(&result),
             linklet_core::wire::reply_ceiling()
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_deadline_stops_large_output_and_keeps_the_partial_result() {
+        let result = run(&RunRequest {
+            command: r#"powershell.exe -NoProfile -NonInteractive -Command "$b=[Text.Encoding]::ASCII.GetBytes(('x'*8192));$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();while($true){$o.Write($b,0,$b.Length);$e.Write($b,0,$b.Length)}""#.into(),
+            timeout_seconds: 1,
+        });
+        assert_eq!(result.exit_code, None);
+        assert_eq!(result.reason.as_deref(), Some(KILLED_BY_DEADLINE));
+        assert!(result.stdout.byte_count() > 0);
+        assert!(result.stderr.byte_count() > 0);
+        assert!(result.stdout.retained_bytes() <= 1024 * 1024);
+        assert!(result.stderr.retained_bytes() <= 1024 * 1024);
     }
 
     #[test]

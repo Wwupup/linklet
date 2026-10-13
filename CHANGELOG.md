@@ -33,6 +33,9 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- Preserve multibyte character boundaries when command output is truncated,
+  and retain BOM/byte-order detection for bounded UTF-16 file tails.
+
 - Windows `exec` and `spawn` preserve quoted paths and arguments through
   `cmd.exe /D /S /C`. Their CLI options end at the command or `--`; remote
   options are no longer consumed by Linklet.

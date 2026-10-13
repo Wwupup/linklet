@@ -14,11 +14,32 @@ pub enum TextSource {
 /// Decodes a bounded byte window. Decoder failures preserve lossy UTF-8 text
 /// and attach an explicit error. Total includes any discarded prefix.
 pub fn decode_text(bytes: &[u8], total: usize, encoding: Encoding, source: TextSource) -> Text {
+    decode_window(bytes, total, encoding, source, &[])
+}
+
+/// Decodes a captured command stream with its multibyte boundary state.
+pub fn decode_captured(captured: linklet_core::output::Captured) -> Text {
+    decode_window(
+        &captured.bytes,
+        captured.total,
+        captured.encoding,
+        TextSource::Command,
+        &captured.boundary_skips,
+    )
+}
+
+fn decode_window(
+    bytes: &[u8],
+    total: usize,
+    encoding: Encoding,
+    source: TextSource,
+    skips: &[(u16, usize)],
+) -> Text {
     let offset = total.saturating_sub(bytes.len());
     if let Some((text, lossy)) = linklet_core::output::unicode(bytes, encoding, offset) {
         return Text::decoded(text, total, bytes.len(), encoding.tag(), lossy, None);
     }
-    match legacy(bytes, source) {
+    match legacy(bytes, source, skips) {
         Ok((text, encoding, lossy)) => {
             Text::decoded(text, total, bytes.len(), encoding.tag(), lossy, None)
         }
@@ -34,7 +55,12 @@ pub fn decode_text(bytes: &[u8], total: usize, encoding: Encoding, source: TextS
 }
 
 #[cfg(not(windows))]
-fn legacy(bytes: &[u8], source: TextSource) -> Result<(String, Encoding, bool), String> {
+fn legacy(
+    bytes: &[u8],
+    source: TextSource,
+    skips: &[(u16, usize)],
+) -> Result<(String, Encoding, bool), String> {
+    let _ = skips;
     Ok(match source {
         TextSource::File => (
             linklet_core::search::decode_latin1(bytes),
@@ -50,28 +76,41 @@ fn legacy(bytes: &[u8], source: TextSource) -> Result<(String, Encoding, bool), 
 }
 
 #[cfg(windows)]
-fn legacy(bytes: &[u8], source: TextSource) -> Result<(String, Encoding, bool), String> {
+fn legacy(
+    bytes: &[u8],
+    source: TextSource,
+    skips: &[(u16, usize)],
+) -> Result<(String, Encoding, bool), String> {
     let code_page = match source {
         TextSource::File => "[Text.Encoding]::Default.CodePage",
         TextSource::Command => {
             r#"$( $c = & "$env:SystemRoot\System32\chcp.com" 2>$null; if ($LASTEXITCODE -eq 0 -and $c -match '(\d+)\s*$') { [int]$Matches[1] } else { [int][Microsoft.Win32.Registry]::GetValue('HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Nls\CodePage','OEMCP',$null) } )"#
         }
     };
-    decode_code_page(bytes, code_page)
+    decode_code_page(bytes, code_page, skips)
 }
 
 #[cfg(windows)]
-fn decode_code_page(bytes: &[u8], code_page: &str) -> Result<(String, Encoding, bool), String> {
+fn decode_code_page(
+    bytes: &[u8],
+    code_page: &str,
+    skips: &[(u16, usize)],
+) -> Result<(String, Encoding, bool), String> {
     use std::io::{Read, Write};
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     // Only the code-page expression is interpolated, never captured text or a path.
+    let offsets = skips
+        .iter()
+        .map(|(page, count)| format!("{page}={count};"))
+        .collect::<String>();
     let script = format!(
         r#"$ErrorActionPreference='Stop';
 $p={code_page};
 $m=New-Object IO.MemoryStream; [Console]::OpenStandardInput().CopyTo($m); $b=$m.ToArray();
+$skipTable=@{{{offsets}}}; $skip=0; if($skipTable.ContainsKey($p)) {{ $skip=$skipTable[$p] }};
 $e=[Text.Encoding]::GetEncoding($p,[Text.EncoderFallback]::ExceptionFallback,[Text.DecoderFallback]::ExceptionFallback);
-$loss=$false; try {{ $t=$e.GetString($b) }} catch {{ $loss=$true; $t=[Text.Encoding]::GetEncoding($p).GetString($b) }};
+$loss=$false; try {{ $t=$e.GetString($b,$skip,$b.Length-$skip) }} catch {{ $loss=$true; $t=[Text.Encoding]::GetEncoding($p).GetString($b,$skip,$b.Length-$skip) }};
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);
 @{{text=$t;page=$p;lossy=$loss}} | ConvertTo-Json -Compress"#
     );
@@ -133,12 +172,25 @@ $loss=$false; try {{ $t=$e.GetString($b) }} catch {{ $loss=$true; $t=[Text.Encod
 mod tests {
     use super::*;
     #[test]
+    fn a_clipped_double_byte_stream_keeps_character_boundaries() {
+        let mut capture = linklet_core::output::Capture::default();
+        let mut bytes = [0xd6, 0xd0].repeat(600_000);
+        bytes.push(b'X');
+        capture.push(&bytes);
+        let captured = capture.finish();
+        let (text, _, lossy) =
+            decode_code_page(&captured.bytes, "936", &captured.boundary_skips).expect("decoder");
+        assert!(!lossy);
+        assert!(text.trim_end_matches('X').chars().all(|c| c == '\u{4e2d}'));
+    }
+
+    #[test]
     fn code_page_936_decodes_captured_bytes_and_reports_invalid_bytes() {
         let (text, encoding, lossy) =
-            decode_code_page(&[0xd6, 0xd0, 0xce, 0xc4], "936").expect("decoder");
+            decode_code_page(&[0xd6, 0xd0, 0xce, 0xc4], "936", &[]).expect("decoder");
         assert_eq!(text, "\u{4e2d}\u{6587}");
         assert_eq!(encoding, Encoding::CodePage(936));
         assert!(!lossy);
-        assert!(decode_code_page(&[0x81], "936").expect("decoder").2);
+        assert!(decode_code_page(&[0x81], "936", &[]).expect("decoder").2);
     }
 }
