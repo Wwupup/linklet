@@ -142,6 +142,7 @@ fn parse_tasklist(text: &str) -> Parsed {
 
     for line in text.lines() {
         if parsed.processes.len() >= MAX_READ {
+            parsed.truncated = true;
             break;
         }
         let line = line.trim();
@@ -239,6 +240,15 @@ mod tests {
 \"System Idle Process\",\"0\",\"Services\",\"0\",\"8 K\"\r
 \"explorer.exe\",\"5144\",\"Console\",\"3\",\"938,060 K\"\r
 ";
+
+    #[test]
+    fn a_process_scan_at_its_limit_does_not_claim_to_be_complete() {
+        let row = "\"worker.exe\",\"1234\"\n";
+        assert!(!parse_tasklist(&row.repeat(MAX_READ)).truncated);
+        let parsed = parse_tasklist(&row.repeat(MAX_READ + 1));
+        assert_eq!(parsed.processes.len(), MAX_READ);
+        assert!(parsed.truncated, "an unexamined row remains");
+    }
 
     #[test]
     fn a_real_row_is_read_including_the_comma_inside_a_field() {

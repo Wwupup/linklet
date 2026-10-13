@@ -87,6 +87,8 @@ pub(crate) struct Parsed {
     pub(crate) processes: Vec<linklet_core::process::Process>,
     /// Entries that were neither a process nor a machine that said "none".
     pub(crate) unreadable: usize,
+    /// The enumeration stopped before examining every entry.
+    pub(crate) truncated: bool,
 }
 
 /// Lists the processes on this machine that match `filter`.
@@ -99,7 +101,16 @@ pub(crate) struct Parsed {
 /// different facts, and only one of them is safe to act on.
 pub fn list(filter: &Filter) -> Listing {
     match platform::read_all() {
-        Ok(parsed) => apply(parsed.processes, filter, parsed.unreadable),
+        Ok(parsed) => {
+            let mut listing = apply(parsed.processes, filter, parsed.unreadable);
+            if parsed.truncated {
+                listing.truncated = true;
+                listing
+                    .notes
+                    .push(format!("process enumeration stopped at {MAX_READ} entries"));
+            }
+            listing
+        }
         Err(error) => {
             let mut listing = could_not_enumerate(&error.to_string(), filter);
             listing.problem = Some(error);
@@ -142,6 +153,10 @@ pub fn kill(
     // uncapped read is what stops a process past the reply's ceiling from being invisible to a
     // request that names it. See each backend's `read_all`.
     let (candidates, blind) = match platform::read_all() {
+        Ok(parsed) if parsed.truncated => (
+            Vec::new(),
+            Some(format!("process enumeration stopped at {MAX_READ} entries")),
+        ),
         Ok(parsed) => (
             matching(parsed.processes, filter)
                 .iter()
@@ -205,6 +220,9 @@ pub fn kill(
 /// exactly when it cannot tell.
 pub fn named(name: &str) -> Result<Vec<String>, String> {
     let parsed = platform::read_all().map_err(|e| e.to_string())?;
+    if parsed.truncated {
+        return Err(format!("process enumeration stopped at {MAX_READ} entries"));
+    }
 
     Ok(parsed
         .processes

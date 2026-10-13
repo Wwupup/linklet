@@ -78,6 +78,7 @@ pub(super) fn read_all() -> Result<Parsed, linklet_core::result::OperationError>
 
     for entry in entries {
         if parsed.processes.len() >= MAX_READ {
+            parsed.truncated = true;
             break;
         }
         // An entry that cannot be read at all is not a process that could not be described:

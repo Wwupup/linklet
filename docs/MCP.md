@@ -55,6 +55,10 @@ authentication. Rate limits return the cooldown and never block normal paired ca
 
 Fourteen tools, one per intent.
 
+Process queries report incomplete results when enumeration reaches its 4096-entry
+limit, even if filtering leaves no matches. Kill and testbed checks cannot treat
+that partial snapshot as proof that a process is absent.
+
 | tool | question | required arguments |
 |---|---|---|
 | `pair` | authenticate a code and remember the target | `agent`, `code` |

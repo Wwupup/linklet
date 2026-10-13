@@ -253,7 +253,7 @@ impl Filter {
 pub struct Listing {
     /// Typed failure to obtain the process snapshot.
     pub problem: Option<crate::result::OperationError>,
-    /// Requested filter fields unavailable for every observed process.
+    /// Requested filter fields unavailable for at least one observed process.
     pub missing_fields: Vec<String>,
     /// The processes that matched, in the order the machine reported them.
     pub processes: Vec<Process>,
@@ -261,7 +261,7 @@ pub struct Listing {
     pub total: usize,
     /// Lines of the machine's output that could not be read as a process.
     pub unreadable: usize,
-    /// Whether the filter matched more than [`MAX_LISTED`] and was cut short.
+    /// Whether the enumeration or the filtered reply reached its entry limit.
     pub truncated: bool,
     /// The filter, echoed.
     pub applied: serde_json::Value,
@@ -868,10 +868,10 @@ mod tests {
         // One of the two can be checked and matches; the other cannot be checked and is
         // dropped rather than accepted.
         assert_eq!(names(&listing), ["linklet-agent.exe"]);
+        assert_eq!(listing.incomplete(), Incomplete::MissingFields);
         assert!(
-            listing.notes.is_empty(),
-            "one process could be described, so the field is answerable: {:#?}",
-            listing.notes
+            !listing.notes.is_empty(),
+            "the other process could not be checked"
         );
 
         // And with nothing describable at all, the note appears.
