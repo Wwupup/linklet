@@ -51,8 +51,9 @@ fn credentials_survive_restart_reset_under_lock_and_keep_targets_separate() {
     }
     #[cfg(windows)]
     {
+        // Avoid module lookup through a PowerShell 7 PSModulePath inherited by CI.
         let output = std::process::Command::new("powershell.exe")
-            .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[System.IO.Directory]::GetAccessControl($env:LINKLET_TEST_DIRECTORY); if(-not $acl.AreAccessRulesProtected){exit 1}; foreach($path in @($env:LINKLET_TEST_DIRECTORY,($env:LINKLET_TEST_DIRECTORY+'/agent.json'))){$acl=Get-Acl -LiteralPath $path; $rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]); if($rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid -or $rules[0].AccessControlType -ne 'Allow'){exit 2}}"])
+            .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; $acl=[System.IO.Directory]::GetAccessControl($env:LINKLET_TEST_DIRECTORY); if(-not $acl.AreAccessRulesProtected){exit 1}; foreach($path in @($env:LINKLET_TEST_DIRECTORY,($env:LINKLET_TEST_DIRECTORY+'/agent.json'))){$acl=if([System.IO.Directory]::Exists($path)){[System.IO.Directory]::GetAccessControl($path)}else{[System.IO.File]::GetAccessControl($path)}; $rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier]); if($rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid -or $rules[0].AccessControlType -ne 'Allow'){exit 2}}"])
             .env("LINKLET_TEST_DIRECTORY", &dir).output().expect("read Windows ACL");
         assert!(
             output.status.success(),
