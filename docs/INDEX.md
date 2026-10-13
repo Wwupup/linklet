@@ -22,6 +22,7 @@ the change that made it wrong.
 | How do I do a task? | `docs/LEARNING.md` |
 | What kind of test does this get? | `docs/testing.md` |
 | How do I call this from an agent? | `docs/MCP.md` |
+| How are operation call counts and result sizes measured? | `docs/AI-EVALUATION.md` |
 | How do I install it as an MCP server, and what tells an agent the routine? | `integrations/README.md` |
 | How will my work be judged? | `docs/review-m1.md` |
 | What went wrong on the way here? | `docs/retrospective.md` |

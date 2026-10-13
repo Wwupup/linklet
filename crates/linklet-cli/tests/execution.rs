@@ -301,3 +301,190 @@ fn concurrent_calls_keep_their_own_directories() {
     assert!(log.contains("arg:6:--help") && log.contains("arg:0:") && log.contains("arg:2:&|"));
 }
 
+#[test]
+fn real_large_dual_stream_batches_are_bounded_and_timeouts_are_errors() {
+    let fixture = Fixture::new();
+    let raw = 17 * 1024 * 1024usize;
+    let result = fixture.tool("exec",json!({"agents":[fixture.address,fixture.address],"program":fixture.program,"args":["flood",raw.to_string()]}));
+    assert_eq!(result["isError"], false);
+    let mut content = result["content"][0]["text"]
+        .as_str()
+        .expect("summary")
+        .len();
+    for record in result["structuredContent"]["data"]["results"]
+        .as_array()
+        .expect("batch")
+    {
+        assert_eq!(record["status"], "ok");
+        for (stream, marker) in [("stdout", "OUT-END"), ("stderr", "ERR-END")] {
+            let output = &record["data"][stream];
+            assert_eq!(output["total_bytes"], raw + marker.len());
+            assert_eq!(output["retained_bytes"], 1048576);
+            assert_eq!(output["truncated"], true);
+            assert_eq!(output["presentation_truncated"], true);
+            let text = output["text"].as_str().expect("text");
+            assert!(text.ends_with(marker) && text.len() > 7000);
+            content += text.len();
+        }
+    }
+    assert!(content <= 32768, "{content}");
+    println!(
+        "METRIC dual_stream_batch calls=1 result_bytes={} content_bytes={content} wrong_statuses=0",
+        result.to_string().len()
+    );
+    let timeout = fixture.tool(
+        "exec",
+        json!({"program":fixture.program,"args":["sleep","3000"],"timeout":1}),
+    );
+    assert_eq!(
+        timeout["structuredContent"]["error"]["code"],
+        "deadline_exceeded"
+    );
+    assert_eq!(timeout["isError"], true);
+}
+
+#[cfg(windows)]
+#[test]
+fn direct_windows_batches_are_rejected_before_execution() {
+    let fixture = Fixture::new();
+    let batch = fixture.dir.join("must not run.cmd");
+    std::fs::write(&batch, "@echo wrong>should-not-exist").expect("batch");
+    for tool in ["exec", "spawn"] {
+        let mut args = json!({"program":batch});
+        if tool == "spawn" {
+            args["output"] = "rejected.log".into();
+        }
+        let result = fixture.tool(tool, args);
+        assert_eq!(
+            result["structuredContent"]["error"]["code"],
+            "invalid_argument"
+        );
+    }
+    assert!(!fixture.dir.join("should-not-exist").exists());
+}
+
+#[test]
+fn fixed_context_start_and_log_scenario_records_calls_and_sizes() {
+    let fixture = Fixture::new();
+    let probe = fixture.tool("probe", json!({}));
+    assert_eq!(probe["isError"], false);
+    let identity = &probe["structuredContent"]["data"];
+    assert!(identity["observed_at_ms"].is_number());
+    let start = fixture.tool(
+        "spawn",
+        json!({"program":fixture.program,"output":"metrics.log"}),
+    );
+    assert_eq!(start["structuredContent"]["data"]["state"], "exited");
+    let first = fixture.tool("tail", json!({"path":"metrics.log"}));
+    let cursor = &first["structuredContent"]["data"]["next_cursor"];
+    let next = fixture.tool("tail", json!({"path":"metrics.log","cursor":cursor}));
+    assert_eq!(next["structuredContent"]["data"]["text"], "");
+    let ps = fixture.tool(
+        "ps",
+        json!({"name":"linklet-impossible-process-fixture-73cc"}),
+    );
+    assert_eq!(ps["structuredContent"]["data"]["count"], 0);
+    let kill = fixture.tool(
+        "kill",
+        json!({"name":"linklet-impossible-process-fixture-73cc","confirmed":true}),
+    );
+    assert_eq!(kill["structuredContent"]["data"]["matched"], 0);
+    for (name, result) in [
+        ("probe", probe),
+        ("spawn", start),
+        ("tail_first", first),
+        ("tail_empty", next),
+        ("ps_empty", ps),
+        ("kill_empty", kill),
+    ] {
+        assert_eq!(result["isError"], false);
+        println!(
+            "METRIC {name} calls=1 result_bytes={} wrong_statuses=0",
+            result.to_string().len()
+        );
+    }
+    println!(
+        "METRIC tool_definitions count=14 bytes={}",
+        linklet_core::tool_list_json().to_string().len()
+    );
+}
+
+#[test]
+fn batch_unknown_outcome_takes_priority_over_known_command_failure() {
+    use linklet_adapters::{Connection, HkdfChannel};
+    use linklet_core::{
+        channel::{EphemeralPublic, Handshake},
+        frame::Kind,
+        wire,
+    };
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+    let address = listener.local_addr().expect("address").to_string();
+    let peer = std::thread::spawn(move || {
+        let (socket, _) = listener.accept().expect("accept");
+        let mut c = Connection::with_budget(socket, std::time::Duration::from_secs(5));
+        let hello = wire::parse_body(&c.read_frame(Kind::Hello).expect("hello")).expect("json");
+        let public =
+            EphemeralPublic::from_bytes(wire::handshake_public_from_json(&hello).expect("key"))
+                .expect("key");
+        let (ours, mut session) = HkdfChannel
+            .accept(b"vanishing-batch-token-012345", &public)
+            .expect("handshake");
+        c.write_frame(
+            Kind::Hello,
+            wire::reply_result(wire::handshake_to_json(ours.as_bytes()))
+                .to_string()
+                .as_bytes(),
+        )
+        .expect("reply");
+        let sealed = c.read_frame(Kind::Sealed).expect("request");
+        let mut request = Vec::new();
+        session
+            .open_into(&sealed, &mut request)
+            .expect("authenticated");
+        assert!(matches!(
+            wire::request_from_json(&wire::parse_body(&request).expect("json")),
+            Ok(wire::Request::Run(_))
+        ));
+    });
+    let mut fixture = Fixture::new();
+    fixture.credentials = Credentials::new(
+        None,
+        &[
+            (&fixture.address, "argv-fixture-token-0123456789"),
+            (&address, "vanishing-batch-token-012345"),
+        ],
+    );
+    let reply = fixture.tool(
+        "exec",
+        json!({"agents":[fixture.address,address],"program":fixture.program,"args":["exit","7"]}),
+    );
+    peer.join().expect("peer");
+    let result = &reply["structuredContent"];
+    assert_eq!(result["status"], "unknown");
+    assert_eq!(result["data"]["results"][0]["status"], "error");
+    assert_eq!(result["data"]["results"][0]["data"]["exit_code"], 7);
+    assert_eq!(result["data"]["results"][1]["status"], "unknown");
+    assert_eq!(result["data"]["unknown"], 1);
+}
+
+#[test]
+fn tail_cursor_is_bound_to_the_controller_target() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.dir.join("bound.log"), "first\n").expect("log");
+    let first = fixture.tool("tail", json!({"path":"bound.log"}));
+    let mut cursor: Value = serde_json::from_str(
+        first["structuredContent"]["data"]["next_cursor"]
+            .as_str()
+            .expect("cursor"),
+    )
+    .expect("facts");
+    cursor["target"] = "different:8787".into();
+    let rejected = fixture.tool(
+        "tail",
+        json!({"path":"bound.log","cursor":cursor.to_string()}),
+    );
+    assert_eq!(
+        rejected["structuredContent"]["error"]["code"],
+        "invalid_argument"
+    );
+}

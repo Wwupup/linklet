@@ -150,3 +150,52 @@ fn an_empty_log_can_acquire_a_legacy_encoding_without_silent_mojibake() {
         assert_eq!(page.encoding, "latin-1");
     }
 }
+
+#[test]
+fn split_bom_and_utf16_surrogates_resume_without_loss() {
+    for be in [false, true] {
+        let f = Fixture::new();
+        let path = f.dir.join("log");
+        let expected = "a\u{4e2d}\u{1f600}\r\nunfinished";
+        let mut bytes = if be {
+            vec![0xfe, 0xff]
+        } else {
+            vec![0xff, 0xfe]
+        };
+        bytes.extend(expected.encode_utf16().flat_map(|unit| {
+            if be {
+                unit.to_be_bytes()
+            } else {
+                unit.to_le_bytes()
+            }
+        }));
+        let mut req = request();
+        let mut text = String::new();
+        for byte in bytes {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .expect("append")
+                .write_all(&[byte])
+                .expect("byte");
+            let page = linklet_adapters::tail::read(&f.paths, &req).expect("page");
+            assert!(!page.lossy && page.file_changed.is_none(), "{page:?}");
+            text.push_str(&page.text);
+            req.cursor = Some(page.next_cursor);
+        }
+        assert_eq!(text, expected);
+    }
+}
+
+#[test]
+fn initial_long_line_respects_the_source_read_ceiling() {
+    let f = Fixture::new();
+    let path = f.dir.join("log");
+    std::fs::write(&path, vec![b'x'; 17 * 1024 * 1024]).expect("large line");
+    let page = linklet_adapters::tail::read(&f.paths, &request()).expect("page");
+    assert!(page.bytes_read <= 16 * 1024 * 1024);
+    assert!(page.skipped_prefix && page.starts_mid_line && page.ends_mid_line && page.has_more);
+    assert_eq!(page.text.len(), 17);
+    assert!(page.range.start > 0);
+}

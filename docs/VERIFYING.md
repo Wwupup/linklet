@@ -165,3 +165,19 @@ directory were observed failing their permission checks before the fixes.
 
 These are local process/socket tests on each OS, not a new LAN smoke result.
 No release, deployment, push or GitHub CI run was performed.
+
+## Protocol 3 local verification conditions
+
+The three-stage execution changes are checked through all four required gates
+on Windows and on the current WSL Ubuntu instance as account `ww`. Windows
+identity observation reports the current unelevated account. Linux permission
+scenarios also run as an explicitly elevated root process using passwordless sudo,
+independently of the normal ww run. Windows UAC elevation is not exercised by
+this run. See docs/AI-EVALUATION.md for the measured fixed scenarios.
+
+The WSL checkout is an ext4 source snapshot under the account's cache directory,
+streamed from the current tracked and nonignored source files. The D: drvfs
+mount returned I/O errors, including a compiler error while reading source;
+verification uses the snapshot instead of treating that mount failure as a
+source-code failure. Build output stays in a separate WSL target directory.
+No result here is a LAN, release or deployment claim.
