@@ -195,10 +195,8 @@ fn a_full_session_produces_one_reply_per_request_and_none_for_the_notification()
 }
 
 #[test]
-fn initialize_echoes_the_clients_protocol_version() {
-    // Echoed rather than checked. Comparing the client's version against a
-    // constant would break the day a client moves on, and the client is better
-    // placed to decide whether it can read the replies.
+fn initialize_reports_its_supported_protocol_version() {
+    // An unsupported request receives the version this server actually implements.
     let initialize = request(
         1,
         "initialize",
@@ -211,7 +209,7 @@ fn initialize_echoes_the_clients_protocol_version() {
         result
             .get("result")
             .and_then(|r| r.get("protocolVersion").and_then(Value::as_str)),
-        Some("2029-01-01")
+        Some("2025-06-18")
     );
 }
 
@@ -572,6 +570,12 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
         for (i, (tool, arguments)) in calls.iter().enumerate() {
             let reply = reply_for(&replies, (i + 1) as i64);
             let result = reply.get("result").expect("a tool result");
+            assert!(
+                result["structuredContent"]["data"]
+                    .as_object()
+                    .is_some_and(|d| !d.is_empty()),
+                "{tool}: {result}"
+            );
             assert_eq!(
                 result.get("isError").and_then(Value::as_bool),
                 Some(arguments["command"] == "exit 7" || arguments["timeout"] == 1),
@@ -581,6 +585,10 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
             match *tool {
                 "push" | "pull" => assert!(text.contains("(verified)"), "{text}"),
                 "probe" => {
+                    let identity = &result["structuredContent"]["data"];
+                    assert_eq!(identity["os"], std::env::consts::OS);
+                    assert!(identity["startup_cwd"].as_str().is_some());
+                    assert!(identity["account"].as_str().is_some());
                     assert!(text.contains("linklet-agent"), "{text}");
                     assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
                 }
@@ -682,4 +690,36 @@ fn discovery_uses_the_cli_network_listing_and_probe_errors_are_tool_errors() {
         );
     }
     assert_eq!(reply_for(&replies, 2)["result"]["isError"], true);
+}
+
+#[test]
+fn every_tool_declares_structured_results_and_bad_calls_use_them() {
+    let list = request(901, "tools/list", "");
+    let call = request(902, "tools/call", r#"{"name":"exec","arguments":{}}"#);
+    let replies = session(&[&list, &call]);
+    let listing = reply_for(&replies, 901);
+    let tools = listing["result"]["tools"].as_array().expect("tools");
+    assert_eq!(tools.len(), 14);
+    for tool in tools {
+        assert_eq!(tool["outputSchema"]["type"], "object", "{tool}");
+        assert!(tool["outputSchema"]["properties"]["status"].is_object());
+    }
+    let reply = reply_for(&replies, 902);
+    let result = &reply["result"];
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["status"], "error");
+    assert_eq!(
+        result["structuredContent"]["error"]["code"],
+        "invalid_argument"
+    );
+}
+
+#[test]
+fn initialize_negotiates_the_supported_structured_result_version() {
+    let init = request(903, "initialize", r#"{"protocolVersion":"2099-01-01"}"#);
+    let replies = session(&[&init]);
+    assert_eq!(
+        reply_for(&replies, 903)["result"]["protocolVersion"],
+        "2025-06-18"
+    );
 }

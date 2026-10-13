@@ -31,9 +31,10 @@ use std::env;
 use std::time::Duration;
 
 use linklet_adapters::{SystemProber, TcpProbe, serve};
-use linklet_client::{AgentAddress, render_call_error};
+use linklet_client::AgentAddress;
 use linklet_core::arguments::{Args, Flag, Strictness};
 use linklet_core::auth::Token;
+use linklet_core::result::{ErrorCode, OperationError, Status};
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::wire::{
     self, GrepRequest, KillRequest, LsRequest, RunRequest, SpawnRequest, TailRequest,
@@ -503,6 +504,26 @@ impl CommandOutcome {
         }
     }
 
+    fn call_failed(agent: &str, error: &linklet_client::CallError) -> Self {
+        let mut tool = ToolOutcome::failure(error.diagnostic()).at(agent);
+        tool.text = linklet_client::render_call_error(error);
+        Self {
+            tool,
+            code: i32::from(ExitCode::REFUSED),
+        }
+    }
+
+    fn facts(mut self, agent: &str, data: serde_json::Value) -> Self {
+        self.tool.target = Some(agent.into());
+        if let Some(problem) = data.get("problem").filter(|v| !v.is_null())
+            && let Ok(error) = serde_json::from_value::<OperationError>(problem.clone())
+        {
+            self.tool.fail(error);
+        }
+        self.tool.data = data;
+        self
+    }
+
     fn report(self) -> i32 {
         println!("{}", self.tool.text);
         self.code
@@ -534,7 +555,10 @@ impl ToolRunner for LiveRunner {
 
     fn reachability(&self, targets: &str, budget: Duration) -> ToolOutcome {
         match check_specs(targets, budget, MAX_TARGETS) {
-            Ok(reports) => ToolOutcome::ok(tool_text(&reports)),
+            Ok(reports) => ToolOutcome::ok(tool_text(&reports)).with_data(serde_json::json!({
+                "results":reports.iter().map(|r| serde_json::json!({"target":r.target.to_string(),
+                    "reachable":r.is_alive(),"reason":r.reason})).collect::<Vec<_>>(),
+                "count":reports.len(),"complete":true,"authenticated":false})),
             // A target that does not parse is a failed call: the agent asked for
             // something this tool cannot interpret, and it has to change the
             // request. Bad news about a machine is the other case entirely.
@@ -559,7 +583,10 @@ impl ToolRunner for LiveRunner {
         };
 
         let verdicts = testbed.check(&SystemProber);
-        ToolOutcome::ok(testbed::render(&testbed, &verdicts, target))
+        ToolOutcome::ok(testbed::render(&testbed, &verdicts, target)).at(target).with_data(serde_json::json!({
+            "name":testbed.name,"spec":spec_path,"held":verdicts.iter().all(|v|v.held),
+            "results":verdicts.iter().map(|v|serde_json::json!({"held":v.held,"detail":v.detail})).collect::<Vec<_>>(),
+            "count":verdicts.len()}))
     }
 
     fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
@@ -662,14 +689,14 @@ fn exec_across(agents: &[String], command: &str, timeout_seconds: u64) -> Comman
             let results = std::sync::Arc::clone(&results);
             Task::new(agent.clone(), move || {
                 let (fate, result) = match exec_at(&agent, &command, timeout_seconds) {
-                    Ok(outcome) => (Fate::Ran, command_result(outcome)),
+                    Ok(outcome) => (Fate::Ran, command_result(&agent, outcome)),
                     Err(error) => {
                         let fate = if error.was_refused() {
                             Fate::Refused
                         } else {
                             Fate::Unreachable
                         };
-                        (fate, CommandOutcome::failed(render_call_error(&error)))
+                        (fate, CommandOutcome::call_failed(&agent, &error))
                     }
                 };
                 if let Ok(mut slots) = results.lock() {
@@ -682,16 +709,30 @@ fn exec_across(agents: &[String], command: &str, timeout_seconds: u64) -> Comman
     let report = linklet_core::fanout::run(tasks);
     let mut text = format!("{} of {} ran", report.ran(), report.total);
     let mut failed = !report.complete();
+    let mut records = Vec::new();
+    let mut status = Status::Ok;
     if let Ok(slots) = results.lock() {
         for (index, outcome) in report.outcomes.iter().enumerate() {
             text.push_str(&format!("\n{} {}", outcome.fate.as_str(), outcome.target));
             if let Some(result) = &slots[index] {
-                failed |= result.tool.is_error;
+                failed |= result.tool.is_error();
+                status = status.max(result.tool.status);
+                records.push(result.tool.structured());
                 for line in result.tool.text.lines() {
                     text.push_str(&format!("\n  {line}"));
                 }
             } else {
                 failed = true;
+                status = Status::Unknown;
+                records.push(
+                    ToolOutcome::failure(OperationError::new(
+                        ErrorCode::ResultUnknown,
+                        "worker",
+                        "execution did not return a result",
+                    ))
+                    .at(&outcome.target)
+                    .structured(),
+                );
                 text.push_str("\n  execution did not return a result");
             }
         }
@@ -699,18 +740,47 @@ fn exec_across(agents: &[String], command: &str, timeout_seconds: u64) -> Comman
         failed = true;
     }
     let mut result = CommandOutcome::answered(text, i32::from(failed));
-    result.tool.is_error = failed;
+    if failed {
+        result.tool.fail(OperationError::new(
+            if status == Status::Unknown {
+                ErrorCode::ResultUnknown
+            } else {
+                ErrorCode::CommandFailed
+            },
+            "execute",
+            "one or more commands failed or have an unknown outcome",
+        ));
+    }
+    result.tool.data = serde_json::json!({"count":agents.len(),"results":records,
+        "ok":records.iter().filter(|r|r["status"]=="ok").count(),
+        "error":records.iter().filter(|r|r["status"]=="error").count(),
+        "unknown":records.iter().filter(|r|r["status"]=="unknown").count()});
     result
 }
 
-fn command_result(outcome: wire::RunOutcome) -> CommandOutcome {
+fn command_result(agent: &str, outcome: wire::RunOutcome) -> CommandOutcome {
     let mut result = CommandOutcome::answered(
         wire::render_run(&outcome),
         outcome
             .exit_code
             .unwrap_or(i32::from(ExitCode::NOT_ALL_ALIVE)),
     );
-    result.tool.is_error = outcome.exit_code != Some(0) || outcome.reason.is_some();
+    result.tool.target = Some(agent.into());
+    result.tool.data = wire::run_outcome_to_json(&outcome);
+    if outcome.exit_code != Some(0) || outcome.reason.is_some() {
+        result.tool.fail(OperationError::new(
+            if outcome.reason.as_deref() == Some(wire::KILLED_BY_DEADLINE) {
+                ErrorCode::DeadlineExceeded
+            } else {
+                ErrorCode::CommandFailed
+            },
+            "execute",
+            outcome
+                .reason
+                .clone()
+                .unwrap_or_else(|| format!("command exited with {:?}", outcome.exit_code)),
+        ));
+    }
     result
 }
 
@@ -719,8 +789,8 @@ fn command_result(outcome: wire::RunOutcome) -> CommandOutcome {
 /// Shared by CLI and MCP; both call failures and unsuccessful commands are errors.
 fn exec_on(agent: &str, command: &str, timeout_seconds: u64) -> CommandOutcome {
     match exec_at(agent, command, timeout_seconds) {
-        Ok(outcome) => command_result(outcome),
-        Err(error) => CommandOutcome::failed(render_call_error(&error)),
+        Ok(outcome) => command_result(agent, outcome),
+        Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }
 
@@ -942,7 +1012,7 @@ fn run_transfer(direction: Direction, arguments: &[String]) -> i32 {
 
     let outcome = transfer_on(direction, &options.agent, &options.from, &options.to);
 
-    if outcome.is_error {
+    if outcome.is_error() {
         eprintln!("linklet: {}", outcome.text);
         return i32::from(ExitCode::REFUSED);
     }
@@ -1117,7 +1187,9 @@ fn discover_on(port: u16, networks: bool, targets: bool) -> CommandOutcome {
         }
         lines.join("\n")
     };
-    CommandOutcome::answered(text, i32::from(result.truncated))
+    let mut answer = CommandOutcome::answered(text, i32::from(result.truncated));
+    answer.tool.data = serde_json::json!({"listeners":result.found.iter().map(|f|f.address.to_string()).collect::<Vec<_>>(),"networks":result.networks,"skipped":result.skipped,"truncated":result.truncated,"complete":!result.truncated,"authenticated":false});
+    answer
 }
 
 /// Lists a path on an agent's machine and prints what is there.
@@ -1164,15 +1236,16 @@ fn run_ls(arguments: &[String]) -> i32 {
 fn ls_on(agent: &str, request: &LsRequest) -> CommandOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::call_failed(agent, &error),
     };
 
     match linklet_client::ls(&address, request) {
         Ok(listing) => CommandOutcome::answered(
             linklet_core::listing::render(&listing),
             i32::from(!listing.found || listing.truncated),
-        ),
-        Err(error) => CommandOutcome::failed(render_call_error(&error)),
+        )
+        .facts(agent, wire::ls_listing_to_json(&listing)),
+        Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }
 
@@ -1296,15 +1369,16 @@ fn run_tail(arguments: &[String]) -> i32 {
 fn grep_on(agent: &str, request: &GrepRequest) -> CommandOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::call_failed(agent, &error),
     };
 
     match linklet_client::grep(&address, request) {
         Ok(search) => CommandOutcome::answered(
             linklet_core::search::render(&search),
             i32::from(!search.searched || search.truncated),
-        ),
-        Err(error) => CommandOutcome::failed(render_call_error(&error)),
+        )
+        .facts(agent, wire::search_to_json(&search)),
+        Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }
 
@@ -1312,15 +1386,16 @@ fn grep_on(agent: &str, request: &GrepRequest) -> CommandOutcome {
 fn tail_on(agent: &str, request: &TailRequest) -> CommandOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::call_failed(agent, &error),
     };
 
     match linklet_client::tail(&address, request) {
         Ok(search) => CommandOutcome::answered(
             linklet_core::search::render(&search),
             i32::from(!search.searched || search.truncated),
-        ),
-        Err(error) => CommandOutcome::failed(render_call_error(&error)),
+        )
+        .facts(agent, wire::search_to_json(&search)),
+        Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }
 
@@ -1370,7 +1445,7 @@ fn run_spawn(arguments: &[String]) -> i32 {
     let outcome = spawn_on(agent, &request);
     println!("{}", outcome.text);
 
-    if outcome.is_error {
+    if outcome.is_error() {
         return i32::from(ExitCode::REFUSED);
     }
     i32::from(ExitCode::SUCCESS)
@@ -1382,14 +1457,16 @@ fn run_spawn(arguments: &[String]) -> i32 {
 fn spawn_on(agent: &str, request: &SpawnRequest) -> ToolOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return ToolOutcome::failure(error.diagnostic()).at(agent),
     };
 
     match linklet_client::spawn(&address, request) {
         // `started <pid>`, and the word is chosen: "started" is what this side knows, where
         // "running" would be a claim about a moment it has not looked at.
-        Ok(report) => ToolOutcome::ok(format!("started {}", report.pid)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(report) => ToolOutcome::ok(format!("started {}", report.pid))
+            .at(agent)
+            .with_data(wire::spawn_report_to_json(&report)),
+        Err(error) => CommandOutcome::call_failed(agent, &error).tool,
     }
 }
 
@@ -1481,15 +1558,26 @@ fn run_kill(arguments: &[String]) -> i32 {
 fn kill_on(agent: &str, request: &KillRequest) -> CommandOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::call_failed(agent, &error),
     };
 
     match linklet_client::kill(&address, request) {
-        Ok(report) => CommandOutcome::answered(
-            linklet_core::process::render_kill(&report),
-            i32::from(!report.complete()),
-        ),
-        Err(error) => CommandOutcome::failed(render_call_error(&error)),
+        Ok(report) => {
+            let mut result = CommandOutcome::answered(
+                linklet_core::process::render_kill(&report),
+                i32::from(!report.complete()),
+            )
+            .facts(agent, wire::kill_report_to_json(&report));
+            if !report.complete() {
+                result.tool.fail(OperationError::new(
+                    ErrorCode::IoError,
+                    "terminate",
+                    "some processes could not be stopped; inspect per-process results",
+                ));
+            }
+            result
+        }
+        Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }
 
@@ -1499,15 +1587,16 @@ fn kill_on(agent: &str, request: &KillRequest) -> CommandOutcome {
 fn ps_on(agent: &str, filter: &linklet_core::process::Filter) -> CommandOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return CommandOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::call_failed(agent, &error),
     };
 
     match linklet_client::ps(&address, filter) {
         Ok(listing) => CommandOutcome::answered(
             linklet_core::process::render(&listing),
             i32::from(listing.unreadable > 0 || !listing.notes.is_empty()),
-        ),
-        Err(error) => CommandOutcome::failed(render_call_error(&error)),
+        )
+        .facts(agent, wire::ps_listing_to_json(&listing)),
+        Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }
 
@@ -1521,7 +1610,7 @@ fn ps_on(agent: &str, filter: &linklet_core::process::Filter) -> CommandOutcome 
 fn transfer_on(direction: Direction, agent: &str, from: &str, to: &str) -> ToolOutcome {
     let address = match configured_address(agent) {
         Ok(address) => address,
-        Err(error) => return ToolOutcome::failed(render_call_error(&error)),
+        Err(error) => return CommandOutcome::call_failed(agent, &error).tool,
     };
 
     let result = match direction {
@@ -1531,8 +1620,8 @@ fn transfer_on(direction: Direction, agent: &str, from: &str, to: &str) -> ToolO
     };
 
     match result {
-        Ok(outcome) => ToolOutcome::ok(wire::render_transfer(&outcome, to)),
-        Err(error) => ToolOutcome::failed(render_call_error(&error)),
+        Ok(outcome) => ToolOutcome::ok(wire::render_transfer(&outcome, to)).at(agent).with_data(serde_json::json!({"bytes":outcome.bytes,"sha256":outcome.sha256,"verified":true,"from":from,"to":to})),
+        Err(error) => CommandOutcome::call_failed(agent, &error).tool,
     }
 }
 
@@ -1540,24 +1629,25 @@ fn probe_on(agent: &str) -> CommandOutcome {
     match token_for(agent) {
         Ok(token) => probe::run_probe(agent, &token),
         Err(error) => {
-            let mut outcome = CommandOutcome::failed(error);
+            let mut outcome = CommandOutcome::call_failed(agent, &error);
             outcome.code = i32::from(ExitCode::USAGE);
             outcome
         }
     }
 }
 
-fn token_for(agent: &str) -> Result<Token, String> {
-    let directory = linklet_adapters::credentials::config_dir()?;
-    linklet_adapters::credentials::saved_token(&directory, agent)?.ok_or_else(|| {
-        format!(
+fn token_for(agent: &str) -> Result<Token, linklet_client::CallError> {
+    let directory =
+        linklet_adapters::credentials::config_dir().map_err(linklet_client::CallError::Local)?;
+    linklet_adapters::credentials::saved_token(&directory, agent).map_err(linklet_client::CallError::Local)?.ok_or_else(|| {
+        linklet_client::CallError::PairingRequired(format!(
             "no saved credential for {agent}; run linklet pair --agent {agent} --code <six-digits>"
-        )
+        ))
     })
 }
 fn configured_address(agent: &str) -> Result<AgentAddress, linklet_client::CallError> {
     let address = AgentAddress::new(agent)?;
-    let token = token_for(agent).map_err(linklet_client::CallError::Local)?;
+    let token = token_for(agent)?;
     Ok(address.with_token(token))
 }
 fn pair_on(agent: &str, code: &str) -> CommandOutcome {
@@ -1568,12 +1658,19 @@ fn pair_on(agent: &str, code: &str) -> CommandOutcome {
         let (token, identity) = linklet_client::pair(agent, code)?;
         linklet_adapters::credentials::save_token(&directory, agent, &token)
             .map_err(linklet_client::CallError::Local)?;
-        Ok(format!(
-            "paired with {agent} ({identity}); credential saved for this account"
+        Ok((
+            format!("paired with {agent} ({identity}); credential saved for this account"),
+            identity,
         ))
     })();
     match result {
-        Ok(text) => CommandOutcome::answered(text, 0),
+        Ok((text, identity)) => {
+            let mut result = CommandOutcome::answered(text, 0);
+            result.tool.target = Some(agent.into());
+            result.tool.data = identity.to_json();
+            result.tool.warnings = identity.warnings;
+            result
+        }
         Err(error) => {
             let code = match &error {
                 linklet_client::CallError::Local(_) | linklet_client::CallError::BadAddress(_) => 2,
@@ -1583,7 +1680,7 @@ fn pair_on(agent: &str, code: &str) -> CommandOutcome {
                 _ => 4,
             };
             CommandOutcome {
-                tool: ToolOutcome::failed(render_call_error(&error)),
+                tool: ToolOutcome::failure(error.diagnostic()).at(agent),
                 code,
             }
         }
@@ -1600,7 +1697,7 @@ fn run_pair(arguments: &[String]) -> i32 {
         return 2;
     };
     let outcome = pair_on(agent, code);
-    if outcome.tool.is_error {
+    if outcome.tool.is_error() {
         eprintln!("linklet: {}", outcome.tool.text);
         outcome.code
     } else {

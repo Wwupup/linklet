@@ -180,7 +180,7 @@ fn an_address_needs_a_host_and_a_number() {
 fn identity_answers_over_a_real_socket() {
     let agent = Agent::start();
     let name = identity(&agent.address).expect("the agent should answer");
-    assert_eq!(name, "linklet-agent");
+    assert_eq!(name.name, "linklet-agent");
 }
 
 #[test]
@@ -419,7 +419,7 @@ fn a_host_with_no_token_against_a_secured_agent_is_refused_too() {
     )
     .expect_err("no token");
 
-    assert!(matches!(error, CallError::BadAddress(_)), "{error:?}");
+    assert!(matches!(error, CallError::PairingRequired(_)), "{error:?}");
     let text = render_call_error(&error);
     assert!(text.contains("token"), "{text}");
 }
@@ -704,9 +704,9 @@ fn a_push_that_the_agent_refuses_says_so_and_is_not_a_transport_failure() {
     match &error {
         CallError::Refused(reason) => {
             assert!(
-                reason.contains("no\\such\\directory")
-                    || reason.contains("no/such/directory")
-                    || reason.contains("cannot find"),
+                reason.message.contains("no\\such\\directory")
+                    || reason.message.contains("no/such/directory")
+                    || reason.message.contains("cannot find"),
                 "the refusal should name the path the agent could not write: {reason}"
             );
         }

@@ -22,6 +22,10 @@ mod channel;
 mod connection;
 pub mod credentials;
 mod discovery;
+/// Stable diagnostic conversion at I/O boundaries.
+pub mod failure;
+/// Current process context, queried with bounded subprocesses.
+pub mod identity;
 mod listing;
 mod mcp;
 pub mod pairing;

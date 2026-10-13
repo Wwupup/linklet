@@ -102,21 +102,21 @@ pub struct Listing {
     /// nothing was looked at.
     pub found: bool,
     /// Why it could not be listed, when it could not.
-    pub problem: Option<String>,
+    pub problem: Option<crate::result::OperationError>,
 }
 
 /// A listing that never happened.
 ///
 /// **Not an empty directory.** It carries the reason and reports `found: false`, so a caller
 /// that would have concluded "there are no logs here" sees a failure to look instead.
-pub fn could_not_list(path: &str, reason: &str) -> Listing {
+pub fn could_not_list(path: &str, reason: impl Into<crate::result::OperationError>) -> Listing {
     Listing {
         entries: Vec::new(),
         total: 0,
         truncated: false,
         path: path.to_string(),
         found: false,
-        problem: Some(reason.to_string()),
+        problem: Some(reason.into()),
     }
 }
 
@@ -185,7 +185,11 @@ pub fn render(listing: &Listing) -> String {
         return format!(
             "could not list {}: {}",
             listing.path,
-            listing.problem.as_deref().unwrap_or("no reason given")
+            listing
+                .problem
+                .as_ref()
+                .map(|e| e.message.as_str())
+                .unwrap_or("no reason given")
         );
     }
 
@@ -228,7 +232,10 @@ mod tests {
         let not_there = could_not_list("logs", "no such directory");
         assert!(!not_there.found);
         assert!(not_there.entries.is_empty());
-        assert_eq!(not_there.problem.as_deref(), Some("no such directory"));
+        assert_eq!(
+            not_there.problem.as_ref().map(|e| e.message.as_str()),
+            Some("no such directory")
+        );
 
         // And the two renderings cannot be confused for each other.
         assert_eq!(render(&nothing_in_it), "0 of 0 entries in logs");

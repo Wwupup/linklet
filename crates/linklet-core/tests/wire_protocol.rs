@@ -222,7 +222,7 @@ fn a_refusal_carries_the_reason_and_no_result() {
         .expect("a reply");
 
     match reply {
-        Reply::Refused(reason) => assert!(reason.contains("timeout_seconds"), "{reason}"),
+        Reply::Refused(reason) => assert!(reason.message.contains("timeout_seconds"), "{reason}"),
         Reply::Result(value) => panic!("a refusal decoded as a result: {value:?}"),
     }
 }
@@ -584,6 +584,7 @@ fn a_reply_too_large_to_frame_is_refused_by_name() {
 
     // A caller has to be able to act on it, so it names the size that did not fit
     // and the ceiling it did not fit in -- not a sentence about a socket.
+    let text = text.message;
     assert!(text.contains("20000000"), "{text}");
     assert!(text.contains("128"), "{text}");
     assert!(
@@ -973,7 +974,10 @@ fn a_search_that_did_not_happen_round_trips_as_one_that_did_not() {
     .expect("decodes");
 
     assert!(!decoded.searched);
-    assert_eq!(decoded.problem.as_deref(), Some("no such file"));
+    assert_eq!(
+        decoded.problem.as_ref().map(|e| e.message.as_str()),
+        Some("no such file")
+    );
     assert_eq!(decoded.total, None, "nothing was counted");
     assert!(decoded.lines.is_empty());
 }
@@ -1190,7 +1194,7 @@ fn the_identity_result_carries_a_name_and_a_version() {
         .expect("its own output should decode");
 
     assert_eq!(
-        wire::identity_from_json(&reply).expect("a name"),
+        wire::identity_from_json(&reply).expect("a name").name,
         "linklet-agent"
     );
     assert!(matches!(reply, Reply::Result(_)));
@@ -1210,7 +1214,7 @@ fn command_streams_have_protocol_two_metadata() {
     assert_eq!(value["stdout"]["retained_bytes"], 5);
     assert_eq!(value["stdout"]["encoding"], "utf-8");
     assert_eq!(value["stdout"]["truncated"], false);
-    assert_eq!(wire::PROTOCOL_VERSION, 2);
+    assert_eq!(wire::PROTOCOL_VERSION, 3);
 }
 
 #[test]
@@ -1222,4 +1226,13 @@ fn an_identity_requires_both_nonempty_name_and_version() {
     ] {
         assert!(wire::identity_from_json(&wire::Reply::Result(value)).is_err());
     }
+}
+
+#[test]
+fn protocol_three_refusals_carry_a_stable_category_and_phase() {
+    let reply = linklet_core::wire::reply_refused("example refusal");
+    assert_eq!(reply["error"]["code"], "refused");
+    assert_eq!(reply["error"]["phase"], "validate");
+    assert_eq!(reply["error"]["message"], "example refusal");
+    assert_eq!(linklet_core::wire::PROTOCOL_VERSION, 3);
 }

@@ -113,6 +113,10 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/probe.rs` | the `Probe` trait, `check_targets`, the limits |
 | `crates/linklet-cli/src/probe.rs` | the probe command: whether an agent is working or only listening, and the exit codes a supervisor reads |
 | `crates/linklet-core/src/outcome.rs` | the output format and the exit codes: the contract |
+| `crates/linklet-core/src/result.rs` | typed operation status, errors, and structured result envelopes |
+| `crates/linklet-core/src/identity.rs` | authenticated target process context |
+| `crates/linklet-adapters/src/identity.rs` | bounded OS account and hostname observation |
+| `crates/linklet-adapters/src/failure.rs` | OS error categories at I/O boundaries |
 | `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
 | `crates/linklet-core/src/transfer.rs` | T1: whether a path may be written, and the two filesystems' rules for deciding -- including the case rule that was a live escape on Linux |

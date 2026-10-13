@@ -158,7 +158,10 @@ fn a_search_finds_a_line_and_reports_what_it_read() {
 
     assert!(search.searched, "{search:#?}");
     assert_eq!(search.total, Some(2));
-    assert_eq!(search.path, "build.log");
+    assert_eq!(
+        std::path::Path::new(&search.path),
+        agent.root.join("build.log")
+    );
     assert_eq!(search.encoding, Encoding::Utf8);
     // The size the machine reported, checked against the file this test wrote rather than
     // against a number copied out of a failing run.
@@ -199,7 +202,8 @@ fn a_file_that_cannot_be_searched_is_not_a_file_with_no_matches() {
     assert!(
         search
             .problem
-            .as_deref()
+            .as_ref()
+            .map(|e| e.message.as_str())
             .is_some_and(|p| p.contains("missing.log")),
         "the reason should name the file: {search:#?}"
     );
@@ -228,7 +232,11 @@ fn a_path_that_leaves_the_transfer_root_is_refused_like_a_pull() {
 
     assert!(!search.searched, "{search:#?}");
     assert!(
-        search.problem.as_deref().is_some_and(|p| p.contains("..")),
+        search
+            .problem
+            .as_ref()
+            .map(|e| e.message.as_str())
+            .is_some_and(|p| p.contains("..")),
         "the refusal should name what it refused: {search:#?}"
     );
 }
@@ -404,7 +412,8 @@ fn an_empty_directory_is_not_a_directory_that_is_not_there() {
     assert!(
         absent
             .problem
-            .as_deref()
+            .as_ref()
+            .map(|e| e.message.as_str())
             .is_some_and(|problem| problem.contains("not-there")),
         "the reason should name the path: {absent:#?}"
     );
@@ -412,7 +421,7 @@ fn an_empty_directory_is_not_a_directory_that_is_not_there() {
     // And the two renderings cannot be confused for each other either.
     assert_eq!(
         linklet_core::listing::render(&present),
-        "0 of 0 entries in empty"
+        format!("0 of 0 entries in {}", agent.root.join("empty").display())
     );
     assert!(linklet_core::listing::render(&absent).starts_with("could not list"));
 }
@@ -498,7 +507,8 @@ fn a_listing_with_a_nul_path_reports_the_path_error() {
     assert!(
         listing
             .problem
-            .as_deref()
+            .as_ref()
+            .map(|e| e.message.as_str())
             .is_some_and(|problem| problem.contains("NUL")),
         "{listing:#?}"
     );
@@ -525,7 +535,13 @@ fn a_tail_reports_lines_and_not_matches() {
     assert!(search.searched, "{search:#?}");
     assert_eq!(search.noun, linklet_core::search::Noun::Lines);
     let rendered = linklet_core::search::render(&search);
-    assert!(rendered.contains("lines in app.log"), "{rendered}");
+    assert!(
+        rendered.contains(&format!(
+            "lines in {}",
+            agent.root.join("app.log").display()
+        )),
+        "{rendered}"
+    );
     assert!(!rendered.contains("matches"), "{rendered}");
     assert_eq!(
         search

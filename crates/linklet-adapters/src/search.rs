@@ -21,6 +21,7 @@
 
 use std::path::Path;
 
+use linklet_core::result::{ErrorCode, OperationError};
 use linklet_core::search::{
     Direction, Encoding, Limit, Noun, Pattern, Search, lines_of, scan, sniff,
 };
@@ -37,8 +38,8 @@ pub const MAX_BYTES: u64 = 16 * 1024 * 1024;
 ///
 /// A `Search` with `searched: false` and this in it -- never an empty result, which is
 /// `docs/ROADMAP.md` M10's first lesson.
-fn unreadable(path: &str, reason: String) -> Search {
-    linklet_core::search::could_not_search(path, &reason, Encoding::Utf8)
+fn unreadable(path: &str, reason: impl Into<OperationError>) -> Search {
+    linklet_core::search::could_not_search(path, reason, Encoding::Utf8)
 }
 
 /// Searches one file, resolving relative paths against the configured base.
@@ -61,9 +62,16 @@ pub fn grep(
 ) -> Search {
     let target = match paths.resolve(path) {
         Ok(target) => target,
-        Err(error) => return unreadable(path, error.to_string()),
+        Err(error) => {
+            return unreadable(
+                path,
+                OperationError::new(ErrorCode::InvalidArgument, "validate", error.to_string()),
+            );
+        }
     };
 
+    let resolved = target.to_string_lossy();
+    let path = resolved.as_ref();
     let with_text = match read_lines(&target, path, direction) {
         Ok(read) => read,
         Err(problem) => return unreadable(path, problem),
@@ -82,9 +90,16 @@ pub fn grep(
 pub fn tail(paths: &linklet_core::transfer::Destination, path: &str, count: usize) -> Search {
     let target = match paths.resolve(path) {
         Ok(target) => target,
-        Err(error) => return unreadable(path, error.to_string()),
+        Err(error) => {
+            return unreadable(
+                path,
+                OperationError::new(ErrorCode::InvalidArgument, "validate", error.to_string()),
+            );
+        }
     };
 
+    let resolved = target.to_string_lossy();
+    let path = resolved.as_ref();
     let with_text = match read_lines(&target, path, Direction::Last) {
         Ok(read) => read,
         Err(problem) => return unreadable(path, problem),
@@ -140,13 +155,17 @@ fn finish(mut search: Search, path: &str, read: Read) -> Search {
 /// # Errors
 ///
 /// A sentence naming what could not be read or what was not a file.
-fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, String> {
+fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, OperationError> {
     let metadata =
-        std::fs::metadata(target).map_err(|error| format!("cannot read {path}: {error}"))?;
+        std::fs::metadata(target).map_err(|error| crate::failure::io(error, "read", target))?;
     if !metadata.is_file() {
         // A directory or a device would otherwise be a strange failure from the read rather
         // than a named refusal, which is the same argument as a pull's.
-        return Err(format!("{path} is not a regular file"));
+        return Err(OperationError::new(
+            ErrorCode::InvalidArgument,
+            "read",
+            format!("{path} is not a regular file"),
+        ));
     }
 
     let file_bytes = metadata.len();
@@ -176,7 +195,11 @@ fn read_lines(target: &Path, path: &str, direction: Direction) -> Result<Read, S
         crate::TextSource::File,
     );
     if let Some(error) = decoded.decode_error() {
-        return Err(format!("cannot decode {path}: {error}"));
+        return Err(OperationError::new(
+            ErrorCode::IoError,
+            "decode",
+            format!("cannot decode {path}: {error}"),
+        ));
     }
     let encoding = Encoding::named(decoded.encoding()).ok_or("unknown decoder encoding")?;
     let text = decoded.as_str();
@@ -207,19 +230,24 @@ struct Window {
     read: u64,
 }
 
-fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Window, String> {
+fn read_bytes(
+    target: &Path,
+    direction: Direction,
+    file_bytes: u64,
+) -> Result<Window, OperationError> {
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = std::fs::File::open(target).map_err(|e| format!("cannot open: {e}"))?;
+    let mut file =
+        std::fs::File::open(target).map_err(|e| crate::failure::io(e, "open", target))?;
     let mut prefix = Vec::new();
     (&mut file)
         .take(256)
         .read_to_end(&mut prefix)
-        .map_err(|e| format!("cannot read: {e}"))?;
+        .map_err(|e| crate::failure::io(e, "read", target))?;
     let remaining = MAX_BYTES - prefix.len() as u64;
     let offset = if file_bytes > MAX_BYTES && direction == Direction::Last {
         let start = file_bytes - remaining;
         file.seek(SeekFrom::Start(start))
-            .map_err(|e| format!("cannot seek: {e}"))?;
+            .map_err(|e| crate::failure::io(e, "seek", target))?;
         start as usize
     } else {
         0
@@ -231,7 +259,7 @@ fn read_bytes(target: &Path, direction: Direction, file_bytes: u64) -> Result<Wi
     };
     file.take(remaining)
         .read_to_end(&mut bytes)
-        .map_err(|e| format!("cannot read: {e}"))?;
+        .map_err(|e| crate::failure::io(e, "read", target))?;
     let read = bytes.len() as u64 + if offset == 0 { 0 } else { prefix.len() as u64 };
     Ok(Window {
         bytes,

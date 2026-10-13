@@ -102,7 +102,7 @@ retained byte counts, encoding, truncation, and decoding-loss metadata. Larger
 output is drained and discarded; truncation does not change the exit code.
 Unicode is detected first; Windows command output falls back to its console
 code page (system OEM without a console). File reads fall back to system ANSI.
-Both binaries must use protocol 2; upgrade both ends together.
+Both binaries must use protocol 3; upgrade both ends together.
 
 `spawn` is not `exec` with a flag. **`exec` waits** for the command and returns its output,
 which is right for a build step and wrong for a program meant to keep running: the request,
@@ -318,6 +318,10 @@ Call `pair` with `{"agent":"10.0.0.5:8787","code":"083614"}` once. Keep the
 code as a string so leading zeros survive. The MCP server saves the long-term
 credential for its OS account and never returns it as a tool result. The six-digit
 code is the only credential tool argument.
+
+Tool results include structuredContent and outputSchema, with explicit success,
+failure, or unknown outcome. Pair and probe also return the target account, elevation,
+shell, startup directory, and limits. A lost reply never triggers an automatic retry.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
 and the two places a caller goes wrong. `integrations/` is in this repository, and a

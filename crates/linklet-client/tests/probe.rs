@@ -149,7 +149,7 @@ fn a_working_agent_answers() {
 
     match liveness {
         Liveness::Answered(name) => assert!(
-            name.contains("linklet-agent"),
+            name.name.contains("linklet-agent"),
             "the identity should name the agent: {name}"
         ),
         other => panic!("a working agent answers: {other:?}"),
@@ -227,7 +227,7 @@ fn a_refusal_is_an_answer_and_not_a_dead_agent() {
 
     match liveness {
         Liveness::Refused(reason) => assert!(
-            reason.contains("token"),
+            reason.message.contains("token"),
             "the refusal should be about the token: {reason}"
         ),
         other => panic!("a wrong token is refused, not answered: {other:?}"),
@@ -244,7 +244,7 @@ fn a_call_with_no_token_at_all_is_a_bad_address_and_not_a_dead_machine() {
     let outcome = probe(&agent.address_with(None), Duration::from_secs(2));
 
     assert!(
-        matches!(outcome, Err(CallError::BadAddress(_))),
+        matches!(outcome, Err(CallError::PairingRequired(_))),
         "a missing token is the caller's problem: {outcome:?}"
     );
 }

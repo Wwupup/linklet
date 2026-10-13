@@ -92,7 +92,7 @@ pub fn serve_connection(
     if let Ok(value) = wire::parse_body(&hello)
         && value.get("pairing").is_some()
     {
-        serve_pairing(&mut connection, &value, expected, pairing);
+        serve_pairing(&mut connection, &value, expected, pairing, paths);
         return;
     }
     let session = match begin_session(&hello, expected) {
@@ -111,7 +111,7 @@ pub fn serve_connection(
             // cannot be**: the session that would seal it is what failed to exist.
             // Nothing in it is worth protecting -- it is one sentence about a public
             // key that did not parse.
-            let refusal = wire::reply_refused(&reason).to_string();
+            let refusal = wire::reply_failure(&reason).to_string();
             let _ = connection.write_frame(Kind::Hello, refusal.as_bytes());
             return;
         }
@@ -157,7 +157,12 @@ fn answer_one(
         // Nothing is logged here either, and for the same reason there is nothing to
         // name: a message that will not open is not a request, and guessing an
         // operation from bytes that failed authentication would be inventing evidence.
-        let refusal = wire::reply_refused(auth::unauthorized_reason()).to_string();
+        let refusal = wire::reply_failure(&linklet_core::result::OperationError::new(
+            linklet_core::result::ErrorCode::AuthenticationFailed,
+            "authenticate",
+            auth::unauthorized_reason(),
+        ))
+        .to_string();
         let _ = connection.write_frame(Kind::Sealed, refusal.as_bytes());
         return;
     }
@@ -252,6 +257,7 @@ fn settle(connection: &mut Connection) {
 fn refusal_reason(reply: &Value) -> Option<String> {
     reply
         .get("error")
+        .and_then(|error| error.get("message"))
         .and_then(Value::as_str)
         .map(str::to_string)
 }
@@ -327,9 +333,8 @@ fn answer(
     let request = wire::parse_body(plaintext).and_then(|value| wire::request_from_json(&value));
 
     match request {
-        Ok(Request::Identity) => Response::Sealed(wire::identity_to_json(
-            "linklet-agent",
-            env!("CARGO_PKG_VERSION"),
+        Ok(Request::Identity) => Response::Sealed(wire::reply_result(
+            linklet_adapters::identity::observe(paths.base(), env!("CARGO_PKG_VERSION")).to_json(),
         )),
         Ok(Request::Run(run)) => Response::Sealed(run_reply(&crate::execute::run(&run))),
         Ok(Request::Push(manifest)) => {
@@ -579,14 +584,21 @@ fn refuse_unreadable(connection: &mut Connection, error: &ConnectionError) {
 /// The reason a refusal would carry: a body that is not a hello, or a public key this
 /// build cannot use. Returned as a sentence rather than a type because the caller
 /// does one thing with either.
-fn begin_session(hello: &[u8], expected: &Token) -> Result<(Value, Box<dyn Sealed>), String> {
+fn begin_session(
+    hello: &[u8],
+    expected: &Token,
+) -> Result<(Value, Box<dyn Sealed>), linklet_core::result::OperationError> {
     let value = wire::parse_body(hello).map_err(|error| refusal_text(&error))?;
     let protocol =
         wire::handshake_protocol_from_json(&value).map_err(|error| refusal_text(&error))?;
     if protocol != wire::PROTOCOL_VERSION {
-        return Err(format!(
-            "protocol {protocol} on the caller and protocol {} here; update both ends",
-            wire::PROTOCOL_VERSION
+        return Err(linklet_core::result::OperationError::new(
+            linklet_core::result::ErrorCode::ProtocolMismatch,
+            "authenticate",
+            format!(
+                "protocol {protocol} on the caller and protocol {} here; update both ends",
+                wire::PROTOCOL_VERSION
+            ),
         ));
     }
     let peer = wire::handshake_public_from_json(&value).map_err(|error| refusal_text(&error))?;
@@ -617,7 +629,13 @@ impl PairingState {
         })
     }
 }
-fn serve_pairing(connection: &mut Connection, hello: &Value, token: &Token, state: &PairingState) {
+fn serve_pairing(
+    connection: &mut Connection,
+    hello: &Value,
+    token: &Token,
+    state: &PairingState,
+    paths: &Destination,
+) {
     let begin = || -> Result<_, String> {
         let message = linklet_core::pairing::read_message(hello)?;
         state
@@ -664,16 +682,20 @@ fn serve_pairing(connection: &mut Connection, hello: &Value, token: &Token, stat
     match finish() {
         Ok(mut session) => {
             let reply = wire::reply_result(
-                serde_json::json!({"token":token.expose(), "name":"linklet-agent", "version":env!("CARGO_PKG_VERSION")}),
+                serde_json::json!({"token":token.expose(), "identity":linklet_adapters::identity::observe(paths.base(), env!("CARGO_PKG_VERSION")).to_json()}),
             );
             let _ = write_reply(connection, session.as_mut(), &reply);
         }
         Err(_) => {
             let _ = connection.write_frame(
                 Kind::Sealed,
-                wire::reply_refused("pairing authentication failed")
-                    .to_string()
-                    .as_bytes(),
+                wire::reply_failure(&linklet_core::result::OperationError::new(
+                    linklet_core::result::ErrorCode::AuthenticationFailed,
+                    "authenticate",
+                    "pairing authentication failed",
+                ))
+                .to_string()
+                .as_bytes(),
             );
         }
     }

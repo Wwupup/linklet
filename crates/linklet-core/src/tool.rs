@@ -42,36 +42,7 @@ pub struct Tool {
     pub input_schema: Value,
 }
 
-/// What a call produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolOutcome {
-    /// The reply body.
-    pub text: String,
-    /// Whether the tool failed to do what it was asked.
-    ///
-    /// Not the same as the news being bad. "Three machines are down" is a
-    /// successful call carrying bad news, and marking it an error would teach
-    /// the agent to retry a tool that worked.
-    pub is_error: bool,
-}
-
-impl ToolOutcome {
-    /// A call that did what it was asked.
-    pub fn ok(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            is_error: false,
-        }
-    }
-
-    /// A call that could not be made, with the reason.
-    pub fn failed(text: impl Into<String>) -> Self {
-        Self {
-            text: text.into(),
-            is_error: true,
-        }
-    }
-}
+pub use crate::result::ToolOutcome;
 
 /// Why a call could not even be dispatched.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -749,6 +720,10 @@ pub fn tool_list_json() -> Value {
                             serde_json::json!(tool.description),
                         ),
                         ("inputSchema".to_string(), tool.input_schema),
+                        (
+                            "outputSchema".to_string(),
+                            crate::result::output_schema(serde_json::json!({"type":"object"})),
+                        ),
                     ]
                     .into_iter()
                     .collect(),

@@ -485,7 +485,7 @@ fn a_request_that_would_stop_the_agent_is_refused_over_the_socket() {
     let CallError::Refused(reason) = &error else {
         panic!("a refusal, and not a dropped connection: {error:?}");
     };
-    assert!(reason.contains("agent"), "{reason}");
+    assert!(reason.message.contains("agent"), "{reason}");
 
     // And the agent is still serving, which is the fact the refusal was protecting.
     assert!(
@@ -512,7 +512,7 @@ fn a_bulk_match_that_was_not_forced_is_refused_over_the_socket() {
     let CallError::Refused(reason) = &error else {
         panic!("a refusal, and not a dropped connection: {error:?}");
     };
-    assert!(reason.contains("--yes"), "{reason}");
+    assert!(reason.message.contains("--yes"), "{reason}");
 }
 
 #[test]

@@ -33,12 +33,28 @@ use linklet_core::transfer::Destination;
 pub fn list(paths: &Destination, path: &str) -> Listing {
     let target = match paths.resolve(path) {
         Ok(target) => target,
-        Err(error) => return could_not_list(path, &error.to_string()),
+        Err(error) => {
+            return could_not_list(
+                path,
+                linklet_core::result::OperationError::new(
+                    linklet_core::result::ErrorCode::InvalidArgument,
+                    "validate",
+                    error.to_string(),
+                ),
+            );
+        }
     };
 
+    let resolved = target.to_string_lossy();
+    let path = resolved.as_ref();
     let metadata = match std::fs::metadata(&target) {
         Ok(metadata) => metadata,
-        Err(error) => return could_not_list(path, &format!("cannot read {path}: {error}")),
+        Err(error) => {
+            return could_not_list(
+                &target.to_string_lossy(),
+                crate::failure::io(error, "read", &target),
+            );
+        }
     };
 
     if !metadata.is_dir() {
@@ -51,7 +67,12 @@ pub fn list(paths: &Destination, path: &str) -> Listing {
 
     let directory = match std::fs::read_dir(&target) {
         Ok(directory) => directory,
-        Err(error) => return could_not_list(path, &format!("cannot list {path}: {error}")),
+        Err(error) => {
+            return could_not_list(
+                &target.to_string_lossy(),
+                crate::failure::io(error, "list", &target),
+            );
+        }
     };
 
     let mut entries = Vec::new();

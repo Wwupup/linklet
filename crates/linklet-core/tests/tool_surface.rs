@@ -451,7 +451,7 @@ fn targets_are_joined_into_the_one_spec_the_parser_takes() {
 
     let outcome = dispatch("check", &arguments, &fake).expect("a valid call");
 
-    assert!(!outcome.is_error);
+    assert!(!outcome.is_error());
     let calls = fake.reachability_calls.borrow();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "a:1,b:2");
@@ -636,7 +636,7 @@ fn bad_news_is_not_an_error() {
     )
     .expect("a valid call");
 
-    assert!(!outcome.is_error, "bad news is not a failed call");
+    assert!(!outcome.is_error(), "bad news is not a failed call");
     assert!(outcome.text.contains("0 of 1 live"));
 }
 
@@ -649,7 +649,7 @@ fn the_testbed_tool_passes_its_two_arguments_through() {
 
     let outcome = dispatch("testbed", &arguments, &fake).expect("a valid call");
 
-    assert!(!outcome.is_error);
+    assert!(!outcome.is_error());
     assert_eq!(
         fake.testbed_calls(),
         vec![("specs/launch.testbed".to_string(), "box-a".to_string())]
@@ -745,7 +745,7 @@ fn the_exec_tool_passes_its_three_arguments_through() {
 
     let outcome = dispatch("exec", &arguments, &fake).expect("a valid call");
 
-    assert!(!outcome.is_error);
+    assert!(!outcome.is_error());
     assert_eq!(
         fake.exec_calls(),
         vec![(
@@ -814,7 +814,7 @@ fn the_push_tool_passes_its_three_arguments_through() {
 
     let outcome = dispatch("push", &arguments, &fake).expect("a valid call");
 
-    assert!(!outcome.is_error);
+    assert!(!outcome.is_error());
     assert_eq!(
         fake.transfer_calls(),
         vec![(
@@ -931,7 +931,7 @@ fn a_transfer_accepts_local_absolute_and_parent_paths() {
             let arguments = serde_json::json!({"agent": "a:1", "from": from, "to": to});
             let outcome = dispatch(tool, &arguments, &fake)
                 .expect("local paths follow filesystem permissions");
-            assert!(!outcome.is_error);
+            assert!(!outcome.is_error());
             assert_eq!(
                 fake.transfer_calls(),
                 vec![("a:1".to_string(), from.to_string(), to.to_string())]

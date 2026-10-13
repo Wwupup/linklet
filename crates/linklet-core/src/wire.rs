@@ -150,7 +150,7 @@ pub fn handshake_to_json(public: &[u8]) -> Value {
 ///
 /// `docs/VERSIONING.md` is the whole policy. `docs/decisions.md` D2 records the cost of the
 /// version this replaces, which did not negotiate at all.
-pub const PROTOCOL_VERSION: i64 = 2;
+pub const PROTOCOL_VERSION: i64 = 3;
 
 /// What a peer speaks when its handshake has no `protocol` field.
 ///
@@ -523,7 +523,7 @@ pub enum Reply {
     ///
     /// **Not a transport failure.** The message arrived, was understood, and says
     /// no; the caller has a sentence to read instead of a socket error to guess at.
-    Refused(String),
+    Refused(crate::result::OperationError),
 }
 
 /// What the agent observed.
@@ -814,7 +814,7 @@ pub fn encode_transfer_reply(outcome: &TransferOutcome) -> Value {
 pub fn transfer_outcome_from_reply(reply: &Reply) -> Result<TransferOutcome, WireError> {
     match reply {
         Reply::Result(value) => transfer_outcome_from_json(value),
-        Reply::Refused(reason) => Err(WireError::BadRequest(reason.clone())),
+        Reply::Refused(reason) => Err(WireError::BadRequest(reason.to_string())),
     }
 }
 
@@ -881,7 +881,12 @@ pub fn reply_result(result: Value) -> Value {
 
 /// A reply that says the request could not be answered.
 pub fn reply_refused(reason: &str) -> Value {
-    serde_json::json!({ "ok": false, "error": reason })
+    reply_failure(&crate::result::OperationError::from(reason))
+}
+
+/// A refusal with a stable category and phase.
+pub fn reply_failure(error: &crate::result::OperationError) -> Value {
+    serde_json::json!({"ok":false,"error":error})
 }
 
 /// A reply from JSON.
@@ -907,9 +912,11 @@ pub fn reply_from_json(value: &Value) -> Result<Reply, WireError> {
     }
 
     match value.get("error") {
-        Some(Value::String(reason)) => Ok(Reply::Refused(reason.clone())),
+        Some(reason @ Value::Object(_)) => serde_json::from_value(reason.clone())
+            .map(Reply::Refused)
+            .map_err(|e| WireError::BadRequest(format!("invalid refusal: {e}"))),
         Some(_) => Err(WireError::BadRequest(
-            "a refusal needs error to be a string".to_string(),
+            "a refusal needs a typed error object".to_string(),
         )),
         None => Err(WireError::BadRequest(
             "a refusal needs an error field".to_string(),
@@ -1675,8 +1682,15 @@ pub fn search_from_reply(reply: &Reply) -> Result<crate::search::Search, WireErr
 
     let problem = match value.get("problem") {
         Some(Value::Null) | None => None,
-        Some(Value::String(problem)) => Some(problem.clone()),
-        Some(_) => return Err(WireError::BadRequest("problem: not a string".to_string())),
+        Some(problem @ Value::Object(_)) => Some(
+            serde_json::from_value(problem.clone())
+                .map_err(|e| WireError::BadRequest(format!("invalid problem: {e}")))?,
+        ),
+        Some(_) => {
+            return Err(WireError::BadRequest(
+                "problem: not a typed error".to_string(),
+            ));
+        }
     };
 
     let total = match value
@@ -1842,8 +1856,15 @@ pub fn ls_listing_from_reply(reply: &Reply) -> Result<crate::listing::Listing, W
 
     let problem = match value.get("problem") {
         Some(Value::Null) | None => None,
-        Some(Value::String(problem)) => Some(problem.clone()),
-        Some(_) => return Err(WireError::BadRequest("problem: not a string".to_string())),
+        Some(problem @ Value::Object(_)) => Some(
+            serde_json::from_value(problem.clone())
+                .map_err(|e| WireError::BadRequest(format!("invalid problem: {e}")))?,
+        ),
+        Some(_) => {
+            return Err(WireError::BadRequest(
+                "problem: not a typed error".to_string(),
+            ));
+        }
     };
 
     let entries_value = value
@@ -1993,7 +2014,7 @@ pub fn run_reply_too_large(outcome: &RunOutcome, ceiling: usize) -> Value {
 
 /// The identity reply, as the agent builds it.
 pub fn identity_to_json(name: &str, version: &str) -> Value {
-    reply_result(serde_json::json!({ "name": name, "version": version }))
+    reply_result(crate::identity::Identity::named(name, version).to_json())
 }
 
 /// The name out of an identity result.
@@ -2002,23 +2023,20 @@ pub fn identity_to_json(name: &str, version: &str) -> Value {
 ///
 /// [`WireError::BadRequest`] when the result is a refusal or holds no name -- the
 /// two ways a caller can be handed something that is not an answer.
-pub fn identity_from_json(reply: &Reply) -> Result<String, WireError> {
+pub fn identity_from_json(reply: &Reply) -> Result<crate::identity::Identity, WireError> {
     let Reply::Result(value) = reply else {
         return Err(WireError::BadRequest(
             "the identity reply is a refusal".to_string(),
         ));
     };
-    let _version = value
-        .get("version")
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| WireError::BadRequest("the identity reply has no version".into()))?;
-    value
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| WireError::BadRequest("the identity reply has no name".to_string()))
+    let identity: crate::identity::Identity = serde_json::from_value(value.clone())
+        .map_err(|e| WireError::BadRequest(format!("invalid identity: {e}")))?;
+    if identity.name.is_empty() || identity.version.is_empty() {
+        return Err(WireError::BadRequest(
+            "identity name and version must be nonempty".into(),
+        ));
+    }
+    Ok(identity)
 }
 
 /// The outcome out of a run reply.
@@ -2030,7 +2048,7 @@ pub fn identity_from_json(reply: &Reply) -> Result<String, WireError> {
 pub fn run_outcome_from_reply(reply: &Reply) -> Result<RunOutcome, WireError> {
     match reply {
         Reply::Result(value) => run_outcome_from_json(value),
-        Reply::Refused(reason) => Err(WireError::BadRequest(reason.clone())),
+        Reply::Refused(reason) => Err(WireError::BadRequest(reason.to_string())),
     }
 }
 

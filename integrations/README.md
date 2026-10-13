@@ -138,7 +138,7 @@ Keep the ordinary agent process running in the intended account and startup
 directory. Exiting it makes the target offline. This workflow installs no service,
 autostart task, supervisor, or automatic restart. Authenticate with probe before
 using it; the tool returns the remote name and version on success. Upgrade both
-binaries together for protocol 2.
+binaries together for protocol 3.
 
 ## Reference
 

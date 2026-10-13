@@ -11,12 +11,12 @@ name = "linklet"
 path = "src/main.rs"
 
 [dependencies]
+serde_json.workspace = true
 linklet-core = { path = "../linklet-core" }
 linklet-adapters = { path = "../linklet-adapters" }
 linklet-client = { path = "../linklet-client" }
 
 [dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true

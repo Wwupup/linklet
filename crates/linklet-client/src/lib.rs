@@ -40,6 +40,15 @@ use linklet_core::wire::{
 /// ran and failed" send whoever is reading to completely different places.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallError {
+    /// No credential has been saved for the requested target.
+    PairingRequired(String),
+    /// A request may have executed, but its result could not be recovered.
+    Unknown {
+        /// Last phase observed by the client.
+        phase: String,
+        /// The underlying diagnostic.
+        reason: String,
+    },
     /// The address is not something this can connect to.
     BadAddress(String),
     /// The connection could not be made or was lost.
@@ -71,10 +80,44 @@ pub enum CallError {
     /// which sends the reader to the network for a mistake in their own tree.
     Local(String),
     /// The agent answered, and the answer was no.
-    Refused(String),
+    Refused(linklet_core::result::OperationError),
 }
 
 impl CallError {
+    /// Stable diagnostic used by both CLI and MCP, without interpreting prose.
+    pub fn diagnostic(&self) -> linklet_core::result::OperationError {
+        use linklet_core::result::{ErrorCode as C, OperationError};
+        let (code, phase) = match self {
+            Self::BadAddress(_) => (C::InvalidArgument, "validate"),
+            Self::Local(_) => (C::LocalConfigError, "local"),
+            Self::PairingRequired(_) => (C::PairingRequired, "configure"),
+            Self::Connect(_) => (C::ConnectionFailed, "connect"),
+            Self::VersionMismatch(_) => (C::ProtocolMismatch, "authenticate"),
+            Self::Transport(_) => (C::ConnectionFailed, "receive"),
+            Self::NoReply { .. } => (C::DeadlineExceeded, "await_reply"),
+            Self::Protocol(_) => (C::InvalidReply, "receive"),
+            Self::Refused(error) => return error.clone(),
+            Self::Unknown { phase, reason } => {
+                return OperationError::new(
+                    C::ResultUnknown,
+                    phase,
+                    format!("The request may have executed; its result was not received: {reason}"),
+                );
+            }
+        };
+        OperationError::new(code, phase, render_call_error(self))
+    }
+
+    fn after_delivery(self, phase: &str) -> Self {
+        match self {
+            Self::Refused(_) | Self::Unknown { .. } => self,
+            _ => Self::Unknown {
+                phase: phase.into(),
+                reason: self.to_string(),
+            },
+        }
+    }
+
     /// Whether the **agent** declined, as opposed to never being reached.
     ///
     /// # Why this is a method and not a substring search
@@ -138,7 +181,7 @@ mod classification {
     #[test]
     fn an_agent_that_said_no_is_an_agent_that_refused() {
         // The other arm, so the fix cannot be "return false always".
-        assert!(CallError::Refused("the token is missing or wrong".to_string()).was_refused());
+        assert!(CallError::Refused("the token is missing or wrong".into()).was_refused());
     }
 
     #[test]
@@ -166,7 +209,11 @@ impl std::fmt::Display for CallError {
             Self::Protocol(problem) | Self::VersionMismatch(problem) => {
                 write!(f, "protocol: {problem}")
             }
-            Self::Local(problem) => write!(f, "{problem}"),
+            Self::Local(problem) | Self::PairingRequired(problem) => write!(f, "{problem}"),
+            Self::Unknown { phase, reason } => write!(
+                f,
+                "result unknown during {phase}; the request may have executed: {reason}"
+            ),
             Self::Refused(problem) => write!(f, "the agent refused: {problem}"),
         }
     }
@@ -286,7 +333,7 @@ pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, C
 
     match reply {
         Reply::Result(value) => wire::run_outcome_from_json(&value)
-            .map_err(|error| CallError::Protocol(error.to_string())),
+            .map_err(|error| CallError::Protocol(error.to_string()).after_delivery("decode_reply")),
         Reply::Refused(reason) => Err(CallError::Refused(reason)),
     }
 }
@@ -301,7 +348,7 @@ pub fn run(address: &AgentAddress, request: &RunRequest) -> Result<RunOutcome, C
 /// It is sealed and it needs a token, which is worth being explicit about: the
 /// expensive part is the handshake, and a plaintext version of this question would be a
 /// version an unauthenticated caller could ask.
-pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
+pub fn identity(address: &AgentAddress) -> Result<linklet_core::identity::Identity, CallError> {
     let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
     let reply = ask(
         &mut connection,
@@ -318,9 +365,9 @@ pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
     /// The agent answered with its identity.
-    Answered(String),
+    Answered(Box<linklet_core::identity::Identity>),
     /// The agent answered, and the answer was no.
-    Refused(String),
+    Refused(linklet_core::result::OperationError),
 }
 
 impl Liveness {
@@ -333,9 +380,10 @@ impl Liveness {
     }
 
     /// Why, whichever arm this is.
-    pub fn detail(&self) -> &str {
+    pub fn detail(&self) -> String {
         match self {
-            Self::Answered(detail) | Self::Refused(detail) => detail,
+            Self::Answered(detail) => detail.to_string(),
+            Self::Refused(detail) => detail.to_string(),
         }
     }
 }
@@ -368,13 +416,7 @@ pub fn probe(address: &AgentAddress, budget: Duration) -> Result<Liveness, CallE
         // Two arms and no catch-all: `Reply` has exactly these two shapes, so a third one added
         // later is a compile error here rather than a probe that quietly calls it a failure.
         reply @ Reply::Result(_) => wire::identity_from_json(&reply)
-            .map(|name| {
-                let version = match &reply {
-                    Reply::Result(value) => value["version"].as_str().unwrap_or_default(),
-                    _ => "",
-                };
-                Liveness::Answered(format!("{name} {version}"))
-            })
+            .map(|identity| Liveness::Answered(Box::new(identity)))
             .map_err(|error| CallError::Protocol(error.to_string())),
         Reply::Refused(reason) => Ok(Liveness::Refused(reason)),
     }
@@ -447,11 +489,15 @@ pub fn push(
         }
     }
 
-    send_body(&mut connection, session.as_mut(), local, &manifest).map_err(transfer_failure)?;
+    send_body(&mut connection, session.as_mut(), local, &manifest)
+        .map_err(|e| transfer_failure(e).after_delivery("send_body"))?;
 
-    match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)? {
-        Reply::Result(value) => wire::transfer_outcome_from_json(&value)
-            .map_err(|error| CallError::Protocol(error.to_string())),
+    match read_reply(&mut connection, session.as_mut(), TRANSFER_ALLOWANCE)
+        .map_err(|e| e.after_delivery("await_commit"))?
+    {
+        Reply::Result(value) => wire::transfer_outcome_from_json(&value).map_err(|error| {
+            CallError::Protocol(error.to_string()).after_delivery("decode_commit")
+        }),
         Reply::Refused(reason) => Err(CallError::Refused(reason)),
     }
 }
@@ -619,7 +665,7 @@ pub fn spawn(
     match reply {
         Reply::Refused(reason) => Err(CallError::Refused(reason)),
         Reply::Result(_) => wire::spawn_report_from_reply(&reply)
-            .map_err(|error| CallError::Protocol(error.to_string())),
+            .map_err(|error| CallError::Protocol(error.to_string()).after_delivery("decode_reply")),
     }
 }
 
@@ -658,7 +704,7 @@ pub fn kill(
     match reply {
         Reply::Refused(reason) => Err(CallError::Refused(reason)),
         Reply::Result(_) => wire::kill_report_from_reply(&reply)
-            .map_err(|error| CallError::Protocol(error.to_string())),
+            .map_err(|error| CallError::Protocol(error.to_string()).after_delivery("decode_reply")),
     }
 }
 
@@ -790,7 +836,7 @@ fn begin(
     budget: Duration,
 ) -> Result<(Connection, Box<dyn Sealed>), CallError> {
     let Some(token) = address.token.as_ref() else {
-        return Err(CallError::BadAddress(
+        return Err(CallError::PairingRequired(
             "a sealed call needs a token: pair through CLI/MCP".to_string(),
         ));
     };
@@ -851,7 +897,20 @@ fn ask(
     budget: Duration,
 ) -> Result<Reply, CallError> {
     send_request(connection, session, request)?;
-    read_reply(connection, session, budget)
+    read_reply(connection, session, budget).map_err(|error| {
+        if changes_machine(request) {
+            error.after_delivery("await_reply")
+        } else {
+            error
+        }
+    })
+}
+
+fn changes_machine(request: &Request) -> bool {
+    matches!(
+        request,
+        Request::Run(_) | Request::Spawn(_) | Request::Kill(_) | Request::Push(_)
+    )
 }
 
 /// Writes one sealed request.
@@ -868,7 +927,14 @@ fn send_request(
         .map_err(|error| CallError::Protocol(format!("cannot seal the request: {error}")))?;
     connection
         .write_frame(Kind::Sealed, &sealed)
-        .map_err(transport)
+        .map_err(|error| {
+            let error = transport(error);
+            if changes_machine(request) {
+                error.after_delivery("send_request")
+            } else {
+                error
+            }
+        })
 }
 
 /// Reads one sealed reply, or a refusal that arrived unsealed.
@@ -969,7 +1035,8 @@ pub fn render_call_error(error: &CallError) -> String {
         // No prefix: the reason already names the file and the problem, and any prefix here
         // would be a claim about where the failure came from -- which is the mistake this
         // variant exists to stop making.
-        CallError::Local(problem) => problem.clone(),
+        CallError::Local(problem) | CallError::PairingRequired(problem) => problem.clone(),
+        CallError::Unknown { .. } => error.to_string(),
         CallError::Refused(problem) => format!("the agent refused the request: {problem}"),
     }
 }
@@ -984,7 +1051,10 @@ impl From<WireError> for CallError {
 
 /// Authenticates a permanent six-digit code and returns a strong credential plus target identity.
 /// Nothing is persisted here. The caller must save the token privately and never display it.
-pub fn pair(agent: &str, code: &str) -> Result<(Token, String), CallError> {
+pub fn pair(
+    agent: &str,
+    code: &str,
+) -> Result<(Token, linklet_core::identity::Identity), CallError> {
     linklet_core::pairing::validate_code(code).map_err(CallError::Local)?;
     let address = AgentAddress::new(agent)?;
     let (message, pending) =
@@ -1004,7 +1074,13 @@ pub fn pair(agent: &str, code: &str) -> Result<(Token, String), CallError> {
         Reply::Refused(r) => return Err(CallError::Refused(r)),
     };
     let message = linklet_core::pairing::read_message(&value).map_err(CallError::Protocol)?;
-    let (proof, mut session) = pending.finish(code, &message).map_err(CallError::Refused)?;
+    let (proof, mut session) = pending.finish(code, &message).map_err(|error| {
+        CallError::Refused(linklet_core::result::OperationError::new(
+            linklet_core::result::ErrorCode::AuthenticationFailed,
+            "authenticate",
+            error,
+        ))
+    })?;
     connection
         .write_frame(
             Kind::Hello,
@@ -1028,13 +1104,7 @@ pub fn pair(agent: &str, code: &str) -> Result<(Token, String), CallError> {
             .ok_or_else(|| protocol("pairing reply has no token".into()))?,
     )
     .map_err(|e| protocol(e.to_string()))?;
-    let name = value["name"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| protocol("pairing reply has no name".into()))?;
-    let version = value["version"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| protocol("pairing reply has no version".into()))?;
-    Ok((token, format!("{name} {version}")))
+    let identity = wire::identity_from_json(&Reply::Result(value["identity"].clone()))
+        .map_err(|e| protocol(e.to_string()))?;
+    Ok((token, identity))
 }

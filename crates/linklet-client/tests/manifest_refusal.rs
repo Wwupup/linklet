@@ -176,7 +176,7 @@ fn a_manifest_refused_before_the_body_reports_the_reason_and_not_a_broken_connec
 
     match error {
         CallError::Refused(text) => assert!(
-            text.contains("names a device"),
+            text.message.contains("names a device"),
             "the refusal should carry the agent's own words: {text}"
         ),
         other => panic!(

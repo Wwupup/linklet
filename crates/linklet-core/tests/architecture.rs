@@ -71,6 +71,10 @@ fn declared_dependencies(crate_name: &str) -> Vec<String> {
 /// This checks declared dependencies, not calls to I/O APIs in them or in std.
 const ALLOWED_DEPENDENCIES: &[(&str, &str)] = &[
     (
+        "serde",
+        "Derives for in-memory typed result and wire serialization; no I/O APIs.",
+    ),
+    (
         "encoding_rs",
         "In-memory incremental decoders track multibyte boundaries in discarded output; no I/O APIs.",
     ),

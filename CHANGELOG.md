@@ -13,6 +13,10 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Added
 
+- Next minor: all 14 MCP tools declare outputSchema and return structuredContent.
+  Stable error categories distinguish known failures from unknown results after
+  possible execution. Pair and probe return authenticated target process context.
+
 - Next minor: zero-argument target startup generates a permanent six-digit pairing
   code and a strong saved credential. New controllers can pair unattended through
   CLI or MCP `pair`; later calls load the saved per-target token automatically.
@@ -22,6 +26,10 @@ to answer one question: **what can I do now that I could not do before?**
   Protocol 2 command behavior is unchanged; no release or deployment is performed.
 
 ### Changed
+
+- **Breaking, next minor:** protocol 3 adds typed failures and target context.
+  Upgrade both binaries together; saved pairing credentials remain valid.
+  MCP negotiates its supported 2025-06-18 version. No release or deployment.
 
 - **Breaking, next minor:** removed `LINKLET_TOKEN`, `LINKLET_TOKEN_FILE`, and
   agent `--token` / `--token-file`. Pairing and saved per-target credentials are

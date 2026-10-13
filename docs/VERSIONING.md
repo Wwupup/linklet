@@ -10,11 +10,12 @@ be deployed as a pair. Nothing here is published to a registry, and no crate is 
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
-Current development uses **protocol 2**, planned for the next minor release.
-Command streams are metadata objects with bounded output tails. Upgrade the host
-and agent together; protocol 1 peers are refused before a command is accepted.
+Current development uses **protocol 3**, planned for the next minor release.
+Typed failures and authenticated target context accompany bounded command streams.
+Upgrade the host and agent together; protocol 1 and 2 peers are refused before a
+command is accepted. Existing saved pairing credentials remain valid.
 This change is not a release or deployment. Permanent pairing adds a separate
-`opaque-v1` hello without reusing existing fields, so the command protocol stays 2.
+`opaque-v1` hello without reusing existing fields, its original introduction kept command protocol 2.
 Older agents reject the new hello. Both binaries need the new build to pair; this
 addition belongs to the next minor release. See `docs/pairing.md`.
 

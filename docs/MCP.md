@@ -78,7 +78,7 @@ with a valid authenticated identity, and includes the remote name and version.
 `exec.agents` accepts 1..=256 host:port strings, runs four at once, and returns
 results in input order, including duplicate targets. `agent` and `agents` are
 mutually exclusive. Command output retains the last 1 MiB per stream and names
-truncation, encoding, byte counts, and decoding loss. Protocol 2 requires both
+truncation, encoding, byte counts, and decoding loss. Protocol 3 requires both
 binaries to be upgraded together.
 
 ## The two places a caller goes wrong
@@ -111,8 +111,18 @@ live 10.0.0.5:8787 connected
 1 of 1 live
 ```
 
-Plain text, not JSON inside JSON: the protocol already wraps the result, a second encoding would
-be a second thing to document, and a line of text is easier for a reader than an escaped string.
+Every tool declares an outputSchema and returns structuredContent alongside readable text.
+The object contains status (ok, error, or unknown), target, data, error, and warnings.
+An error carries a stable code, phase, and original message. Unknown means a request
+may have changed the target but no valid outcome arrived; it is not evidence that
+nothing ran, and Linklet never automatically retries it. Both error and unknown
+set isError. Query completeness remains separate from execution success.
+
+Pair and probe return timestamped target context: name, version, hostname, OS,
+architecture, actual account, current elevation, execution shell, startup directory,
+and limits. Unknown auxiliary facts are null with warnings; they do not undo pairing.
+Saved credentials never appear in results. A sudo-capable account is not reported
+as elevated unless the agent itself is currently running as root.
 
 `exec` sets `isError=true` for nonzero command exits, timeouts, or failed calls.
 A batch is an error if any target fails. `probe` is an error unless authentication
@@ -150,16 +160,15 @@ option has been removed; setting the startup directory only selects a relative-p
 Remote file paths still pass through `Destination::resolve` for platform-specific
 checks: empty paths, NUL bytes, Windows devices, alternate streams and ambiguous names
 are refused. File-type validation, size limits and digest verification are unchanged.
-See `docs/transfer.md` T1. Authentication is unchanged; command replies use protocol 2.
+See `docs/transfer.md` T1. Authentication is unchanged; command replies use protocol 3.
 
 ## Protocol decisions worth knowing
 
 - **Newline-delimited JSON**, one message per line. Not `Content-Length` framing: reading the
   wrong protocol gives a server that hangs on the first message with no error.
-- **The client's protocol version is echoed, not checked.** Comparing it against a constant
-  would break the day a client moves on, and the client is better placed to decide whether it
-  can read the replies. (This is the MCP protocol version and has nothing to do with
-  `docs/VERSIONING.md`, which is the number the agent and the tool exchange.)
+- **MCP negotiates 2025-06-18**, the version implemented by this server. An unsupported
+  requested version receives this supported version for the client to accept or reject.
+  This is separate from Linklet wire protocol 3.
 - **A notification gets no reply.** JSON-RPC forbids one.
 - **A bad tool call is a result with `isError`, not a protocol error.** The request was well
   formed; the answer is "you called it wrong". A JSON-RPC error would say the transport failed.

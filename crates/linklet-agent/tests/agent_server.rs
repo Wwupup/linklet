@@ -381,7 +381,7 @@ fn a_pull_of_something_that_is_not_a_file_is_refused_rather_than_opened() {
 /// The reason out of a reply that must be a refusal.
 fn refusal(reply: Reply) -> String {
     match reply {
-        Reply::Refused(reason) => reason,
+        Reply::Refused(reason) => reason.to_string(),
         Reply::Result(value) => panic!("expected a refusal and got a result: {value:?}"),
     }
 }

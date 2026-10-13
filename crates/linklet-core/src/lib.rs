@@ -38,6 +38,8 @@ pub mod output;
 pub mod pairing;
 mod probe;
 pub mod process;
+/// Typed operation outcomes shared by CLI and MCP.
+pub mod result;
 pub mod search;
 mod target;
 pub mod testbed;
@@ -56,3 +58,6 @@ pub use tool::{
     DEFAULT_EXEC_TIMEOUT_SECONDS, MAX_DESCRIPTION_CHARS, Tool, ToolError, ToolOutcome, ToolRunner,
     dispatch, tool_list_json, tools, total_description_chars,
 };
+
+/// Authenticated remote process context.
+pub mod identity;

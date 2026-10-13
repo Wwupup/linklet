@@ -313,7 +313,7 @@ pub struct Search {
     /// nothing was looked at**, which is the distinction this whole type is arranged around.
     pub searched: bool,
     /// Why the search could not run, when it could not.
-    pub problem: Option<String>,
+    pub problem: Option<crate::result::OperationError>,
     /// Whether the file was cut short: past the byte ceiling, or the limit reached.
     pub truncated: bool,
     /// The bytes that were read.
@@ -377,12 +377,16 @@ pub struct Match {
 /// **Not an empty search.** It carries the reason and reports `searched: false`, so a caller
 /// that would have concluded "this log has no errors" sees a failure to look instead. That
 /// is `docs/ROADMAP.md` M10's first lesson in one constructor.
-pub fn could_not_search(path: &str, reason: &str, encoding: Encoding) -> Search {
+pub fn could_not_search(
+    path: &str,
+    reason: impl Into<crate::result::OperationError>,
+    encoding: Encoding,
+) -> Search {
     Search {
         lines: Vec::new(),
         total: None,
         searched: false,
-        problem: Some(reason.to_string()),
+        problem: Some(reason.into()),
         truncated: false,
         bytes_read: 0,
         file_bytes: None,
@@ -490,7 +494,11 @@ pub fn render(search: &Search) -> String {
         return format!(
             "could not search {}: {}",
             search.path,
-            search.problem.as_deref().unwrap_or("no reason given")
+            search
+                .problem
+                .as_ref()
+                .map(|e| e.message.as_str())
+                .unwrap_or("no reason given")
         );
     }
 
@@ -761,7 +769,10 @@ mod tests {
         assert!(!search.searched);
         assert_eq!(search.total, None);
         assert!(search.lines.is_empty(), "there is nothing to report");
-        assert_eq!(search.problem.as_deref(), Some("no such file"));
+        assert_eq!(
+            search.problem.as_ref().map(|e| e.message.as_str()),
+            Some("no such file")
+        );
 
         let rendered = render(&search);
         assert!(

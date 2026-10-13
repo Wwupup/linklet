@@ -11,10 +11,7 @@
 //! - **No `Content-Length` framing.** That is LSP's transport, not MCP's over
 //!   stdio. Reading the wrong protocol produces a server that hangs at the first
 //!   message with no error, which is a memorable afternoon.
-//! - **No version negotiation logic.** See [`handle`]: the client's version is
-//!   echoed back. Checking it would be checking a string against a date, and the
-//!   only thing that matters is whether the client can parse the replies, which
-//!   the client is better placed to decide.
+//! - Only the implemented MCP version is advertised during initialization.
 //! - **No batching.** MCP does not use JSON-RPC batches, and accepting one would
 //!   mean an array where an object is expected, at a point where a wrong guess
 //!   silently ignores half a request.
@@ -24,11 +21,7 @@ use std::io::{BufRead, Write};
 use linklet_core::{dispatch, tool_list_json};
 use serde_json::Value;
 
-/// The protocol version this server replies with when the client did not say.
-///
-/// Only a fallback. A client that names a version gets its own back, so this
-/// constant is not a compatibility claim -- it is what to write when there is
-/// nothing to echo.
+/// The MCP version implemented by this server and returned during negotiation.
 pub const FALLBACK_PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// The name and version this server reports about itself.
@@ -85,7 +78,7 @@ pub fn handle(message: &Value, run_tool: &RunTool<'_>) -> Action {
         "initialize" => Action::Reply(reply(
             &id,
             serde_json::json!({
-                "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or(FALLBACK_PROTOCOL_VERSION),
+                "protocolVersion": FALLBACK_PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}
             }),
@@ -99,16 +92,22 @@ pub fn handle(message: &Value, run_tool: &RunTool<'_>) -> Action {
                 .cloned()
                 .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
-            let (text, is_error) = match dispatch(name, &arguments, run_tool) {
-                Ok(outcome) => (outcome.text, outcome.is_error),
-                // Dispatch failures belong to the tool result, not the transport.
-                Err(error) => (error.to_string(), true),
+            let outcome = match dispatch(name, &arguments, run_tool) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    linklet_core::ToolOutcome::failure(linklet_core::result::OperationError::new(
+                        linklet_core::result::ErrorCode::InvalidArgument,
+                        "validate",
+                        error.to_string(),
+                    ))
+                }
             };
             Action::Reply(reply(
                 &id,
                 serde_json::json!({
-                    "content": [{"type": "text", "text": text}],
-                    "isError": is_error
+                    "content": [{"type": "text", "text": outcome.text}],
+                    "isError": outcome.is_error(),
+                    "structuredContent": outcome.structured()
                 }),
             ))
         }
