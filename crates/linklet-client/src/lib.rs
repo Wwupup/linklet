@@ -44,6 +44,10 @@ pub enum CallError {
     BadAddress(String),
     /// The connection could not be made or was lost.
     Transport(String),
+    /// No connection to the agent could be established.
+    Connect(String),
+    /// The handshake names a different protocol version.
+    VersionMismatch(String),
     /// The request went out and no reply came back inside the budget.
     ///
     /// Separate from [`CallError::Transport`] because the two are different facts
@@ -157,9 +161,11 @@ impl std::fmt::Display for CallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BadAddress(problem) => write!(f, "address: {problem}"),
-            Self::Transport(problem) => write!(f, "{problem}"),
+            Self::Transport(problem) | Self::Connect(problem) => write!(f, "{problem}"),
             Self::NoReply { millis } => write!(f, "no reply within {millis} ms"),
-            Self::Protocol(problem) => write!(f, "protocol: {problem}"),
+            Self::Protocol(problem) | Self::VersionMismatch(problem) => {
+                write!(f, "protocol: {problem}")
+            }
             Self::Local(problem) => write!(f, "{problem}"),
             Self::Refused(problem) => write!(f, "the agent refused: {problem}"),
         }
@@ -308,13 +314,8 @@ pub fn identity(address: &AgentAddress) -> Result<String, CallError> {
     wire::identity_from_json(&reply).map_err(|error| CallError::Protocol(error.to_string()))
 }
 
-/// What an agent did when it was asked whether it is working.
-///
-/// Two arms and not a `Result<String, CallError>`, because **a refusal is an answer**. A
-/// supervisor watching an agent needs to know that it is alive, and an agent that says no to a
-/// request has demonstrated exactly that. Reporting a refusal as a failure would have a
-/// supervisor restarting healthy processes -- and it would do it most often in the one
-/// situation where restarting helps least, which is an operator holding the wrong secret.
+/// The authenticated identity or explicit refusal returned by a probe.
+/// A refusal is retained as a typed answer, but CLI and MCP treat it as unusable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Liveness {
     /// The agent answered with its identity.
@@ -368,7 +369,13 @@ pub fn probe(address: &AgentAddress, budget: Duration) -> Result<Liveness, CallE
         // Two arms and no catch-all: `Reply` has exactly these two shapes, so a third one added
         // later is a compile error here rather than a probe that quietly calls it a failure.
         reply @ Reply::Result(_) => wire::identity_from_json(&reply)
-            .map(Liveness::Answered)
+            .map(|name| {
+                let version = match &reply {
+                    Reply::Result(value) => value["version"].as_str().unwrap_or_default(),
+                    _ => "",
+                };
+                Liveness::Answered(format!("{name} {version}"))
+            })
             .map_err(|error| CallError::Protocol(error.to_string())),
         Reply::Refused(reason) => Ok(Liveness::Refused(reason)),
     }
@@ -809,17 +816,11 @@ fn begin(
             let theirs = wire::handshake_public_from_json(&value)
                 .map_err(|error| protocol(error.to_string()))?;
 
-            // **The one place the two ends compare what they speak**, and it is deliberately a
-            // check and not a gate. Refusing a mismatch outright would make this build unable to
-            // talk to anything older than itself, which is the failure the number was added to
-            // prevent -- an old agent that can serve every request a caller makes is a working
-            // deployment, not an error. What it refuses is *silence*: without this, the caller
-            // learns about the skew from whichever operation happens to need a feature the
-            // agent does not have, if it ever asks for one, in the words "not one of ...".
+            // Protocol mismatches are rejected before sending a sealed operation.
             let peer = wire::handshake_protocol_from_json(&value)
                 .map_err(|error| protocol(error.to_string()))?;
             if peer != wire::PROTOCOL_VERSION {
-                return Err(CallError::Protocol(protocol_mismatch(peer)));
+                return Err(CallError::VersionMismatch(protocol_mismatch(peer)));
             }
 
             theirs
@@ -923,8 +924,8 @@ fn connect(address: &AgentAddress, budget: Duration) -> Result<Connection, CallE
         )));
     };
 
-    let stream = TcpStream::connect_timeout(&target, CONNECT_BUDGET)
-        .map_err(|e| CallError::Transport(format!("cannot reach {}: {e}", address.text)))?;
+    let stream = TcpStream::connect_timeout(&target, CONNECT_BUDGET.min(budget))
+        .map_err(|e| CallError::Connect(format!("cannot reach {}: {e}", address.text)))?;
 
     Ok(Connection::with_budget(stream, budget))
 }
@@ -959,9 +960,13 @@ fn protocol(problem: String) -> CallError {
 pub fn render_call_error(error: &CallError) -> String {
     match error {
         CallError::BadAddress(problem) => format!("bad address: {problem}"),
-        CallError::Transport(problem) => format!("could not reach the agent: {problem}"),
+        CallError::Transport(problem) | CallError::Connect(problem) => {
+            format!("could not reach the agent: {problem}")
+        }
         CallError::NoReply { millis } => format!("no reply within {millis} ms"),
-        CallError::Protocol(problem) => format!("the agent's reply was not understood: {problem}"),
+        CallError::Protocol(problem) | CallError::VersionMismatch(problem) => {
+            format!("the agent's reply was not understood: {problem}")
+        }
         // No prefix: the reason already names the file and the problem, and any prefix here
         // would be a claim about where the failure came from -- which is the mistake this
         // variant exists to stop making.

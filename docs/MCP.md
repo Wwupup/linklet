@@ -44,15 +44,14 @@ secret is named once**: a token file and a token together are refused rather tha
 because the two are two answers to one question and whichever lost would be the one the
 operator believed was in force.
 
-**A wrong token looks like a wrong token**, and a wrong *file* looks like it too: every tool
-that needs the secret answers "the token is missing or wrong", and the server's own stderr
-names the file it could not read or the two sources it was given. On the host that is reported
-rather than fatal, deliberately -- `check` and `testbed` need no secret, and a mistake in the
-token must not take away a capability that never used it.
+**A wrong token is an authentication refusal.** `probe` reports missing or unreadable
+local token configuration separately (exit 2). Other authenticated calls also report
+configuration details on stderr. Token configuration does not disable `check`,
+`discover`, or `testbed`, which need no secret.
 
 Run `linklet probe --agent <host:port>` before wiring a client up. It completes a handshake and
 reads a reply, so it answers whether the token and the agent agree (exit 0) rather than whether
-something is listening. `docs/smoke.md` says what the four codes mean and why the difference
+something is listening. `docs/smoke.md` says what the five codes mean and why the difference
 from `check` matters.
 
 ## The surface
@@ -106,10 +105,8 @@ live 10.0.0.5:8787 connected
 Plain text, not JSON inside JSON: the protocol already wraps the result, a second encoding would
 be a second thing to document, and a line of text is easier for a reader than an escaped string.
 
-**`isError` is true only when the call could not be made.** Every machine being down is a
-successful call carrying bad news, and marking it an error would teach an agent to retry a tool
-that worked. This is the distinction the whole project is arranged around: *it ran and failed*
-is not *it never ran*.
+`exec` sets `isError=true` for nonzero command exits, timeouts, or failed calls.
+Truncation alone does not fail execution. Empty query results are not errors.
 
 The same holds inside a result. `ps` on an empty machine answers with the counts that make the
 emptiness readable; `ls` distinguishes a directory that is empty from one that is not there;

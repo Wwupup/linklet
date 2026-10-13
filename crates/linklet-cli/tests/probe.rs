@@ -139,6 +139,8 @@ fn a_working_agent_exits_zero_and_says_it_answered() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("answered"), "{stdout}");
+    assert!(stdout.contains("linklet-agent"), "{stdout}");
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")), "{stdout}");
 }
 
 #[test]
@@ -172,7 +174,7 @@ fn a_socket_that_never_answers_exits_four_because_a_supervisor_kills_it_first() 
 }
 
 #[test]
-fn a_wrong_token_still_exits_zero_because_the_agent_is_running() {
+fn a_wrong_token_exits_three() {
     // The rule that keeps a supervisor from restarting healthy processes: liveness is not
     // authorization. An operator holding the wrong secret would otherwise have their agent
     // restarted in a loop, which fixes nothing and hides the real problem.
@@ -185,7 +187,7 @@ fn a_wrong_token_still_exits_zero_because_the_agent_is_running() {
 
     assert_eq!(
         output.status.code(),
-        Some(0),
+        Some(3),
         "stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
@@ -205,4 +207,46 @@ fn a_spec_nobody_can_read_exits_two_and_not_one() {
         "stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+#[test]
+fn local_token_configuration_errors_exit_two() {
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
+        .args(["probe", "--agent", "127.0.0.1:1"])
+        .env_remove("LINKLET_TOKEN")
+        .env("LINKLET_TOKEN_FILE", "missing-token-file-for-probe")
+        .output()
+        .expect("probe");
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot read"));
+}
+
+#[test]
+fn handshake_version_rejection_and_invalid_reply_have_distinct_codes() {
+    use linklet_adapters::Connection;
+    use linklet_core::{frame::Kind, wire};
+    for (payload, code) in [
+        (
+            wire::reply_result(
+                serde_json::json!({"protocol":1,"ephemeral_public":"00".repeat(32)}),
+            )
+            .to_string(),
+            3,
+        ),
+        ("not-json".to_string(), 4),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let port = listener.local_addr().expect("address").port();
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("connection");
+            let mut connection = Connection::with_budget(stream, std::time::Duration::from_secs(3));
+            connection.read_frame(Kind::Hello).expect("hello");
+            connection
+                .write_frame(Kind::Hello, payload.as_bytes())
+                .expect("reply");
+        });
+        let output = probe(&format!("127.0.0.1:{port}"), TEST_TOKEN);
+        peer.join().expect("peer finished");
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+    }
 }

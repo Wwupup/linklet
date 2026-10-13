@@ -13,6 +13,11 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Changed
 
+- Next minor: help and version queries exit 0. Single exec preserves the remote
+  exit code (including full Windows statuses); batches exit 1 if any target fails.
+- Probe now verifies authenticated usability: 0 valid identity, 1 connection
+  failure, 2 arguments/local configuration, 3 authentication/protocol rejection,
+  4 timeout/invalid reply. Success includes remote name and version.
 - Next minor: protocol 2 replaces flat command streams with objects containing
   text, total_bytes, retained_bytes, encoding, truncated, lossy, and decode_error.
   Upgrade both binaries together; protocol 1 is rejected during the handshake.

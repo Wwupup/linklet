@@ -365,7 +365,7 @@ fn help_lists_both_transfer_commands() {
     let output = linklet(&["--help"]);
     let text = stdout(&output);
 
-    assert_eq!(code(&output), ExitCode::USAGE);
+    assert_eq!(code(&output), ExitCode::SUCCESS);
     assert!(text.contains("linklet push"), "{text}");
     assert!(text.contains("linklet pull"), "{text}");
 }

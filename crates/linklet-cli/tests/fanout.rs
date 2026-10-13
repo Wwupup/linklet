@@ -247,8 +247,8 @@ fn a_command_that_ran_and_failed_is_still_a_run() {
 
     assert_eq!(
         output.status.code(),
-        Some(i32::from(ExitCode::SUCCESS)),
-        "the fan-out succeeded; the command is what failed"
+        Some(i32::from(ExitCode::NOT_ALL_ALIVE)),
+        "the batch must fail when a command fails"
     );
     let text = lines(&output);
     assert_eq!(text[0], "1 of 1 ran", "{text:#?}");
@@ -310,4 +310,38 @@ fn a_target_from_discovery_is_a_target_the_other_commands_accept() {
         Some(i32::from(ExitCode::USAGE)),
         "and a bare host is not, which is why discovery has to add the port it scanned"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn single_exec_preserves_the_full_windows_exit_code() {
+    let agent = Agent::start(TEST_TOKEN);
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
+        .env("LINKLET_TOKEN", TEST_TOKEN)
+        .env_remove("LINKLET_TOKEN_FILE")
+        .args(["exec", "--agent", &agent.address, "exit 256"])
+        .output()
+        .expect("exec");
+    assert_eq!(output.status.code(), Some(256));
+}
+
+#[test]
+fn remote_help_and_same_named_flags_are_transmitted() {
+    let agent = Agent::start(TEST_TOKEN);
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
+        .env("LINKLET_TOKEN", TEST_TOKEN)
+        .env_remove("LINKLET_TOKEN_FILE")
+        .args([
+            "exec",
+            "--agent",
+            &agent.address,
+            "echo",
+            "--help",
+            "--timeout",
+            "9",
+        ])
+        .output()
+        .expect("exec");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--help --timeout 9"));
 }

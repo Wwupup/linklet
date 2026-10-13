@@ -6,7 +6,7 @@ agent rather than by a person reading a manual.
 > **Status: M0-M7 done, both defects M10 found are fixed, the deploy loop can be closed
 > from an agent, a target's files can be looked at without moving them, the machines on a
 > network can be found without being told where they are, one command can be run across
-> several of them, and an agent that dies or wedges is restarted.** Five crates, 544 tests,
+> several of them. The agent is an ordinary process and stays offline after exit.** Five crates,
 > one command that runs every gate. A host can check reachability, run a command on a target
 > through a sealed channel, read what it did, see what is running there, start something that
 > outlives the call, stop it again, list and search a directory on the target, and move one
@@ -177,7 +177,8 @@ are. It prints the summary first and the addresses after it, because a scan has 
 and **"nothing answered" and "I tried a thousand of this network's four thousand addresses"
 are different facts**. `--networks` prints the networks without scanning; `--targets` prints
 the addresses as a `host:port` list, which is what every other command already takes -- so
-discovery feeds the commands it exists for. Exit 1 means the scan was cut short and the
+discovery feeds the commands it exists for. Results establish TCP reachability,
+not authentication; use `probe` to verify an agent. Exit 1 means the scan was cut short and the
 answer is therefore incomplete.
 
 It scans about 1600 addresses at most, never this machine's own address and never the
@@ -202,8 +203,9 @@ target, in the order you listed them however they finish, and one machine failin
 the others. **`refused` and `unreachable` are different words** -- one sends you to the build,
 the other to the network.
 
-Exit 0 means every agent ran the command. A command that ran and exited 7 is still exit 0:
-that is the command's business, and whether the agents answered is this tool's.
+Exit 0 means every command exited 0. Any command failure, timeout, or failed call
+returns 1 for the batch. Each target keeps its real exit code and failure reason.
+Batches accept at most 256 targets, run four at once, and preserve input order.
 
 `check` prints one line per target, in the order the targets were given: `live`,
 `dead` or `unknown`, then the target as it was written, then the reason. `dead`
@@ -229,7 +231,7 @@ took, and what it printed. It needs an agent on the target and a shared token.
 
 For `exec`, the command's own exit code is passed through when the command ran,
 so `linklet exec ... && next` behaves the way the command would. A call that could
-not be made gets 3, which no command can produce. `ps` follows `check` rather than
+not be made gets 3. A remote command can also exit 3; the text distinguishes it. `ps` follows `check` rather than
 `exec`: there is no command whose status could be passed through, and **1 means the
 call was made and the answer is incomplete** -- a listing the machine could not
 finish is a fact about the machine, and 3 would send the reader to the network.
@@ -237,6 +239,37 @@ finish is a fact about the machine, and 3 would send the reader to the network.
 The distinction between 1 and 3 is the one an agent needs: "the machines are down"
 and "the tool could not start" send it to different places, and collapsing them
 into one non-zero code loses exactly the information it came for.
+
+All commands support `-h/--help` and both binaries support `--version`; these exit 0.
+For `exec` and `spawn`, put Linklet options before the command or an explicit `--`.
+Remote `--help` and other options pass through once the command starts.
+
+Probe exit codes: 0 authenticated identity (name and version), 1 connection failed,
+2 arguments or local token configuration, 3 authentication or protocol rejected,
+4 timeout or invalid reply after connecting. Probe does not restart anything.
+
+## Starting the target process
+
+On Windows, open a terminal as the account whose permissions the agent should use:
+
+```powershell
+Set-Location C:\work
+C:\linklet\linklet-agent.exe --port 8787 --token-file C:\linklet\token.txt
+```
+
+On Linux:
+
+```sh
+cd /srv/work
+/opt/linklet/linklet-agent --port 8787 --token-file /etc/linklet/token.txt
+```
+
+The startup directory is the base for relative paths. Absolute paths and parent
+components use the process account's normal filesystem access. Choose an elevated
+terminal only when the intended operations require that account's privileges.
+The process is available while running and offline after it exits. No installation,
+autostart, supervision, or automatic restart is performed. Configure the same token
+on the caller and allow the selected TCP port through the target firewall.
 
 ## Calling it from an agent
 

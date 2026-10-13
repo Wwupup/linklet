@@ -18,6 +18,18 @@ used directly; relative paths use the startup directory. `--root` has been remov
 Earlier containment fixes below record historical behavior, superseded by this policy
 and `docs/transfer.md` T1.
 
+## Current execution reliability
+
+Protocol 2 keeps the last 1 MiB per command stream, with byte counts, encoding,
+truncation, and decoding loss. Windows quoting is preserved; file decoding reads
+only its bounded window. Probe verifies authenticated identity. Batches fail if
+any command fails. CLI and MCP execution share failure reporting.
+
+The agent is an ordinary process: startup makes it available and exit makes it
+offline. No service installation, autostart, supervision, or automatic restart is
+provided. Earlier M10 entries below are historical measurements and decisions;
+the supervisor and unbounded-output descriptions are superseded by this policy.
+
 ## M0 -- the skeleton
 
 - [x] workspace, three crates, the dependency-direction rule
@@ -300,7 +312,7 @@ section; what is left is below.
       it does not make it cheap. That is what option 3 would buy, and it is a protocol change.
 
       **What it cost to test**, and worth writing down because it will be met again: the
-      command that produces the output cannot carry a quote. The agent runs commands through
+      command that produced the output could not then carry a quote (now fixed). The agent runs commands through
       `cmd`, and a path that needs quoting does not survive the trip -- a `cmd /C "..."`
       form and a `powershell -Command "..."` form were both measured and both came back as
       the command's own text. The test builds a directory with no space in its name and uses
@@ -349,75 +361,20 @@ lanlink is the reference for all of these: `E:\projects\lanlink` on this machine
 debugging tool for the same machines, written by the same hand, and it is ahead of linklet
 on everything in this list -- which is why reading it beats designing from scratch.
 
-- [x] **Residency, and an agent that keeps a log.** The agent died with its console during
-      this round: `tasklist` found nothing, and the caller saw a connect **timeout** rather
-      than a refusal. Nothing brought it back, and nothing recorded what it had been asked --
-      the agent prints a banner and answers errors to the client, and keeps no per-request
-      record anywhere. lanlink answers this with `supervise.ps1` (restarts on death *and* on
-      stuck, with backoff, and a probe whose three exit codes are documented) and with
-      `agent.log` recording each request as `->` and `<-` with a duration -- so a `->` with no
-      `<-` names the request that wedged it. The parked list refuses "a daemon or service
-      **on the host**", which is still right; the *target* side has no such decision written
-      down, and this is the first target saying it needs one. Smallest honest shape: one log
-      line per request with its outcome and duration, written by the agent to a file of its
-      own, plus a documented way to start it that survives its console.
+- [x] **Request logging and authenticated probing.** The agent records each request
+      as `->` and `<-` with its outcome and duration. A missing reply line identifies
+      the request that did not finish. `--log` or `LINKLET_LOG` selects the log; an
+      explicit log path that cannot be opened prevents startup. Command text and file
+      paths are excluded from these entries.
 
-      **The log is done, surviving the console is done, and the supervisor is done.** What
-      landed: `linklet-agent --log <file>` (or `LINKLET_LOG`), appending two lines per
-      request -- `-> #000001 run` when it is taken and `<- #000001 run ok 2411 ms` when it is
-      answered, with the reason quoted on a refusal. The pair is the design and not a
-      flourish: a request that never finishes writes only the first line, and that is what
-      names it. `linklet_core::log` decides what a line says and is tested in microseconds;
-      `linklet-agent/src/log.rs` owns the file and the lock. A log path that cannot be opened
-      is a refusal to start, because an operator who asked for a log and silently did not get
-      one has evidence they believe exists and does not. The command line and the paths are
-      deliberately absent from a line.
+      A TCP listener can accept connections while its application is wedged. Probe
+      therefore completes authentication and validates identity, including the remote
+      name and version. Its codes are 0 usable, 1 connection failure, 2 local error,
+      3 authentication or protocol refusal, and 4 timeout or invalid reply.
 
-      **The way to start it detached is done.** `docs/smoke.md` carries the `schtasks` command
-      and the script file it runs, verified on this machine -- the task's process kept serving
-      after the session that started it was gone, and its log recorded the request. Two things
-      about that were measured rather than assumed: `/TR` refuses anything over **261
-      characters**, which every realistic command line exceeds and which is why the task runs a
-      script file; and a script file keeps the **token out of the scheduler's record**.
-      `--detach` on the agent was **refused**: it needs Windows' `DETACHED_PROCESS` creation
-      flag, `std` does not expose it safely, and buying it with `unsafe` or a Win32 dependency
-      inside the smallest binary here is a poor trade for what the scheduler already does.
-
-      **And the supervisor is done.** `tools/linklet-supervise.ps1` restarts an agent that died
-      **and** one that wedged, with backoff, and its whole decision is `linklet probe`'s four
-      exit codes. The probe is the part that had to exist first and the part `check` could not
-      do: a process wedged on a lock keeps its listening socket open, so the kernel accepts into
-      the backlog and `check` calls it live. Measured against a socket that accepted and never
-      answered -- **`check` said `live 127.0.0.1:8821 connected` while `probe` said `no answer
-      ... no reply within 2000 ms`, exit 4.** `probe` completes a handshake and reads a reply,
-      so a wedged agent fails it. A wrong token is exit 0 and not exit 4, because an agent that
-      says no has proved it is running.
-
-      ~~**The supervisor was removed afterwards**, and the argument above is kept because it is
-      still the argument for `probe`. The script was right about the decision and wrong about
-      the shape: **it was a process and not a service**, so nothing watched *it*, and it was the
-      last Windows-only moving part of a tool that now runs on two platforms. What replaced it
-      is the platform's own scheduler for survival and `probe` for the caller who wants to know
-      -- see `docs/smoke.md`. This file is a current document, so this is what happened to the
-      item rather than a rewriting of what it found.~~
-
-      **Running the supervisor over a real wedged socket found a bug the design had not**: it
-      killed `linklet-agent.exe` by name, which does nothing when the process holding the port
-      is not an agent, so it looped forever reporting a wedged agent it could not clear. It now
-      kills **by port** -- the one thing certainly the agent's, because the probe just proved
-      something is on it -- and a plain socket that accepts and never answers is replaced by a
-      working agent. Still open, and named rather than implied: **the supervisor is a process
-      and not a service.** Nothing watches *it*, so a dead supervisor stops restarting a dead
-      agent. That is one level less bad than the gap this item opened with, and `docs/smoke.md`
-      says so.
-
-      **A shell redirect is not a logging strategy**, and that was measured after the fact
-      rather than assumed: `hostname > file` launched through the spawn call leaves the file
-      **empty**, while the same command through an ordinary exec captures the hostname. The
-      near-empty `agent.log` this round was that, not the agent -- so a reader must not read
-      an empty log as "it logged nothing". (The one `^C` in it was the shell's own echo.) This
-      is the second time on one target that an unexplained observation looked like a fact
-      about the agent; both are now written down where the next reader will meet them.
+      The earlier supervisor was removed. Ordinary process startup is the supported
+      workflow; no service, scheduled task, or automatic restart is installed. Exit
+      makes the agent offline. See `docs/smoke.md` for the current startup examples.
 - [x] **`spawn`, `ps`, `kill`.** Today `exec` blocks until the command exits or the deadline
       kills the whole tree, and a child inherits the agent's pipes -- so starting a
       long-running program with it is the exact trap lanlink documents ("never use

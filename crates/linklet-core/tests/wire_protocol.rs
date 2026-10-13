@@ -1212,3 +1212,14 @@ fn command_streams_have_protocol_two_metadata() {
     assert_eq!(value["stdout"]["truncated"], false);
     assert_eq!(wire::PROTOCOL_VERSION, 2);
 }
+
+#[test]
+fn an_identity_requires_both_nonempty_name_and_version() {
+    for value in [
+        serde_json::json!({"name":"agent"}),
+        serde_json::json!({"name":"", "version":"1"}),
+        serde_json::json!({"name":"agent", "version":false}),
+    ] {
+        assert!(wire::identity_from_json(&wire::Reply::Result(value)).is_err());
+    }
+}

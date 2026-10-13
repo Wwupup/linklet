@@ -292,3 +292,91 @@ fn a_command_with_nothing_to_do_says_what_it_wanted() {
         );
     }
 }
+
+#[test]
+fn help_for_every_command_and_version_succeed() {
+    for command in [
+        "", "check", "testbed", "exec", "spawn", "ps", "kill", "grep", "tail", "ls", "probe",
+        "discover", "push", "pull", "mcp",
+    ] {
+        for flag in ["-h", "--help"] {
+            let args = if command.is_empty() {
+                vec![flag]
+            } else {
+                vec![command, flag]
+            };
+            let output = run(&args);
+            assert_eq!(code(&output), 0, "{args:?}: {}", stderr(&output));
+            assert!(String::from_utf8_lossy(&output.stdout).contains(command));
+        }
+    }
+    assert_eq!(code(&run(&["testbed", "check", "--help"])), 0);
+    let output = run(&["--version"]);
+    assert_eq!(code(&output), 0);
+    assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
+fn flags_only_commands_reject_stray_words() {
+    let output = run(&["ls", "--agent", "127.0.0.1:1", "--from", ".", "extra"]);
+    assert_eq!(code(&output), ExitCode::USAGE);
+}
+
+#[test]
+fn help_after_global_check_options_succeeds() {
+    assert_eq!(code(&run(&["--timeout", "5", "check", "--help"])), 0);
+}
+
+#[test]
+fn transfers_reject_stray_words_before_connecting() {
+    for command in ["push", "pull"] {
+        let output = run(&[
+            command,
+            "--agent",
+            "127.0.0.1:1",
+            "--from",
+            "a",
+            "--to",
+            "b",
+            "extra",
+        ]);
+        assert_eq!(
+            code(&output),
+            ExitCode::USAGE,
+            "{command}: {}",
+            stderr(&output)
+        );
+    }
+}
+
+#[test]
+fn invalid_execution_values_are_usage_errors_before_connecting() {
+    for selector in ["--agent", "--agents"] {
+        for timeout in ["0", "601"] {
+            let output = run(&[
+                "exec",
+                selector,
+                "127.0.0.1:1",
+                "--timeout",
+                timeout,
+                "echo x",
+            ]);
+            assert_eq!(code(&output), ExitCode::USAGE, "{selector} {timeout}");
+        }
+    }
+    assert_eq!(
+        code(&run(&["exec", "--agent", "127.0.0.1:1", "   "])),
+        ExitCode::USAGE
+    );
+    assert_eq!(
+        code(&run(&[
+            "spawn",
+            "--agent",
+            "127.0.0.1:1",
+            "--output",
+            "out",
+            "   "
+        ])),
+        ExitCode::USAGE
+    );
+}

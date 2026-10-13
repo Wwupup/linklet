@@ -119,97 +119,26 @@ The command line and the file paths are **not** in the log. A log on someone els
 machine outlives the reason it was written, and a command line is where a secret gets
 left by accident.
 
-### Starting it so it does not die with the console
+### Starting and probing an ordinary process
 
-**A process started from a console dies when that console closes**, and that is the
-failure M10 opens with: on the first real target the agent was gone with no process left
-to ask, while the port stayed silently dropped rather than refused -- which reads exactly
-like a firewall. Starting it from a console is therefore only for a quick check. For a
-machine you intend to keep, have the scheduler start it:
+Start the agent in a terminal under the intended account and keep that process
+running. It is available after its listening banner appears and offline after
+exit. This workflow installs no service or scheduled task and performs no
+supervision or automatic restart. The startup directory controls relative paths;
+OS account permissions control access. See README.md for Windows and Linux examples.
 
-```powershell
-# On the target, once, in a directory with no space in its name -- see below.
-@'
-@echo off
-set LINKLET_TOKEN=<the secret>
-cd /d C:\linklet\transfers
-"C:\linklet\bin\linklet-agent.exe" --port 8787 > C:\linklet\banner.txt 2>&1
-'@ | Set-Content C:\linklet\start-agent.cmd -Encoding ascii
-
-schtasks /Create /TN linklet-agent /SC ONCE /ST 00:00 /TR C:\linklet\start-agent.cmd /F
-schtasks /Run /TN linklet-agent
-```
-
-**Why a script file and not the command line.** `/TR` refuses anything over **261
-characters**, and a command that sets the token, names the binary, the root and the log
-and redirects two streams is past that on any real path. The script also keeps the
-**token out of the scheduler's record**, which is the same argument that keeps it out of
-`argv` everywhere else in this project.
-
-**Why this survives, and what it is not.** A task launched this way belongs to the
-scheduler, not to your console, so closing the window does not touch it. It is a
-**documented way to start the agent**, not a supervisor: `schtasks` will not restart it if
-it dies, and it will not notice one that has wedged. See the next section.
-
-Three things about that block, all of them learned by doing it on a real machine:
-
-- **The script's directory must have no space in it.** The command inside is quoted and
-  `cmd` handles that; what breaks is anything that goes on to build another command line
-  out of it -- the same trap `docs/machine.md` describes for a command sent to a
-  target. `C:\linklet` is the choice for that reason.
-- **`schtasks /ST` wants a time and warns if it is in the past.** The warning is noise
-  for a task that is only ever started by hand with `/Run`.
-- **The banner goes to its own file because a shell redirect started *through another
-  process* captures nothing.** That is measured, and it is why `--log` exists at all: with
-  `--log` the agent writes its own evidence, and the redirect only has to survive long
-  enough to say whether it started.
-
-To stop it: `schtasks /End /TN linklet-agent` ends the task, and the agent's own process
-then has to be killed by name or pid -- `/End` ends the task, not the process the script
-started. `schtasks /Delete /TN linklet-agent /F` removes the task itself.
-
-### Keeping it running: the caller does it, not a script
-
-**There was a supervisor, and it was removed.** `tools/linklet-supervise.ps1` watched the
-agent with `linklet probe` and restarted it: on death, and on wedged. It was 260 lines of
-PowerShell standing in for a service, and it had the fault that shape always has -- **it was
-not a service either**, so nothing watched *it*, and a dead supervisor stopped restarting a
-dead agent. It was also the last Windows-only moving part of a tool that now works on two
-platforms.
-
-**What is left is the platform's own answer plus one command.** For bare survival, a task
-that repeats is the scheduler's job rather than a script's:
-
-```powershell
-# Re-run the start script every minute; the agent fails to bind if it is already up,
-# which is a cheap no-op and the scheduler's normal way to keep something alive.
-schtasks /Create /TN linklet-agent /SC MINUTE /MO 1 /TR C:\linklet\start-agent.cmd /F
-```
-
-That covers *died*. It does not cover *wedged*, and no scheduler can: a wedged agent keeps
-its listening socket open, so anything built on "is the port open" calls it healthy. That
-question needs a conversation, which is `linklet probe`:
+Probe completes authentication and reads a valid identity; an open port alone
+is insufficient. The result includes the remote name and version.
 
 | code | meaning |
-|------|---------|
-| 0 | the agent answered |
-| 1 | nothing is listening |
-| 2 | the spec could not be read |
-| 4 | something is listening and did not answer |
+|---|---|
+| 0 | authenticated and received a valid identity |
+| 1 | connection failed |
+| 2 | invalid arguments or local configuration |
+| 3 | authentication or protocol version refused |
+| 4 | timeout or invalid reply after connecting |
 
-**`probe` is not `check`, and the difference is the point.** `check` opens a connection and
-closes it; a process wedged on a lock still has its listening socket open, so the kernel
-keeps accepting into the backlog and `check` calls it `live`. This was measured against a
-real socket that accepted and never answered: **`check` said `live 127.0.0.1:8821
-connected` and `probe` said `no answer ... no reply within 2000 ms`, exit 4.** The third
-reason the command exists at all is that a supervisor used to read it, and it is now the
-caller: **the thing that drives this tool is the thing that notices**, which for an agent is
-step 2 of `integrations/skills/linklet/SKILL.md`.
-
-**A wrong token is exit 0, not exit 4.** The question is liveness and not authorization: an
-agent that answers "no" has answered, so it is running. A caller that restarted on a wrong
-token would restart a healthy process in a loop while hiding the real problem, which is the
-operator's secret.
+A wrong token is exit 3. These codes describe the call and trigger no restart.
 
 ### Three things about starting it by hand
 

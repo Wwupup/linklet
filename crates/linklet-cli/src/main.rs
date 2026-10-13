@@ -24,10 +24,10 @@
 //! condition, and an agent that has to merge two streams to reconstruct the
 //! report will eventually not bother.
 
+mod help;
 mod probe;
 
 use std::env;
-use std::process::ExitCode as ProcessExit;
 use std::time::Duration;
 
 use linklet_adapters::{SystemProber, TcpProbe, serve};
@@ -176,11 +176,19 @@ impl std::fmt::Display for CliError {
 /// wrong and says so without knowing about exit codes or streams, which is what makes it
 /// testable in microseconds; this turns that into the sentence a caller reads and the code a
 /// script branches on, which is the only part that needs to know either.
-fn read(arguments: &[String], flags: &[Flag], strictness: Strictness) -> Result<Args, u8> {
-    Args::parse(arguments, flags, strictness).map_err(|error| {
+fn read(arguments: &[String], flags: &[Flag], strictness: Strictness) -> Result<Args, i32> {
+    let args = Args::parse(arguments, flags, strictness).map_err(|error| {
         eprintln!("linklet: {error}; see linklet --help");
-        ExitCode::USAGE
-    })
+        i32::from(ExitCode::USAGE)
+    })?;
+    if strictness == Strictness::Strict && !args.words().is_empty() {
+        eprintln!(
+            "linklet: unexpected argument {:?}; see linklet --help",
+            args.words()[0]
+        );
+        return Err(i32::from(ExitCode::USAGE));
+    }
+    Ok(args)
 }
 
 /// Reads a number out of a flag, or says what arrived instead.
@@ -189,7 +197,7 @@ fn read(arguments: &[String], flags: &[Flag], strictness: Strictness) -> Result<
 /// reader back to their own command line to work out what was wrong with it. `None` means the
 /// flag was not given, which is different from a flag given badly -- the caller decides what an
 /// absent flag defaults to.
-fn number(args: &Args, flag: &str) -> Result<Option<u64>, u8> {
+fn number(args: &Args, flag: &str) -> Result<Option<u64>, i32> {
     let Some(text) = args.value(flag) else {
         return Ok(None);
     };
@@ -197,7 +205,7 @@ fn number(args: &Args, flag: &str) -> Result<Option<u64>, u8> {
         Ok(value) => Ok(Some(value)),
         Err(_) => {
             eprintln!("linklet: {flag} needs a number, got {text:?}");
-            Err(ExitCode::USAGE)
+            Err(i32::from(ExitCode::USAGE))
         }
     }
 }
@@ -212,14 +220,11 @@ struct Options {
     max_targets: usize,
 }
 
-fn main() -> ProcessExit {
+fn main() {
     let arguments: Vec<String> = env::args().skip(1).collect();
-
-    // The code the core computed, turned into the process's own type here and
-    // nowhere else. Returning it through `ProcessExit` rather than calling
-    // `std::process::exit` keeps every path in this file a normal return, which
-    // is what lets the compiler check that `main` always ends.
-    ProcessExit::from(dispatch(&arguments))
+    // Windows exit statuses are 32 bits. std::process::ExitCode only accepts u8
+    // on stable Rust, so exit after dispatch has returned and released its resources.
+    std::process::exit(dispatch(&arguments));
 }
 
 /// Runs the tool and returns the exit code. Never panics and never exits.
@@ -227,14 +232,22 @@ fn main() -> ProcessExit {
 /// Kept separate from `main` so that every branch ends in a code the tests can
 /// reason about, and so that the only line that touches the process is the one
 /// above.
-fn dispatch(arguments: &[String]) -> u8 {
+fn dispatch(arguments: &[String]) -> i32 {
+    if arguments == ["--version"] {
+        println!("linklet {}", env!("CARGO_PKG_VERSION"));
+        return i32::from(ExitCode::SUCCESS);
+    }
+    if let Some(help) = help::requested(arguments) {
+        print!("{help}");
+        return i32::from(ExitCode::SUCCESS);
+    }
     // Checked before the option parser, because these take no options and the
     // parser would reject every one a caller might pass. A subcommand is the
     // first argument or it is not a subcommand.
     if arguments.first().map(String::as_str) == Some("mcp") {
         if arguments.len() > 1 {
             eprintln!("linklet: mcp takes no arguments");
-            return ExitCode::USAGE;
+            return i32::from(ExitCode::USAGE);
         }
         return run_mcp();
     }
@@ -289,13 +302,8 @@ fn dispatch(arguments: &[String]) -> u8 {
 
     match parse_arguments(arguments) {
         Ok(None) => {
-            // `--help`: asked for, so it is not an error, but it is also not a
-            // run. Exit 0 would be a lie about having checked something, and 2
-            // would be a lie about the invocation being wrong; the honest answer
-            // is the usage code, and the help is on stdout where a caller asked
-            // for it.
             print!("{USAGE}");
-            ExitCode::USAGE
+            i32::from(ExitCode::SUCCESS)
         }
         Ok(Some(options)) => run(&options),
         Err(error) => {
@@ -303,7 +311,7 @@ fn dispatch(arguments: &[String]) -> u8 {
             // report lines, and gets no output at all for a run that never
             // happened.
             eprintln!("linklet: {error}");
-            ExitCode::USAGE
+            i32::from(ExitCode::USAGE)
         }
     }
 }
@@ -372,13 +380,13 @@ fn parse_arguments(arguments: &[String]) -> Result<Option<Options>, CliError> {
 }
 
 /// Parses the targets, checks them, prints the report, and returns the code.
-fn run(options: &Options) -> u8 {
+fn run(options: &Options) -> i32 {
     match check_specs(&options.specs, options.budget, options.max_targets) {
         Ok(reports) => {
             for report in &reports {
                 println!("{}", render(report));
             }
-            exit_code_for(&reports)
+            i32::from(exit_code_for(&reports))
         }
         Err(failure) => {
             // Printed with the numbers as the core words them, so there is one
@@ -429,9 +437,9 @@ impl CheckFailure {
     /// The whole reason the two variants are kept apart: a bad spec is a bad
     /// invocation, and a refused run is a refused run. An agent branches on that
     /// difference, so it is decided in one place instead of at each call site.
-    fn exit_code(&self) -> u8 {
+    fn exit_code(&self) -> i32 {
         match self {
-            Self::BadSpec(_) => ExitCode::USAGE,
+            Self::BadSpec(_) => i32::from(ExitCode::USAGE),
             // Every `CheckError` is a refusal. The match is exhaustive, so a
             // future variant that means something else stops this compiling
             // rather than silently returning the wrong code -- which is exactly
@@ -442,7 +450,7 @@ impl CheckFailure {
                 | CheckError::TooManyTargets { .. }
                 | CheckError::ZeroLimit
                 | CheckError::ZeroAtOnce,
-            ) => ExitCode::REFUSED,
+            ) => i32::from(ExitCode::REFUSED),
         }
     }
 }
@@ -472,11 +480,11 @@ fn tool_text(reports: &[Report]) -> String {
 /// A rendered answer with the CLI status computed from the typed result.
 struct CommandOutcome {
     tool: ToolOutcome,
-    code: u8,
+    code: i32,
 }
 
 impl CommandOutcome {
-    fn answered(text: String, code: u8) -> Self {
+    fn answered(text: String, code: i32) -> Self {
         Self {
             tool: ToolOutcome::ok(text),
             code,
@@ -486,11 +494,11 @@ impl CommandOutcome {
     fn failed(text: String) -> Self {
         Self {
             tool: ToolOutcome::failed(text),
-            code: ExitCode::REFUSED,
+            code: i32::from(ExitCode::REFUSED),
         }
     }
 
-    fn report(self) -> u8 {
+    fn report(self) -> i32 {
         println!("{}", self.tool.text);
         self.code
     }
@@ -599,21 +607,11 @@ impl ToolRunner for LiveRunner {
 ///
 /// # Errors
 ///
-/// The rendered sentence for anything that leaves the command's fate unknown -- an agent that
-/// could not be reached, or one that answered with something unreadable. **A command that ran
-/// is never an error**, however badly it went: that is the distinction the protocol was built
-/// around, and the one a fan-out has to preserve across several machines.
-/// Runs a command on one agent, and says what happened **as a type**.
-///
-/// The error is returned rather than rendered, because a caller has to be able to ask *which
-/// kind* of failure it was -- an agent that refused is a fact about the machine and a connection
-/// the operating system refused is a fact about the network. Rendering first and grepping the
-/// sentence afterwards is how that distinction was lost once; see [`linklet_client::CallError::was_refused`].
+/// Calls one agent, retaining typed failures and the remote command outcome.
 ///
 /// # Errors
-///
-/// [`linklet_client::CallError`] for everything that leaves the command's fate unknown. **A command that ran is
-/// never an error**, however badly it went: that is the distinction the protocol is built on.
+/// Returns a call error when no valid command outcome was received. A completed
+/// nonzero exit remains a RunOutcome and is classified by command_result.
 fn exec_at(
     agent: &str,
     command: &str,
@@ -648,120 +646,91 @@ fn exec_at(
 /// So the closure keeps what it rendered in a slot of its own, and the report and the output
 /// are read out of the same run.
 ///
-/// # The exit code
-///
-/// `check`'s rather than `exec`'s: `0` when every agent the command was sent to ran it, `1`
-/// when one of them did not, `3` when the invocation was wrong. **A command that ran and
-/// exited non-zero is still `0`** -- the same rule the single-target path follows, because the
-/// command's own status is the caller's business and the agent's reachability is this tool's.
-fn run_exec_across(
+/// A batch exits 0 only when every command exits 0; failures retain their details.
+fn exec_across(
     agents: &[String],
     command: &str,
     timeout_seconds: u64,
     token: Option<&Token>,
-) -> u8 {
+) -> CommandOutcome {
     use linklet_core::fanout::{Fate, Task};
-
-    if agents.is_empty() {
-        eprintln!("linklet: --agents needs at least one host:port");
-        return ExitCode::USAGE;
+    if agents.is_empty() || agents.len() > linklet_core::fanout::MAX_TARGETS {
+        let mut result =
+            CommandOutcome::failed("agents must contain 1..=256 host:port entries".into());
+        result.code = i32::from(ExitCode::USAGE);
+        return result;
     }
-    if agents.len() > linklet_core::fanout::MAX_TARGETS {
-        // Refused rather than cut, which is the opposite of the scan's ceiling: a scan's list
-        // is generated and a caller cannot know how long it is, and this list was typed.
-        eprintln!(
-            "linklet: {} agents is more than the {} one run will take",
-            agents.len(),
-            linklet_core::fanout::MAX_TARGETS
-        );
-        return ExitCode::USAGE;
-    }
-
-    // One slot per agent, holding what that agent's run rendered. Filled by the worker that
-    // ran it, read afterwards in the caller's order.
-    //
-    // An `Arc` because there is one closure per agent and each has to own a handle to the
-    // slots rather than borrowing the one the others also need.
-    let rendered: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(vec![None; agents.len()]));
-
-    let tasks: Vec<Task> = agents
+    let results = std::sync::Arc::new(std::sync::Mutex::new(
+        (0..agents.len())
+            .map(|_| None)
+            .collect::<Vec<Option<CommandOutcome>>>(),
+    ));
+    let tasks = agents
         .iter()
         .enumerate()
         .map(|(index, agent)| {
             let agent = agent.clone();
             let command = command.to_string();
             let token = token.cloned();
-            let rendered = std::sync::Arc::clone(&rendered);
+            let results = std::sync::Arc::clone(&results);
             Task::new(agent.clone(), move || {
-                match exec_at(&agent, &command, timeout_seconds, token.as_ref()) {
-                    Ok(outcome) => {
-                        if let Ok(mut rendered) = rendered.lock()
-                            && let Some(slot) = rendered.get_mut(index)
-                        {
-                            *slot = Some(wire::render_run(&outcome));
+                let (fate, result) =
+                    match exec_at(&agent, &command, timeout_seconds, token.as_ref()) {
+                        Ok(outcome) => (Fate::Ran, command_result(outcome)),
+                        Err(error) => {
+                            let fate = if error.was_refused() {
+                                Fate::Refused
+                            } else {
+                                Fate::Unreachable
+                            };
+                            (fate, CommandOutcome::failed(render_call_error(&error)))
                         }
-                        // The command ran. Whether it went well is the command's business and
-                        // not this fan-out's, which is the distinction the protocol is built on.
-                        Fate::Ran
-                    }
-                    // **The agent answered and said no, which is a fact about the machine.**
-                    // Asked of the type and not of the sentence: `render_call_error` puts the
-                    // word "refused" in a *transport* failure too, because that is what the
-                    // operating system's error says, so a substring search here reported a
-                    // closed port as an agent that had refused. See `CallError::was_refused`.
-                    Err(error) if error.was_refused() => Fate::Refused,
-                    // Anything else is a machine no answer could be got out of -- including an
-                    // address this side could not read, which is nobody's machine at all.
-                    Err(_) => Fate::Unreachable,
+                    };
+                if let Ok(mut slots) = results.lock() {
+                    slots[index] = Some(result);
                 }
+                fate
             })
         })
         .collect();
-
     let report = linklet_core::fanout::run(tasks);
-
-    // The fan-out's summary, then one labelled block per agent. The blocks are the expensive
-    // part and they are what a caller actually reads, so they are printed rather than left
-    // behind in a struct -- and the summary is first because "did they all work" is the first
-    // question.
-    println!("{} of {} ran", report.ran(), report.total);
-    let rendered = rendered
-        .lock()
-        .map(|slots| slots.clone())
-        .unwrap_or_default();
-    for outcome in &report.outcomes {
-        match outcome.fate {
-            Fate::Ran => {
-                println!("ran {}", outcome.target);
-                if let Some(text) = agents
-                    .iter()
-                    .position(|agent| agent == &outcome.target)
-                    .and_then(|index| rendered.get(index).cloned().flatten())
-                {
-                    for line in text.lines() {
-                        println!("  {line}");
-                    }
+    let mut text = format!("{} of {} ran", report.ran(), report.total);
+    let mut failed = !report.complete();
+    if let Ok(slots) = results.lock() {
+        for (index, outcome) in report.outcomes.iter().enumerate() {
+            text.push_str(&format!("\n{} {}", outcome.fate.as_str(), outcome.target));
+            if let Some(result) = &slots[index] {
+                failed |= result.tool.is_error;
+                for line in result.tool.text.lines() {
+                    text.push_str(&format!("\n  {line}"));
                 }
+            } else {
+                failed = true;
+                text.push_str("\n  execution did not return a result");
             }
-            fate => println!("{} {}", fate.as_str(), outcome.target),
         }
-    }
-
-    if report.failures().is_empty() {
-        ExitCode::SUCCESS
     } else {
-        ExitCode::NOT_ALL_ALIVE
+        failed = true;
     }
+    let mut result = CommandOutcome::answered(text, i32::from(failed));
+    result.tool.is_error = failed;
+    result
+}
+
+fn command_result(outcome: wire::RunOutcome) -> CommandOutcome {
+    let mut result = CommandOutcome::answered(
+        wire::render_run(&outcome),
+        outcome
+            .exit_code
+            .unwrap_or(i32::from(ExitCode::NOT_ALL_ALIVE)),
+    );
+    result.tool.is_error = outcome.exit_code != Some(0) || outcome.reason.is_some();
+    result
 }
 
 /// Runs a command on an agent and renders what it did.
 ///
-/// Shared by the `exec` command and the `exec` tool, so that the two cannot
-/// disagree about what a failure looks like. The distinction it keeps intact is
-/// the one the protocol was built around: a call that could not be made is
-/// `is_error`, and a call that was made and went badly is a result carrying bad
-/// news.
+/// Shared by CLI and MCP; both call failures and unsuccessful commands are errors.
 fn exec_on(
     agent: &str,
     command: &str,
@@ -769,23 +738,18 @@ fn exec_on(
     token: Option<&Token>,
 ) -> CommandOutcome {
     match exec_at(agent, command, timeout_seconds, token) {
-        Ok(outcome) => CommandOutcome::answered(
-            wire::render_run(&outcome),
-            outcome
-                .exit_code
-                .map_or(ExitCode::NOT_ALL_ALIVE, |code| code.rem_euclid(256) as u8),
-        ),
+        Ok(outcome) => command_result(outcome),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
 }
 
-/// Probes one agent and prints which of the three states it is in.
+/// Probes one agent and reports authenticated usability.
 ///
 /// A thin command over [`probe::run_probe`], which carries the reasoning and the exit codes. It
 /// is its own subcommand rather than a flag on `check` because the two ask different questions
 /// and a script has to tell them apart: `check` says whether a socket is there, and this says
 /// whether the agent behind it is working.
-fn run_probe_command(arguments: &[String]) -> u8 {
+fn run_probe_command(arguments: &[String]) -> i32 {
     let flags = [Flag::takes_value("--agent")];
     let args = match read(arguments, &flags, Strictness::Strict) {
         Ok(args) => args,
@@ -794,24 +758,30 @@ fn run_probe_command(arguments: &[String]) -> u8 {
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: probe needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
-    probe::run_probe(agent, token_from_environment().as_ref())
+    let outcome = probe_on(agent);
+    if outcome.code == i32::from(ExitCode::USAGE) {
+        eprintln!("linklet: {}", outcome.tool.text);
+        outcome.code
+    } else {
+        outcome.report()
+    }
 }
 
 /// Runs the MCP server on stdio until the client closes it.
 /// Returns the exit code. `serve` reports an I/O failure as an `Err`, and a
 /// broken pipe is the normal way this ends -- the client exits and stops reading
 /// -- so it is reported on stderr rather than as a crash.
-fn run_mcp() -> u8 {
+fn run_mcp() -> i32 {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     match serve(stdin.lock(), stdout.lock(), &LiveRunner) {
-        Ok(_) => ExitCode::SUCCESS,
+        Ok(_) => i32::from(ExitCode::SUCCESS),
         Err(error) => {
             eprintln!("linklet: mcp session ended: {error}");
-            ExitCode::NOT_ALL_ALIVE
+            i32::from(ExitCode::NOT_ALL_ALIVE)
         }
     }
 }
@@ -826,7 +796,7 @@ fn run_mcp() -> u8 {
 /// The report goes to stdout even when it is bad news: "this machine is not
 /// ready" is a result, and an agent that has to merge two streams to reconstruct
 /// it will eventually not bother.
-fn run_testbed(arguments: &[String]) -> u8 {
+fn run_testbed(arguments: &[String]) -> i32 {
     let mut words = arguments.iter();
     let command = words.next().map(String::as_str);
 
@@ -837,27 +807,27 @@ fn run_testbed(arguments: &[String]) -> u8 {
                 eprintln!("linklet: unknown testbed command {other:?}; expected check");
             }
         }
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     }
 
     let Some(spec_path) = words.next() else {
         eprintln!("linklet: testbed check needs a specification file");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     let Some(target) = words.next() else {
         eprintln!("linklet: testbed check needs a target name, even if only a label");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     if words.next().is_some() {
         eprintln!("linklet: testbed check takes a specification file and a target, nothing else");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     }
 
     let text = match std::fs::read_to_string(spec_path) {
         Ok(text) => text,
         Err(error) => {
             eprintln!("linklet: cannot read {spec_path}: {error}");
-            return ExitCode::USAGE;
+            return i32::from(ExitCode::USAGE);
         }
     };
 
@@ -867,7 +837,7 @@ fn run_testbed(arguments: &[String]) -> u8 {
             // The specification's own line number, so the fix is a one-line edit
             // rather than a search through the file.
             eprintln!("linklet: {spec_path}: {error}");
-            return ExitCode::USAGE;
+            return i32::from(ExitCode::USAGE);
         }
     };
 
@@ -875,24 +845,19 @@ fn run_testbed(arguments: &[String]) -> u8 {
     println!("{}", testbed::render(&testbed, &verdicts, target));
 
     if verdicts.iter().all(|verdict| verdict.held) {
-        ExitCode::SUCCESS
+        i32::from(ExitCode::SUCCESS)
     } else {
-        ExitCode::NOT_ALL_ALIVE
+        i32::from(ExitCode::NOT_ALL_ALIVE)
     }
 }
 
 /// Runs a command on an agent and prints what it did.
 ///
-/// The exit code is the command's own when there is one, and it is worth being
-/// explicit about why: a caller in a shell script wants `linklet exec ... && next`
-/// to behave the way the command itself would. Anything that means the command
-/// did not run gets [`ExitCode::REFUSED`], a code no command can produce, so a
-/// script can tell "it ran and failed" from "it never ran" without reading a word
-/// of output.
-fn run_exec(arguments: &[String]) -> u8 {
-    // **`AllowWords` because this ends in a command**, and the command may have flags of its
-    // own: `linklet exec --agent a:1 myapp.cmd --verbose` has to be possible. Everything in the
-    // table is this tool's; everything else is the command's.
+/// Single-target execution preserves the remote exit code. A call failure returns
+/// 3, which can also be a remote exit code; the result text distinguishes them.
+/// Batches return 0 only when every command exits 0.
+fn run_exec(arguments: &[String]) -> i32 {
+    // Options stop at the command or --, including names shared with remote flags.
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--agents"),
@@ -909,35 +874,44 @@ fn run_exec(arguments: &[String]) -> u8 {
         Err(code) => return code,
     };
 
+    if !(1..=wire::MAX_TIMEOUT_SECONDS).contains(&timeout) {
+        eprintln!(
+            "linklet: --timeout must be in 1..={}",
+            wire::MAX_TIMEOUT_SECONDS
+        );
+        return i32::from(ExitCode::USAGE);
+    }
+
     // One target or several, and never both: a caller that gave both has two intentions and
     // guessing between them would run a command somewhere it did not name.
     let single = args.value("--agent");
     let several = args.value("--agents");
     if single.is_some() && several.is_some() {
         eprintln!("linklet: give --agent for one machine or --agents for several, not both");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     }
 
     if several.is_some() {
-        if args.words().is_empty() {
+        if args.tail().trim().is_empty() {
             eprintln!("linklet: exec needs a command");
-            return ExitCode::USAGE;
+            return i32::from(ExitCode::USAGE);
         }
-        return run_exec_across(
+        return exec_across(
             &args.list("--agents"),
             &args.tail(),
             timeout,
             token_from_environment().as_ref(),
-        );
+        )
+        .report();
     }
 
     let Some(agent) = single else {
         eprintln!("linklet: exec needs --agent <host:port>, or --agents for several");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
-    if args.words().is_empty() {
+    if args.tail().trim().is_empty() {
         eprintln!("linklet: exec needs a command");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     }
 
     // Joined rather than taken one word at a time, so that the command is exactly
@@ -978,7 +952,7 @@ impl Direction {
 /// **refusal**, which is exit 3 and goes to stderr, because there is no command whose
 /// exit status could be passed through. A pull that arrived and a push that landed are
 /// exit 0 with a line of facts on stdout.
-fn run_transfer(direction: Direction, arguments: &[String]) -> u8 {
+fn run_transfer(direction: Direction, arguments: &[String]) -> i32 {
     let options = match parse_transfer(direction, arguments) {
         Ok(options) => options,
         Err(problem) => {
@@ -987,7 +961,7 @@ fn run_transfer(direction: Direction, arguments: &[String]) -> u8 {
             // the only message in the tool without it, and the reason was that transfers had
             // their own printer -- which is the drift this refactor was about.
             eprintln!("linklet: {problem}; see linklet --help");
-            return ExitCode::USAGE;
+            return i32::from(ExitCode::USAGE);
         }
     };
 
@@ -1001,11 +975,11 @@ fn run_transfer(direction: Direction, arguments: &[String]) -> u8 {
 
     if outcome.is_error {
         eprintln!("linklet: {}", outcome.text);
-        return ExitCode::REFUSED;
+        return i32::from(ExitCode::REFUSED);
     }
 
     println!("{}", outcome.text);
-    ExitCode::SUCCESS
+    i32::from(ExitCode::SUCCESS)
 }
 
 /// The three options a transfer takes, whichever way it goes.
@@ -1028,12 +1002,13 @@ fn parse_transfer(direction: Direction, arguments: &[String]) -> Result<Transfer
         Flag::takes_value("--from"),
         Flag::takes_value("--to"),
     ];
-    // Strict, and this one refuses `--help` too: the parser does not know `-h`, so it is
-    // reported as an unknown option, which is a usage error and is what the previous version
-    // said in its own words.
+    // Help is handled by dispatch; transfer arguments must contain only named options.
     let args =
         Args::parse(arguments, &flags, Strictness::Strict).map_err(|error| error.to_string())?;
 
+    if let Some(word) = args.words().first() {
+        return Err(format!("unexpected argument {word:?}"));
+    }
     let name = direction.name();
     Ok(TransferOptions {
         agent: args
@@ -1058,7 +1033,7 @@ fn parse_transfer(direction: Direction, arguments: &[String]) -> Result<Transfer
 /// wrong invocation, and `3` when the call could not be made. **An incomplete listing is exit
 /// 1 and not 3**, because the call *was* made: what went wrong is on the machine, and the
 /// distinction is the one the whole exit-code scheme exists for.
-fn run_ps(arguments: &[String]) -> u8 {
+fn run_ps(arguments: &[String]) -> i32 {
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--name"),
@@ -1081,7 +1056,7 @@ fn run_ps(arguments: &[String]) -> u8 {
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: ps needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
     let outcome = ps_on(agent, &filter, token_from_environment().as_ref());
@@ -1106,128 +1081,74 @@ fn run_ps(arguments: &[String]) -> u8 {
 /// and the answer is therefore incomplete, `2` for a wrong invocation. **An address that did
 /// not answer is not a failure** -- a scan is not a census, and reporting an empty network as
 /// a broken one would be the mistake this whole project is arranged against.
-fn run_discover(arguments: &[String]) -> u8 {
-    // **The agent's own default port, and the same number in both places for the same
-    // reason the agent's `DEFAULT_PORT` is a constant**: the question this answers is "which
-    // of these machines is running an agent", and a discovery default that disagreed with
-    // the agent default would find nothing on a network that is full of them. It is a literal
-    // here because `linklet-cli` does not depend on `linklet-agent` -- the host tool has no
-    // business linking the target binary -- and `tests/cli.rs` pins the two together.
+fn run_discover(arguments: &[String]) -> i32 {
     let flags = [
         Flag::takes_value("--port"),
         Flag::switch("--networks"),
         Flag::switch("--targets"),
-        Flag::switch("-h"),
-        Flag::switch("--help"),
     ];
     let args = match read(arguments, &flags, Strictness::Strict) {
         Ok(args) => args,
         Err(code) => return code,
     };
-
-    // The usage, for the two ways of asking for it. `discover` is the one command that answered
-    // `-h` before this parser existed, and dropping it would be a feature change dressed up as
-    // a refactor -- see the note in `docs/COMMANDS.md`.
-    if args.switch("-h") || args.switch("--help") {
-        println!("{USAGE}");
-        return ExitCode::USAGE;
-    }
-
-    // The port is parsed here rather than by the parser, and the parser has no opinion about
-    // numbers: `--max needs a number` and `--port needs a port number` are different sentences
-    // because the flags are different shapes, and a parser that knew about both would be a
-    // parser with a type table in it.
-    let mut port = 8787u16;
-    if let Some(text) = args.value("--port") {
-        match text.parse::<u16>() {
-            Ok(value) => port = value,
-            Err(_) => {
-                eprintln!("linklet: --port needs a port number, got {text:?}");
-                return ExitCode::USAGE;
-            }
-        }
-    }
-
-    let networks_only = args.switch("--networks");
-    let targets = args.switch("--targets");
-
-    if networks_only {
-        return match linklet_adapters::local_interfaces() {
-            Ok(interfaces) => {
-                for interface in &interfaces {
-                    println!("{interface}");
-                }
-                ExitCode::SUCCESS
-            }
-            Err(reason) => {
-                eprintln!("linklet: {reason}");
-                ExitCode::NOT_ALL_ALIVE
-            }
-        };
-    }
-
-    let plan = match linklet_adapters::plan_here() {
-        Ok(plan) => plan,
-        Err(reason) => {
-            // The machine's interfaces could not be read, which is a fact about the call and
-            // not about the network: exit 1 would say the network is empty.
-            eprintln!("linklet: {reason}");
-            return ExitCode::NOT_ALL_ALIVE;
+    let port = match args.value("--port").unwrap_or("8787").parse::<u16>() {
+        Ok(port) if port > 0 => port,
+        _ => {
+            eprintln!("linklet: --port must be in 1..=65535");
+            return i32::from(ExitCode::USAGE);
         }
     };
+    discover_on(port, args.switch("--networks"), args.switch("--targets")).report()
+}
 
-    let result = linklet_adapters::scan(&plan, port);
-
-    if targets {
-        // **`host:port` and not a bare address.** Every other command takes a `host:port`, and
-        // the port is the one this scan was looking for -- so a list of bare addresses is a
-        // list nobody can paste anywhere, which is the opposite of what this flag is for. It
-        // printed `192.168.100.2` until a real run fed it to `exec --agents` and got
-        // "unreachable" for a machine that was sitting right there.
-        println!(
-            "{}",
-            result
-                .found
-                .iter()
-                .map(|found| format!("{}:{}", found.address, found.port))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        return if result.truncated {
-            ExitCode::NOT_ALL_ALIVE
-        } else {
-            ExitCode::SUCCESS
+fn discover_on(port: u16, networks: bool, targets: bool) -> CommandOutcome {
+    let failure = |reason: String| {
+        let mut result = CommandOutcome::failed(reason);
+        result.code = i32::from(ExitCode::NOT_ALL_ALIVE);
+        result
+    };
+    if networks {
+        return match linklet_adapters::local_interfaces() {
+            Ok(interfaces) => CommandOutcome::answered(
+                interfaces
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                0,
+            ),
+            Err(reason) => failure(reason),
         };
     }
-
-    // One summary line, then the answers. The networks and the skipped addresses are named
-    // so that a reader can tell which part of the machine the scan came from -- a scan that
-    // silently covered one of two adapters is a scan that missed half the answer.
-    println!(
-        "{} of {} addresses answered on port {port}",
-        result.found.len(),
-        result.tried
-    );
-    for found in &result.found {
-        println!("{}", found.address);
-    }
-    if !result.networks.is_empty() {
-        println!("networks: {}", result.networks.join(" "));
-    }
-    for skipped in &result.skipped {
-        println!("skipped: {skipped}");
-    }
-    if result.truncated {
-        println!(
-            "note: the scan was cut short at its ceiling, so addresses beyond it were not tried"
-        );
-    }
-
-    if result.truncated {
-        ExitCode::NOT_ALL_ALIVE
+    let plan = match linklet_adapters::plan_here() {
+        Ok(plan) => plan,
+        Err(reason) => return failure(reason),
+    };
+    let result = linklet_adapters::scan(&plan, port);
+    let text = if targets {
+        result
+            .found
+            .iter()
+            .map(|f| format!("{}:{}", f.address, f.port))
+            .collect::<Vec<_>>()
+            .join(",")
     } else {
-        ExitCode::SUCCESS
-    }
+        let mut lines = vec![format!(
+            "{} of {} addresses answered on port {port}; TCP reachable, authentication not verified",
+            result.found.len(),
+            result.tried
+        )];
+        lines.extend(result.found.iter().map(|f| f.address.to_string()));
+        if !result.networks.is_empty() {
+            lines.push(format!("networks: {}", result.networks.join(" ")));
+        }
+        lines.extend(result.skipped.iter().map(|s| format!("skipped: {s}")));
+        if result.truncated {
+            lines.push("note: the scan was cut short at its ceiling, so addresses beyond it were not tried".into());
+        }
+        lines.join("\n")
+    };
+    CommandOutcome::answered(text, i32::from(result.truncated))
 }
 
 /// Lists a path on an agent's machine and prints what is there.
@@ -1238,7 +1159,7 @@ fn run_discover(arguments: &[String]) -> u8 {
 /// is exit 1 and not 3**, because the call *was* made: what went wrong is on the machine, and
 /// sending the reader to the network for a directory they typed wrong is the mistake the
 /// exit-code scheme exists to prevent.
-fn run_ls(arguments: &[String]) -> u8 {
+fn run_ls(arguments: &[String]) -> i32 {
     // **One flag table, one parser.** The reasoning is in `linklet_core::arguments`; what is
     // local is which flags this command has and which of them are required.
     let flags = [Flag::takes_value("--agent"), Flag::takes_value("--from")];
@@ -1249,14 +1170,14 @@ fn run_ls(arguments: &[String]) -> u8 {
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: ls needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     // A path is required rather than defaulted to the root. The root is the agent's own
     // choice and a caller that asked for "everything" would get a listing of a directory it
     // did not name, which is the shape of a guess.
     let Some(path) = args.value("--from") else {
         eprintln!("linklet: ls needs --from <path on the target>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
     let outcome = ls_on(
@@ -1284,7 +1205,7 @@ fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> CommandOutc
     match linklet_client::ls(&address, request) {
         Ok(listing) => CommandOutcome::answered(
             linklet_core::listing::render(&listing),
-            u8::from(!listing.found || listing.truncated),
+            i32::from(!listing.found || listing.truncated),
         ),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
@@ -1298,7 +1219,7 @@ fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> CommandOutc
 /// 3**, because the call *was* made: what went wrong is on the machine, and sending the
 /// reader to the network for a path they typed wrong is the mistake the whole exit-code
 /// scheme exists to prevent.
-fn run_grep(arguments: &[String]) -> u8 {
+fn run_grep(arguments: &[String]) -> i32 {
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--from"),
@@ -1341,15 +1262,15 @@ fn run_grep(arguments: &[String]) -> u8 {
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: grep needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     let Some(path) = args.value("--from") else {
         eprintln!("linklet: grep needs --from <path on the target>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     let Some(text) = args.value("--pattern") else {
         eprintln!("linklet: grep needs --pattern <text>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
     let request = GrepRequest {
@@ -1368,7 +1289,7 @@ fn run_grep(arguments: &[String]) -> u8 {
 /// Reads the last lines of a file on an agent's machine and prints them.
 ///
 /// The exit code follows [`run_grep`], and for the same reason.
-fn run_tail(arguments: &[String]) -> u8 {
+fn run_tail(arguments: &[String]) -> i32 {
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--from"),
@@ -1387,11 +1308,11 @@ fn run_tail(arguments: &[String]) -> u8 {
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: tail needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     let Some(path) = args.value("--from") else {
         eprintln!("linklet: tail needs --from <path on the target>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
     tail_on(
@@ -1420,7 +1341,7 @@ fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> Command
     match linklet_client::grep(&address, request) {
         Ok(search) => CommandOutcome::answered(
             linklet_core::search::render(&search),
-            u8::from(!search.searched || search.truncated),
+            i32::from(!search.searched || search.truncated),
         ),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
@@ -1439,7 +1360,7 @@ fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> Command
     match linklet_client::tail(&address, request) {
         Ok(search) => CommandOutcome::answered(
             linklet_core::search::render(&search),
-            u8::from(!search.searched || search.truncated),
+            i32::from(!search.searched || search.truncated),
         ),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
@@ -1454,9 +1375,8 @@ fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> Command
 ///
 /// Confirming it stayed up is the caller's next two commands, and they are the ones the
 /// deploy loop is made of: `linklet ps` to look, `linklet kill` to stop it again.
-fn run_spawn(arguments: &[String]) -> u8 {
-    // `AllowWords` because everything after the options is the command to run, which may have
-    // flags of its own. See the line `linklet_core::arguments` draws.
+fn run_spawn(arguments: &[String]) -> i32 {
+    // CommandTail leaves every argument after the command to the target shell.
     let flags = [Flag::takes_value("--agent"), Flag::takes_value("--output")];
     let args = match read(arguments, &flags, Strictness::CommandTail) {
         Ok(args) => args,
@@ -1465,11 +1385,11 @@ fn run_spawn(arguments: &[String]) -> u8 {
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: spawn needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
-    if args.words().is_empty() {
+    if args.tail().trim().is_empty() {
         eprintln!("linklet: spawn needs a command");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     }
     // Required rather than defaulted, and the refusal says why: a program whose output goes
     // nowhere is a program the caller cannot look at afterwards, which is the one thing this
@@ -1478,7 +1398,7 @@ fn run_spawn(arguments: &[String]) -> u8 {
     let Some(output) = args.value("--output") else {
         eprintln!("linklet: spawn needs --output <path on the target>: the program writes");
         eprintln!("linklet:   its own output there, which is how you read it afterwards");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
     let request = SpawnRequest {
@@ -1493,9 +1413,9 @@ fn run_spawn(arguments: &[String]) -> u8 {
     println!("{}", outcome.text);
 
     if outcome.is_error {
-        return ExitCode::REFUSED;
+        return i32::from(ExitCode::REFUSED);
     }
-    ExitCode::SUCCESS
+    i32::from(ExitCode::SUCCESS)
 }
 
 /// Starts a program on an agent's machine and renders what was started.
@@ -1534,7 +1454,7 @@ fn spawn_on(agent: &str, request: &SpawnRequest, token: Option<&Token>) -> ToolO
 /// The exit code is `check`'s and not `exec`'s -- there is no command whose status could be
 /// passed through. `0` when everything the request matched is gone, `1` when something is
 /// still there, `3` when the call could not be made or was refused.
-fn run_kill(arguments: &[String]) -> u8 {
+fn run_kill(arguments: &[String]) -> i32 {
     let flags = [
         Flag::takes_value("--agent"),
         Flag::takes_value("--pid"),
@@ -1559,7 +1479,7 @@ fn run_kill(arguments: &[String]) -> u8 {
             Ok(pid) => targets.push(linklet_core::process::ToKill::Pid(pid)),
             Err(_) => {
                 eprintln!("linklet: --pid needs a process identifier, got {text:?}");
-                return ExitCode::USAGE;
+                return i32::from(ExitCode::USAGE);
             }
         }
     }
@@ -1572,16 +1492,16 @@ fn run_kill(arguments: &[String]) -> u8 {
 
     if targets.len() > 1 {
         eprintln!("linklet: kill takes one of --pid, --name or --contains, not several");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     }
 
     let Some(agent) = args.value("--agent") else {
         eprintln!("linklet: kill needs --agent <host:port>");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
     let Some(to_kill) = targets.pop() else {
         eprintln!("linklet: kill needs one of --pid, --name or --contains");
-        return ExitCode::USAGE;
+        return i32::from(ExitCode::USAGE);
     };
 
     let mut candidates = linklet_core::process::Filter::any();
@@ -1615,7 +1535,7 @@ fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> Command
     match linklet_client::kill(&address, request) {
         Ok(report) => CommandOutcome::answered(
             linklet_core::process::render_kill(&report),
-            u8::from(!report.complete()),
+            i32::from(!report.complete()),
         ),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
@@ -1640,7 +1560,7 @@ fn ps_on(
     match linklet_client::ps(&address, filter) {
         Ok(listing) => CommandOutcome::answered(
             linklet_core::process::render(&listing),
-            u8::from(listing.unreadable > 0 || !listing.notes.is_empty()),
+            i32::from(listing.unreadable > 0 || !listing.notes.is_empty()),
         ),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
@@ -1704,46 +1624,42 @@ fn transfer_on(
 /// is better than two. It is also what keeps `check` and `testbed` working, since
 /// neither needs a secret at all and a misconfigured token must not take away a
 /// capability that never used it.
-fn token_from_environment() -> Option<Token> {
+fn configured_token() -> Result<Token, String> {
     let file = std::env::var("LINKLET_TOKEN_FILE").ok();
     let secret = std::env::var("LINKLET_TOKEN").ok();
-
     if file.is_some() && secret.is_some() {
-        eprintln!(
-            "linklet: LINKLET_TOKEN_FILE and LINKLET_TOKEN are both set; the secret is one \
-             thing, so name the one that is in force -- no order between the two is \
-             predictable from here"
-        );
-        return None;
+        return Err("LINKLET_TOKEN_FILE and LINKLET_TOKEN are both set; choose one".into());
     }
-
-    let (named, secret) = match file {
+    let (source, secret) = match file {
         Some(path) => {
-            let contents = match std::fs::read_to_string(&path) {
-                Ok(contents) => contents,
-                Err(error) => {
-                    eprintln!(
-                        "linklet: LINKLET_TOKEN_FILE is unusable: cannot read {path}: {error}"
-                    );
-                    return None;
-                }
-            };
-            // The first line, minus a byte-order mark and the line ending, so that a
-            // file written by a Windows editor holds the secret that was typed into
-            // it. See `linklet_core::auth::secret_in_file`.
+            let contents = std::fs::read_to_string(&path)
+                .map_err(|e| format!("LINKLET_TOKEN_FILE is unusable: cannot read {path}: {e}"))?;
             (
                 format!("LINKLET_TOKEN_FILE ({path})"),
                 secret_in_file(&contents).to_string(),
             )
         }
-        None => ("LINKLET_TOKEN".to_string(), secret?),
+        None => (
+            "LINKLET_TOKEN".into(),
+            secret.ok_or("set LINKLET_TOKEN or LINKLET_TOKEN_FILE")?,
+        ),
     };
+    Token::new(secret).map_err(|e| format!("{source} is unusable: {e}"))
+}
 
-    match Token::new(secret) {
-        Ok(token) => Some(token),
+fn token_from_environment() -> Option<Token> {
+    configured_token()
+        .map_err(|error| eprintln!("linklet: {error}"))
+        .ok()
+}
+
+fn probe_on(agent: &str) -> CommandOutcome {
+    match configured_token() {
+        Ok(token) => probe::run_probe(agent, Some(&token)),
         Err(error) => {
-            eprintln!("linklet: {named} is unusable: {error}");
-            None
+            let mut outcome = CommandOutcome::failed(error);
+            outcome.code = i32::from(ExitCode::USAGE);
+            outcome
         }
     }
 }

@@ -1293,3 +1293,15 @@ fn a_secret_and_a_token_file_together_are_refused() {
 
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn agent_version_succeeds_without_configuration() {
+    let output = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
+        .arg("--version")
+        .env_remove("LINKLET_TOKEN")
+        .env_remove("LINKLET_TOKEN_FILE")
+        .output()
+        .expect("version");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
+}

@@ -165,7 +165,7 @@ impl Args {
             }
 
             let Some(flag) = flags.iter().find(|flag| flag.name == argument) else {
-                if strictness == Strictness::Strict && looks_like_flag(argument) {
+                if strictness != Strictness::AllowWords && looks_like_flag(argument) {
                     return Err(ParseError::Unknown {
                         flag: argument.clone(),
                     });
@@ -391,6 +391,14 @@ mod tests {
         assert_eq!(args.value("--agent"), Some("a:1"));
         assert_eq!(args.words(), ["myapp.cmd", "--verbose"]);
         assert_eq!(args.tail(), "myapp.cmd --verbose");
+    }
+
+    #[test]
+    fn unknown_options_before_a_command_are_usage_errors() {
+        assert!(matches!(
+            parse(&["--typo", "echo"], Strictness::CommandTail),
+            Err(ParseError::Unknown { .. })
+        ));
     }
 
     #[test]

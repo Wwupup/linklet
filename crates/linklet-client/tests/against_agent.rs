@@ -293,7 +293,7 @@ fn no_agent_at_the_address_is_a_transport_error_and_not_a_result() {
     )
     .expect_err("nothing is listening on port 1");
 
-    assert!(matches!(error, CallError::Transport(_)), "{error:?}");
+    assert!(matches!(error, CallError::Connect(_)), "{error:?}");
     let text = render_call_error(&error);
     assert!(text.starts_with("could not reach the agent"), "{text}");
 

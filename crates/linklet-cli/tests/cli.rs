@@ -69,7 +69,7 @@ fn closed_tcp_port() -> (UdpSocket, u16) {
 fn help_goes_to_stdout_and_does_not_claim_to_have_checked_anything() {
     let output = run(&["--help"]);
 
-    assert_eq!(code(&output), ExitCode::USAGE);
+    assert_eq!(code(&output), ExitCode::SUCCESS);
     assert!(stdout(&output).contains("usage:"));
     assert!(stderr(&output).is_empty(), "help is not an error message");
 }

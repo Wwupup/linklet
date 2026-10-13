@@ -2008,9 +2008,15 @@ pub fn identity_from_json(reply: &Reply) -> Result<String, WireError> {
             "the identity reply is a refusal".to_string(),
         ));
     };
+    let _version = value
+        .get("version")
+        .and_then(Value::as_str)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| WireError::BadRequest("the identity reply has no version".into()))?;
     value
         .get("name")
         .and_then(Value::as_str)
+        .filter(|name| !name.is_empty())
         .map(str::to_string)
         .ok_or_else(|| WireError::BadRequest("the identity reply has no name".to_string()))
 }

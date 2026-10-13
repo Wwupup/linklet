@@ -350,7 +350,7 @@ fn a_ps_call_to_a_machine_with_no_agent_is_a_transport_failure_and_not_an_empty_
     let error = ps(&address, &Filter::any()).expect_err("nothing is listening on port 1");
 
     assert!(
-        matches!(error, CallError::Transport(_) | CallError::NoReply { .. }),
+        matches!(error, CallError::Connect(_) | CallError::NoReply { .. }),
         "{error:?}"
     );
 }

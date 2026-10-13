@@ -83,6 +83,7 @@ options:
                   it reaches a mebibyte with three older files kept
   --no-log        keep no log. A request that never finishes then leaves no evidence
                   behind, which is the one thing the log exists to answer
+  --version      print the version
   -h, --help      print this
 
 File paths are absolute, or relative to the directory the agent was started in.
@@ -100,6 +101,10 @@ fn main() {
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
         match argument.as_str() {
+            "--version" => {
+                println!("linklet-agent {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 std::process::exit(0);

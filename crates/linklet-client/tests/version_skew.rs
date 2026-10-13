@@ -149,7 +149,7 @@ fn a_peer_speaking_a_different_protocol_is_refused_with_both_numbers() {
     let text = error.to_string();
 
     assert!(
-        matches!(error, CallError::Protocol(_)),
+        matches!(error, CallError::VersionMismatch(_)),
         "a version skew is a protocol problem and not a transport one: {error:?}"
     );
     assert!(
