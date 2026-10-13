@@ -10,7 +10,7 @@ be deployed as a pair. Nothing here is published to a registry, and no crate is 
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
-Release **0.4.0 uses protocol 3**.
+Release **0.4.1 uses protocol 3**.
 Typed results, per-call execution modes/directories, incremental log cursors and
 startup observation accompany bounded command streams.
 Upgrade the host and agent together; protocol 1 and 2 peers are refused before a
@@ -18,7 +18,9 @@ command is accepted. Existing saved pairing credentials remain valid.
 Permanent pairing adds a separate
 `opaque-v1` hello without reusing existing fields, its original introduction kept command protocol 2.
 Older agents reject the new hello. Both binaries need the new build to pair; this
-addition ships in 0.4.0. See `docs/pairing.md`.
+addition ships in the 0.4 series. See `docs/pairing.md`.
+The v0.4.0 tag failed Windows CI before publication; 0.4.1 is the first
+published package of this series and leaves that tag unchanged.
 
 ## What the number means
 

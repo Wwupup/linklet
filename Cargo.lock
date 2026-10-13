@@ -678,7 +678,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "linklet-adapters"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -695,7 +695,7 @@ dependencies = [
 
 [[package]]
 name = "linklet-agent"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "linklet-adapters",
  "linklet-core",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "linklet-cli"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "jsonschema",
  "linklet-adapters",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "linklet-client"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "linklet-adapters",
  "linklet-core",
@@ -724,7 +724,7 @@ dependencies = [
 
 [[package]]
 name = "linklet-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "encoding_rs",
  "serde",

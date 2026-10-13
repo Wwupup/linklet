@@ -11,6 +11,18 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+## [0.4.1] -- 2026-10-13
+
+This is the first published package of the 0.4 series and includes all changes
+listed below for 0.4.0. The v0.4.0 tag remains available, but its Windows CI
+check failed before any release or assets were published.
+
+### Fixed
+
+- Windows credential permission tests read ACLs through .NET, so an inherited
+  PowerShell 7 module path cannot prevent Windows PowerShell from checking them.
+  The protected-directory and current-account-only assertions remain unchanged.
+
 ## [0.4.0] -- 2026-10-13
 
 ### Added
