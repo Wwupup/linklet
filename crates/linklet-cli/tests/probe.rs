@@ -6,6 +6,10 @@
 //! healthy agents forever or never restarts a dead one. `crates/linklet-client/tests/probe.rs`
 //! covers what the probe decides; this covers what a shell is told about it.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -59,6 +63,7 @@ fn scratch_dir() -> PathBuf {
 
 /// A running agent, killed when the test ends.
 struct Agent {
+    _credentials: Credentials,
     child: Child,
     port: u16,
     root: PathBuf,
@@ -67,10 +72,10 @@ struct Agent {
 impl Agent {
     fn start() -> Self {
         let root = scratch_dir();
+        let credentials = Credentials::new(Some(TEST_TOKEN), &[]);
 
         let mut child = Command::new(agent_binary())
-            .env("LINKLET_TOKEN", TEST_TOKEN)
-            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(credentials.env())
             .arg("--port")
             .arg("0")
             .current_dir(&root)
@@ -93,7 +98,12 @@ impl Agent {
             .and_then(|text| text.parse::<u16>().ok())
             .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"));
 
-        Self { child, port, root }
+        Self {
+            child,
+            port,
+            root,
+            _credentials: credentials,
+        }
     }
 }
 
@@ -105,11 +115,11 @@ impl Drop for Agent {
     }
 }
 
-/// Runs `linklet probe` with a token in the environment, as a supervisor would.
+/// Runs `linklet probe` with a saved credential.
 fn probe(agent: &str, token: &str) -> Output {
+    let credentials = Credentials::new(None, &[(agent, token)]);
     Command::new(env!("CARGO_BIN_EXE_linklet"))
-        .env("LINKLET_TOKEN", token)
-        .env_remove("LINKLET_TOKEN_FILE")
+        .envs(credentials.env())
         .arg("probe")
         .arg("--agent")
         .arg(agent)
@@ -210,15 +220,16 @@ fn a_spec_nobody_can_read_exits_two_and_not_one() {
 }
 
 #[test]
-fn local_token_configuration_errors_exit_two() {
+fn a_missing_saved_credential_exits_two_and_explains_pairing() {
+    let credentials = Credentials::new(None, &[]);
     let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
         .args(["probe", "--agent", "127.0.0.1:1"])
-        .env_remove("LINKLET_TOKEN")
-        .env("LINKLET_TOKEN_FILE", "missing-token-file-for-probe")
+        .env("LINKLET_TOKEN", TEST_TOKEN)
+        .envs(credentials.env())
         .output()
         .expect("probe");
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot read"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("linklet pair --agent"));
 }
 
 #[test]

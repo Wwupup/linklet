@@ -218,7 +218,7 @@ difference matters to whoever is reading:
 | `no answer within 5 s` | nothing came back at all -- off, filtered, or slow |
 
 `exec` runs one command on one machine and reports its exit code, how long it
-took, and what it printed. It needs a running target agent and a saved pairing credential or explicit token.
+took, and what it printed. It needs a running target agent and a saved pairing credential.
 
 ### Exit codes
 
@@ -289,8 +289,7 @@ with different targets. The address is still required; `discover` finds LAN list
 
 To revoke all controllers, stop the target and run `linklet-agent init`. This rotates
 the code and credential, then starts normally. Initialization refuses while the saved
-state belongs to a running agent. Explicit token flags/environment remain available
-and disable target pairing. See [pairing](docs/pairing.md) for storage and protocol details.
+state belongs to a running agent. See [pairing](docs/pairing.md) for storage and protocol details.
 
 ## Calling it from an agent
 
@@ -317,9 +316,8 @@ perform, so a reader who knows one knows the other.
 
 Call `pair` with `{"agent":"10.0.0.5:8787","code":"083614"}` once. Keep the
 code as a string so leading zeros survive. The MCP server saves the long-term
-credential for its OS account and never returns it as a tool result. Explicit
-`LINKLET_TOKEN` or `LINKLET_TOKEN_FILE` overrides saved credentials; remove them
-for automatic pairing. The six-digit code is the only credential tool argument.
+credential for its OS account and never returns it as a tool result. The six-digit
+code is the only credential tool argument.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
 and the two places a caller goes wrong. `integrations/` is in this repository, and a

@@ -9,13 +9,10 @@ pub const NO_ANSWER: i32 = 4;
 const PROBE_BUDGET: Duration = Duration::from_secs(2);
 
 /// Verifies a valid authenticated identity and maps failures to the five probe codes.
-pub fn run_probe(agent: &str, token: Option<&Token>) -> CommandOutcome {
+pub fn run_probe(agent: &str, token: &Token) -> CommandOutcome {
     let address = match linklet_client::AgentAddress::new(agent) {
         Ok(address) => address,
         Err(error) => return outcome(render_call_error(&error), 2),
-    };
-    let Some(token) = token else {
-        return outcome("probe needs LINKLET_TOKEN or LINKLET_TOKEN_FILE".into(), 2);
     };
     let address = address.with_token(token.clone());
     match linklet_client::probe(&address, PROBE_BUDGET) {

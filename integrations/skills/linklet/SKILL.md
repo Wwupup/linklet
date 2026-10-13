@@ -32,9 +32,9 @@ take `agent`, an address written `host:port`; `exec` also accepts an `agents` ar
    machine running the MCP server; its `target` argument is a label in the output.
    Read each tool's target arguments before handing it an address.
 4. **A refusal is not an empty answer.** `the token is missing or wrong` is about the
-   secret, and the server's own stderr names the file it could not read or the two
-   sources it was given -- it is a configuration problem on this side, and no amount
-   of retrying will change it.
+   saved credential. Pair again with the target's current code, especially after
+   `linklet-agent init`. Local storage errors name what could not be read or saved;
+   retrying a remote operation does not repair that storage.
 
 ## A round of joint debugging, in order
 

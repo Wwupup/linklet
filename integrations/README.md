@@ -68,7 +68,6 @@ Two fields are required; credentials are remembered after pairing:
 |---|---|
 | `command` | the path to `linklet.exe`, and **not** a shell command |
 | `args` | `["mcp"]` |
-| `env` | optional explicit `LINKLET_TOKEN_FILE`; omit for automatic pairing |
 
 **DSH.** Paste `dsh/mcp-entry.yml` into the top-level array of the profile's
 `cordis.patch.yml` (`%USERPROFILE%\.dsh\profiles\<profile>\cordis.patch.yml`) and
@@ -95,10 +94,8 @@ the way it does.
 The ZCode shape is second-hand -- it is `lanlink`'s, not measured here -- and the DSH
 entry is the one this repository has been set up with.
 
-**Any other client** takes the same fields. Two things to check when it does
-not work: the path in `command` is the executable rather than a wrapper, and the file
-the client reads is not one that gets committed, because a token file keeps the
-secret out of it and `LINKLET_TOKEN` in the same place would not.
+**Any other client** takes the same two fields. Check that `command` names the
+executable directly and that the MCP server runs under the account used to pair.
 
 ## Pair once
 
@@ -108,10 +105,8 @@ displayed code as a string. Even a new controller can pair unattended. The MCP
 server saves the strong credential under its OS account; later operations and CLI
 calls use it automatically. `probe` then confirms authenticated name and version.
 
-Explicit `LINKLET_TOKEN` / `LINKLET_TOKEN_FILE` override saved credentials; remove
-them for the automatic flow. They remain an option for manually provisioned tokens,
-which must match on both ends. Both variables at once are refused. Long-term tokens
-are never MCP arguments or results. See `docs/pairing.md` for reset and storage.
+Long-term tokens are never MCP arguments or results. See `docs/pairing.md` for
+reset and storage.
 
 ## First, the agent has to be on the target
 
@@ -133,7 +128,7 @@ rolls over at a mebibyte keeping three older files. Nothing has to be passed for
 `--log <file>` moves it and `--no-log` turns it off, and the log is where the request
 that never finished is named -- see `docs/smoke.md`.
 
-With no explicit token, the agent generates and saves credentials on first start
+The agent generates and saves credentials on first start
 and prints a permanent six-digit code. Later starts reuse it. Stop the process and
 run `linklet-agent init` to rotate both secrets and revoke all paired controllers.
 Initialization refuses while the same account store is still in use. File tools
@@ -147,7 +142,7 @@ binaries together for protocol 2.
 
 ## Reference
 
-- `docs/MCP.md` -- the thirteen tools, the two places a caller goes wrong, and the
+- `docs/MCP.md` -- the fourteen tools, the two places a caller goes wrong, and the
   protocol decisions
 - `skills/linklet/SKILL.md` -- the shipped skill, readable as plain documentation if
   you would rather not install it

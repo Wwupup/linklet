@@ -18,10 +18,15 @@ to answer one question: **what can I do now that I could not do before?**
   CLI or MCP `pair`; later calls load the saved per-target token automatically.
 - `linklet-agent init` rotates both secrets and starts again after the old process
   has stopped, revoking all paired controllers. Pairing uses OPAQUE and a shared
-  attempt budget. Explicit tokens remain available and disable target pairing.
+  attempt budget.
   Protocol 2 command behavior is unchanged; no release or deployment is performed.
 
 ### Changed
+
+- **Breaking, next minor:** removed `LINKLET_TOKEN`, `LINKLET_TOKEN_FILE`, and
+  agent `--token` / `--token-file`. Pairing and saved per-target credentials are
+  the only setup path. Old environment variables are ignored; old flags exit 2.
+  Existing pairing state remains valid. Protocol 2 is unchanged.
 
 - Next minor: help and version queries exit 0. Single exec preserves the remote
   exit code (including full Windows statuses); batches exit 1 if any target fails.

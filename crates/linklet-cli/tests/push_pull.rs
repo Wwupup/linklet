@@ -9,6 +9,10 @@
 //! The agent is spawned here rather than in `tests/cli.rs` because a transfer needs one;
 //! `check` does not.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -62,6 +66,7 @@ fn scratch_dir() -> PathBuf {
 
 /// A running agent, killed and cleaned up when the test ends.
 struct Agent {
+    _credentials: Credentials,
     child: Child,
     address: String,
     root: PathBuf,
@@ -70,9 +75,9 @@ struct Agent {
 impl Agent {
     fn start() -> Self {
         let root = scratch_dir();
+        let credentials = Credentials::new(Some(TEST_TOKEN), &[]);
         let mut child = Command::new(agent_binary())
-            .env("LINKLET_TOKEN", TEST_TOKEN)
-            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(credentials.env())
             .arg("--port")
             .arg("0")
             .current_dir(&root)
@@ -98,6 +103,7 @@ impl Agent {
             .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"));
 
         Self {
+            _credentials: credentials,
             child,
             address: format!("127.0.0.1:{port}"),
             root,
@@ -118,11 +124,16 @@ impl Drop for Agent {
     }
 }
 
-/// Runs the command line with the token in the environment, as a deployment would.
+/// Runs the command line with a saved per-target credential.
 fn linklet(arguments: &[&str]) -> Output {
+    let peers: Vec<_> = arguments
+        .windows(2)
+        .filter(|args| args[0] == "--agent")
+        .map(|args| (args[1], TEST_TOKEN))
+        .collect();
+    let credentials = Credentials::new(None, &peers);
     Command::new(env!("CARGO_BIN_EXE_linklet"))
-        .env("LINKLET_TOKEN", TEST_TOKEN)
-        .env_remove("LINKLET_TOKEN_FILE")
+        .envs(credentials.env())
         .args(arguments)
         .output()
         .expect("the binary under test should be runnable")

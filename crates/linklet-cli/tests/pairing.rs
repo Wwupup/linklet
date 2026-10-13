@@ -31,8 +31,6 @@ impl Fixture {
             std::env::consts::EXE_SUFFIX
         )))
         .args(["--port", "0", "--no-log"])
-        .env_remove("LINKLET_TOKEN")
-        .env_remove("LINKLET_TOKEN_FILE")
         .env("LOCALAPPDATA", root.join("target"))
         .env("XDG_CONFIG_HOME", root.join("target"))
         .stdout(Stdio::piped())
@@ -63,9 +61,7 @@ impl Fixture {
     }
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_linklet"));
-        cmd.env_remove("LINKLET_TOKEN")
-            .env_remove("LINKLET_TOKEN_FILE")
-            .env("LOCALAPPDATA", self.root.join("controller"))
+        cmd.env("LOCALAPPDATA", self.root.join("controller"))
             .env("XDG_CONFIG_HOME", self.root.join("controller"));
         cmd
     }
@@ -101,6 +97,8 @@ fn pairing_persists_for_cli_and_mcp_without_a_token_environment() {
     );
     let mut mcp = f
         .command()
+        .env("LINKLET_TOKEN", "short")
+        .env("LINKLET_TOKEN_FILE", "missing-obsolete-token-file")
         .arg("mcp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -157,9 +155,7 @@ fn pairing_persists_for_cli_and_mcp_without_a_token_environment() {
             "debug/linklet-agent{}",
             std::env::consts::EXE_SUFFIX
         )));
-        cmd.env_remove("LINKLET_TOKEN")
-            .env_remove("LINKLET_TOKEN_FILE")
-            .env("LOCALAPPDATA", f.root.join("target"))
+        cmd.env("LOCALAPPDATA", f.root.join("target"))
             .env("XDG_CONFIG_HOME", f.root.join("target"));
         cmd
     };
@@ -249,21 +245,22 @@ fn one_controller_uses_different_saved_tokens_in_a_batch() {
         .env("LINKLET_TOKEN", "explicit-wrong-token-1234")
         .args(["probe", "--agent", &first.address])
         .output()
-        .expect("override");
+        .expect("obsolete environment");
     assert_eq!(
         output.status.code(),
-        Some(3),
-        "an explicit token overrides saved state"
+        Some(0),
+        "obsolete token variables cannot override saved credentials"
     );
     let output = first
         .command()
         .env("LINKLET_TOKEN", "short")
+        .env("LINKLET_TOKEN_FILE", "missing-obsolete-token-file")
         .args(["probe", "--agent", &first.address])
         .output()
-        .expect("bad override");
+        .expect("obsolete environment");
     assert_eq!(
         output.status.code(),
-        Some(2),
-        "invalid explicit configuration cannot fall back"
+        Some(0),
+        "obsolete token configuration is ignored"
     );
 }

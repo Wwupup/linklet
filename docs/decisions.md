@@ -245,4 +245,7 @@ accepted in MCP arguments, while long-term credentials stay in account storage.
 `init` rotates the code and command credential under the same exclusive store
 lock the running agent holds. This revokes all controllers, without introducing
 controller identities, selective revocation, services or automatic restart.
+Pairing is the only setup path. Manual token flags and environment overrides are
+removed: two credential sources added setup work and could silently override a
+successful pairing. Existing saved credentials continue to work unchanged.
 `docs/pairing.md` records the protocol and the limits of a short permanent secret.

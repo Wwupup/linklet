@@ -9,8 +9,8 @@ fn first_start_generates_a_code_and_restart_keeps_it() {
     let start = || {
         let mut child = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
             .args(["--port", "0", "--no-log"])
-            .env_remove("LINKLET_TOKEN")
-            .env_remove("LINKLET_TOKEN_FILE")
+            .env("LINKLET_TOKEN", "short")
+            .env("LINKLET_TOKEN_FILE", "missing-obsolete-token-file")
             .env("LOCALAPPDATA", &home)
             .env("XDG_CONFIG_HOME", &home)
             .stdout(Stdio::piped())
@@ -40,4 +40,16 @@ fn first_start_generates_a_code_and_restart_keeps_it() {
     let first = start();
     assert_eq!(first, start());
     std::fs::remove_dir_all(home).expect("cleanup");
+}
+
+#[test]
+fn manual_token_options_are_rejected() {
+    for flag in ["--token", "--token-file"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_linklet-agent"))
+            .args([flag, "obsolete-token-value", "--help"])
+            .output()
+            .expect("invoke agent");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+    }
 }

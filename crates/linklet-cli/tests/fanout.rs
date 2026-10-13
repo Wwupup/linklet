@@ -11,6 +11,10 @@
 //! unreachable**, and a caller that confused them would go and look at the network for a
 //! mistake in its own token.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -64,6 +68,7 @@ fn scratch_dir() -> PathBuf {
 /// `token` is a parameter rather than a constant so that a test can start one that will refuse
 /// the caller -- which is the only way to produce a *refusal* rather than an unreachable host.
 struct Agent {
+    _credentials: Credentials,
     child: Child,
     address: String,
     root: PathBuf,
@@ -72,9 +77,9 @@ struct Agent {
 impl Agent {
     fn start(token: &str) -> Self {
         let root = scratch_dir();
+        let credentials = Credentials::new(Some(token), &[]);
         let mut child = Command::new(agent_binary())
-            .env("LINKLET_TOKEN", token)
-            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(credentials.env())
             .arg("--port")
             .arg("0")
             .current_dir(&root)
@@ -98,6 +103,7 @@ impl Agent {
             .unwrap_or_else(|| panic!("cannot read a port from {banner:?}"));
 
         Self {
+            _credentials: credentials,
             child,
             address: format!("127.0.0.1:{port}"),
             root,
@@ -113,11 +119,12 @@ impl Drop for Agent {
     }
 }
 
-/// Runs `linklet exec --agents ...` with the token in the environment, as a person would.
+/// Runs `linklet exec --agents ...` with saved credentials for each target.
 fn exec_across(agents: &[&str], command: &str, token: &str) -> Output {
+    let peers: Vec<_> = agents.iter().map(|agent| (*agent, token)).collect();
+    let credentials = Credentials::new(None, &peers);
     Command::new(env!("CARGO_BIN_EXE_linklet"))
-        .env("LINKLET_TOKEN", token)
-        .env_remove("LINKLET_TOKEN_FILE")
+        .envs(credentials.env())
         .arg("exec")
         .arg("--agents")
         .arg(agents.join(","))
@@ -263,8 +270,6 @@ fn one_agent_and_several_are_refused_when_both_are_given() {
     // Two intentions in one invocation, and guessing between them would run a command
     // somewhere the caller did not name.
     let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
-        .env("LINKLET_TOKEN", TEST_TOKEN)
-        .env_remove("LINKLET_TOKEN_FILE")
         .args([
             "exec",
             "--agent",
@@ -316,9 +321,9 @@ fn a_target_from_discovery_is_a_target_the_other_commands_accept() {
 #[test]
 fn single_exec_preserves_the_full_windows_exit_code() {
     let agent = Agent::start(TEST_TOKEN);
+    let credentials = Credentials::new(None, &[(&agent.address, TEST_TOKEN)]);
     let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
-        .env("LINKLET_TOKEN", TEST_TOKEN)
-        .env_remove("LINKLET_TOKEN_FILE")
+        .envs(credentials.env())
         .args(["exec", "--agent", &agent.address, "exit 256"])
         .output()
         .expect("exec");
@@ -328,9 +333,9 @@ fn single_exec_preserves_the_full_windows_exit_code() {
 #[test]
 fn remote_help_and_same_named_flags_are_transmitted() {
     let agent = Agent::start(TEST_TOKEN);
+    let credentials = Credentials::new(None, &[(&agent.address, TEST_TOKEN)]);
     let output = Command::new(env!("CARGO_BIN_EXE_linklet"))
-        .env("LINKLET_TOKEN", TEST_TOKEN)
-        .env_remove("LINKLET_TOKEN_FILE")
+        .envs(credentials.env())
         .args([
             "exec",
             "--agent",

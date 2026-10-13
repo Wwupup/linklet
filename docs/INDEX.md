@@ -116,7 +116,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |
 | `crates/linklet-core/src/transfer.rs` | T1: whether a path may be written, and the two filesystems' rules for deciding -- including the case rule that was a live escape on Linux |
-| `crates/linklet-core/src/auth.rs` | token validation, file-content parsing, and the public refusal message |
+| `crates/linklet-core/src/auth.rs` | token validation and the public refusal message |
 | `crates/linklet-core/src/channel.rs` | what a sealed conversation is, and what it is not |
 | `crates/linklet-core/src/process.rs` | what is running, what may be stopped, and why an empty list has to say what it looked at |
 | `crates/linklet-core/src/search.rs` | what a run of bytes is, which lines match, why a failed search is not an empty one, and the total rule for bytes no machine can name |
@@ -156,7 +156,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-client/tests/ps.rs` | the listing and the deploy loop over a socket: look, stop, and confirm -- on whichever platform the suite runs on |
 | `crates/linklet-cli/tests/cli.rs` | the binary, run as a process |
 | `crates/linklet-cli/tests/push_pull.rs` | the transfer commands, as a person and an agent meet them |
-| `crates/linklet-cli/tests/token_file.rs` | the secret as a file on both ends: the Windows bytes, the two refusals, and what each end does instead |
+| `crates/linklet-cli/tests/pairing.rs` | persistent pairing, per-target credentials, reset, and ignored legacy token configuration |
 | `crates/linklet-cli/tests/testbed.rs` | `testbed check` against this machine: the `no-process` requirement, which used to be Windows-only |
 | `crates/linklet-cli/tests/fanout.rs` | one command across several agents: the labels and the exit codes, and a refusal told apart from an unreachable machine |
 | `crates/linklet-client/tests/probe.rs` | whether an agent is working or only listening, against a socket that accepts and says nothing |

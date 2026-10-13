@@ -2,11 +2,9 @@
 //!
 //! # The shape of the scheme, and what it is not
 //!
-//! **The token is never transmitted.** It is mixed into the key derivation of a
-//! sealed session, so what crosses the wire is public keys and ciphertext, and a
-//! captured request is not a credential. That is the part worth being precise about,
-//! because it is the part a reader is most likely to assume wrongly in either
-//! direction.
+//! Pairing generates and delivers the token inside an authenticated encrypted
+//! channel. Command connections mix it into session key derivation; only public
+//! keys and ciphertext cross the wire, so a captured request is not a credential.
 //!
 //! What it does not do:
 //!
@@ -24,11 +22,9 @@
 //!
 /// The smallest token this will accept, in bytes.
 ///
-/// A short token is not a weak secret because of the length of the string; it is
-/// weak because whoever chose it did not think about the question. Sixteen bytes
-/// is the smallest thing that looks like it was chosen on purpose, and the agent
-/// refuses anything shorter at startup rather than at the first connection --
-/// a configuration error should be loud when it is made.
+/// A structural check for malformed saved credentials, not an entropy estimate.
+/// Managed pairing generates an independent 256-bit secret encoded as 64 hex
+/// characters. The six-digit pairing code is never a command token.
 pub const MIN_TOKEN_BYTES: usize = 16;
 
 /// Why a token is not usable.
@@ -70,7 +66,7 @@ impl Token {
     ///
     /// # Errors
     ///
-    /// [`TokenError`] when the value could not have been chosen deliberately.
+    /// [`TokenError`] when the value is empty or shorter than [`MIN_TOKEN_BYTES`].
     pub fn new(secret: impl Into<String>) -> Result<Self, TokenError> {
         let secret = secret.into();
         if secret.trim().is_empty() {
@@ -87,32 +83,6 @@ impl Token {
     /// The value, for deriving an authenticated session; never sent on the wire.
     pub fn expose(&self) -> &str {
         &self.0
-    }
-}
-
-/// The secret inside a token file, given the file's contents.
-///
-/// **The first line, with a UTF-8 byte-order mark and that line's ending removed.**
-/// Neither of those is something anyone decides to add: Windows PowerShell 5.1
-/// writes a BOM from `Set-Content -Encoding utf8`, and every editor on the platform
-/// ends the last line. Either one left in place makes the secret a byte or two
-/// longer than the one a person typed, and that does not fail where it is made --
-/// it derives a *different* key and comes back as "the token is missing or wrong",
-/// which sends the reader to examine the machine that was never wrong.
-///
-/// Only the mark and the line ending are removed. A space inside the file is part
-/// of the secret: a rule that trimmed whitespace would call two files the same
-/// secret when they are not, and the difference would surface as the same
-/// misleading refusal.
-///
-/// Nothing else is interpreted. An empty file, or one holding only a line ending,
-/// produces an empty candidate, which [`Token::new`] refuses -- the length rule
-/// lives in one place and this is not a second copy of it.
-pub fn secret_in_file(contents: &str) -> &str {
-    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
-    match contents.find(['\r', '\n']) {
-        Some(end) => &contents[..end],
-        None => contents,
     }
 }
 

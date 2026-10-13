@@ -40,32 +40,29 @@ repeat the mistake this tool exists to fix.
 
 ## What the target needs
 
-Nothing but a running `linklet-agent` and the same token on both sides.
+A running `linklet-agent` and a controller paired with its displayed code.
 
 ```powershell
 # On the target, once:
-$env:LINKLET_TOKEN = '<at least sixteen bytes>'
 mkdir C:\linklet\transfers
 Set-Location C:\linklet\transfers
-linklet-agent.exe --port 8787
 New-NetFirewallRule -DisplayName linklet-agent -Direction Inbound `
     -Protocol TCP -LocalPort 8787 -Action Allow
+linklet-agent.exe --port 8787
 ```
 
 The firewall rule is the step that matters and the reason this layer exists. It is
 also the one step that `linklet` deliberately does not do for you: the agent cannot
 open a port on a machine it has not been installed on yet.
 
-**The secret may come from a file instead, and that is the shape to use when a
-script or a client configuration would otherwise hold the value.** On the agent:
-`--token-file C:\linklet\token.txt`, or `LINKLET_TOKEN_FILE` in the environment.
-The host reads the same variable, so one file named on both sides is the whole
-configuration. The file's first line is the secret, and a byte-order mark and the
-line ending are not part of it -- which matters because `Set-Content` adds both, and
-either one left in would derive a different key and arrive as "the token is missing
-or wrong" at the first call. **One source, never two**: a token file and a token
-together are refused at startup, because the two are two answers to one question and
-whichever lost would be the one the operator believed was in force.
+On the controller, run `linklet pair --agent <target>:8787 --code <six-digits>`
+with the code printed on the target. Future CLI and MCP calls use the saved
+credential automatically. The agent remains an ordinary process; exiting it
+makes the target offline. See `pairing.md` for account storage and `init`.
+
+To check claim 5, use a disposable target store: pair, stop the target, restart
+with `linklet-agent init`, then `probe` with the old saved credential. It must
+exit 3 with an authentication refusal. Pair with the new code before continuing.
 
 ### The agent's own log, and where it goes
 

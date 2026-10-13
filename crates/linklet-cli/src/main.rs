@@ -33,7 +33,7 @@ use std::time::Duration;
 use linklet_adapters::{SystemProber, TcpProbe, serve};
 use linklet_client::{AgentAddress, render_call_error};
 use linklet_core::arguments::{Args, Flag, Strictness};
-use linklet_core::auth::{Token, secret_in_file};
+use linklet_core::auth::Token;
 use linklet_core::testbed::{self, Testbed};
 use linklet_core::wire::{
     self, GrepRequest, KillRequest, LsRequest, RunRequest, SpawnRequest, TailRequest,
@@ -523,7 +523,7 @@ impl ToolRunner for LiveRunner {
         pair_on(agent, code).tool
     }
     fn exec_many(&self, agents: &[String], command: &str, timeout: u64) -> ToolOutcome {
-        exec_across(agents, command, timeout, token_from_environment().as_ref()).tool
+        exec_across(agents, command, timeout).tool
     }
     fn discover(&self, port: u16, networks: bool, targets: bool) -> ToolOutcome {
         discover_on(port, networks, targets).tool
@@ -563,61 +563,40 @@ impl ToolRunner for LiveRunner {
     }
 
     fn exec(&self, agent: &str, command: &str, timeout_seconds: u64) -> ToolOutcome {
-        // The token comes from the environment (or from the file it names) at each
-        // call, never from a tool argument: an argument would put the secret in the
-        // conversation. A token that is missing or unusable is reported on stderr
-        // and the call fails at the handshake, which is the reply the client sees.
-        exec_on(
-            agent,
-            command,
-            timeout_seconds,
-            token_from_environment().as_ref(),
-        )
-        .tool
+        // Credentials are loaded per target from the pairing store.
+        exec_on(agent, command, timeout_seconds).tool
     }
 
     fn push(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
-        transfer_on(
-            Direction::Push,
-            agent,
-            from,
-            to,
-            token_from_environment().as_ref(),
-        )
+        transfer_on(Direction::Push, agent, from, to)
     }
 
     fn pull(&self, agent: &str, from: &str, to: &str) -> ToolOutcome {
-        transfer_on(
-            Direction::Pull,
-            agent,
-            from,
-            to,
-            token_from_environment().as_ref(),
-        )
+        transfer_on(Direction::Pull, agent, from, to)
     }
 
     fn ps(&self, agent: &str, filter: &linklet_core::process::Filter) -> ToolOutcome {
-        ps_on(agent, filter, token_from_environment().as_ref()).tool
+        ps_on(agent, filter).tool
     }
 
     fn kill(&self, agent: &str, request: &KillRequest) -> ToolOutcome {
-        kill_on(agent, request, token_from_environment().as_ref()).tool
+        kill_on(agent, request).tool
     }
 
     fn spawn(&self, agent: &str, request: &SpawnRequest) -> ToolOutcome {
-        spawn_on(agent, request, token_from_environment().as_ref())
+        spawn_on(agent, request)
     }
 
     fn grep(&self, agent: &str, request: &GrepRequest) -> ToolOutcome {
-        grep_on(agent, request, token_from_environment().as_ref()).tool
+        grep_on(agent, request).tool
     }
 
     fn tail(&self, agent: &str, request: &TailRequest) -> ToolOutcome {
-        tail_on(agent, request, token_from_environment().as_ref()).tool
+        tail_on(agent, request).tool
     }
 
     fn ls(&self, agent: &str, request: &LsRequest) -> ToolOutcome {
-        ls_on(agent, request, token_from_environment().as_ref()).tool
+        ls_on(agent, request).tool
     }
 }
 
@@ -634,9 +613,8 @@ fn exec_at(
     agent: &str,
     command: &str,
     timeout_seconds: u64,
-    token: Option<&Token>,
 ) -> Result<wire::RunOutcome, linklet_client::CallError> {
-    let address = configured_address(agent, token)?;
+    let address = configured_address(agent)?;
 
     let request = RunRequest {
         command: command.to_string(),
@@ -662,12 +640,7 @@ fn exec_at(
 /// are read out of the same run.
 ///
 /// A batch exits 0 only when every command exits 0; failures retain their details.
-fn exec_across(
-    agents: &[String],
-    command: &str,
-    timeout_seconds: u64,
-    token: Option<&Token>,
-) -> CommandOutcome {
+fn exec_across(agents: &[String], command: &str, timeout_seconds: u64) -> CommandOutcome {
     use linklet_core::fanout::{Fate, Task};
     if agents.is_empty() || agents.len() > linklet_core::fanout::MAX_TARGETS {
         let mut result =
@@ -686,21 +659,19 @@ fn exec_across(
         .map(|(index, agent)| {
             let agent = agent.clone();
             let command = command.to_string();
-            let token = token.cloned();
             let results = std::sync::Arc::clone(&results);
             Task::new(agent.clone(), move || {
-                let (fate, result) =
-                    match exec_at(&agent, &command, timeout_seconds, token.as_ref()) {
-                        Ok(outcome) => (Fate::Ran, command_result(outcome)),
-                        Err(error) => {
-                            let fate = if error.was_refused() {
-                                Fate::Refused
-                            } else {
-                                Fate::Unreachable
-                            };
-                            (fate, CommandOutcome::failed(render_call_error(&error)))
-                        }
-                    };
+                let (fate, result) = match exec_at(&agent, &command, timeout_seconds) {
+                    Ok(outcome) => (Fate::Ran, command_result(outcome)),
+                    Err(error) => {
+                        let fate = if error.was_refused() {
+                            Fate::Refused
+                        } else {
+                            Fate::Unreachable
+                        };
+                        (fate, CommandOutcome::failed(render_call_error(&error)))
+                    }
+                };
                 if let Ok(mut slots) = results.lock() {
                     slots[index] = Some(result);
                 }
@@ -746,13 +717,8 @@ fn command_result(outcome: wire::RunOutcome) -> CommandOutcome {
 /// Runs a command on an agent and renders what it did.
 ///
 /// Shared by CLI and MCP; both call failures and unsuccessful commands are errors.
-fn exec_on(
-    agent: &str,
-    command: &str,
-    timeout_seconds: u64,
-    token: Option<&Token>,
-) -> CommandOutcome {
-    match exec_at(agent, command, timeout_seconds, token) {
+fn exec_on(agent: &str, command: &str, timeout_seconds: u64) -> CommandOutcome {
+    match exec_at(agent, command, timeout_seconds) {
         Ok(outcome) => command_result(outcome),
         Err(error) => CommandOutcome::failed(render_call_error(&error)),
     }
@@ -911,13 +877,7 @@ fn run_exec(arguments: &[String]) -> i32 {
             eprintln!("linklet: exec needs a command");
             return i32::from(ExitCode::USAGE);
         }
-        return exec_across(
-            &args.list("--agents"),
-            &args.tail(),
-            timeout,
-            token_from_environment().as_ref(),
-        )
-        .report();
+        return exec_across(&args.list("--agents"), &args.tail(), timeout).report();
     }
 
     let Some(agent) = single else {
@@ -934,7 +894,7 @@ fn run_exec(arguments: &[String]) -> i32 {
     // from pieces would be a second interpretation of the caller's quoting.
     let command = args.tail();
 
-    let outcome = exec_on(agent, &command, timeout, token_from_environment().as_ref());
+    let outcome = exec_on(agent, &command, timeout);
     outcome.report()
 }
 
@@ -980,13 +940,7 @@ fn run_transfer(direction: Direction, arguments: &[String]) -> i32 {
         }
     };
 
-    let outcome = transfer_on(
-        direction,
-        &options.agent,
-        &options.from,
-        &options.to,
-        token_from_environment().as_ref(),
-    );
+    let outcome = transfer_on(direction, &options.agent, &options.from, &options.to);
 
     if outcome.is_error {
         eprintln!("linklet: {}", outcome.text);
@@ -1074,7 +1028,7 @@ fn run_ps(arguments: &[String]) -> i32 {
         return i32::from(ExitCode::USAGE);
     };
 
-    let outcome = ps_on(agent, &filter, token_from_environment().as_ref());
+    let outcome = ps_on(agent, &filter);
     outcome.report()
 }
 
@@ -1200,7 +1154,6 @@ fn run_ls(arguments: &[String]) -> i32 {
         &LsRequest {
             path: path.to_string(),
         },
-        token_from_environment().as_ref(),
     );
     outcome.report()
 }
@@ -1208,8 +1161,8 @@ fn run_ls(arguments: &[String]) -> i32 {
 /// Lists a path on an agent's machine and renders what is there.
 ///
 /// Shared by the command and the tool.
-fn ls_on(agent: &str, request: &LsRequest, token: Option<&Token>) -> CommandOutcome {
-    let address = match configured_address(agent, token) {
+fn ls_on(agent: &str, request: &LsRequest) -> CommandOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
@@ -1295,7 +1248,7 @@ fn run_grep(arguments: &[String]) -> i32 {
         limit,
     };
 
-    grep_on(agent, &request, token_from_environment().as_ref()).report()
+    grep_on(agent, &request).report()
 }
 
 /// Reads the last lines of a file on an agent's machine and prints them.
@@ -1333,7 +1286,6 @@ fn run_tail(arguments: &[String]) -> i32 {
             path: path.to_string(),
             count,
         },
-        token_from_environment().as_ref(),
     )
     .report()
 }
@@ -1341,8 +1293,8 @@ fn run_tail(arguments: &[String]) -> i32 {
 /// Searches a file on an agent's machine and renders what it found.
 ///
 /// Shared by the command and the tool.
-fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> CommandOutcome {
-    let address = match configured_address(agent, token) {
+fn grep_on(agent: &str, request: &GrepRequest) -> CommandOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
@@ -1357,8 +1309,8 @@ fn grep_on(agent: &str, request: &GrepRequest, token: Option<&Token>) -> Command
 }
 
 /// Reads the end of a file on an agent's machine and renders it.
-fn tail_on(agent: &str, request: &TailRequest, token: Option<&Token>) -> CommandOutcome {
-    let address = match configured_address(agent, token) {
+fn tail_on(agent: &str, request: &TailRequest) -> CommandOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
@@ -1415,7 +1367,7 @@ fn run_spawn(arguments: &[String]) -> i32 {
         output: output.to_string(),
     };
 
-    let outcome = spawn_on(agent, &request, token_from_environment().as_ref());
+    let outcome = spawn_on(agent, &request);
     println!("{}", outcome.text);
 
     if outcome.is_error {
@@ -1427,8 +1379,8 @@ fn run_spawn(arguments: &[String]) -> i32 {
 /// Starts a program on an agent's machine and renders what was started.
 ///
 /// Shared by the command and the tool, like `ps_on` and `kill_on`.
-fn spawn_on(agent: &str, request: &SpawnRequest, token: Option<&Token>) -> ToolOutcome {
-    let address = match configured_address(agent, token) {
+fn spawn_on(agent: &str, request: &SpawnRequest) -> ToolOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return ToolOutcome::failed(render_call_error(&error)),
     };
@@ -1518,7 +1470,7 @@ fn run_kill(arguments: &[String]) -> i32 {
         exclude: args.value("--exclude").map(str::to_string),
     };
 
-    let outcome = kill_on(agent, &request, token_from_environment().as_ref());
+    let outcome = kill_on(agent, &request);
     outcome.report()
 }
 
@@ -1526,8 +1478,8 @@ fn run_kill(arguments: &[String]) -> i32 {
 ///
 /// Shared by the command and the tool, like `ps_on`, so that the two cannot disagree about
 /// what a refusal looks like.
-fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> CommandOutcome {
-    let address = match configured_address(agent, token) {
+fn kill_on(agent: &str, request: &KillRequest) -> CommandOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
@@ -1544,12 +1496,8 @@ fn kill_on(agent: &str, request: &KillRequest, token: Option<&Token>) -> Command
 /// Asks an agent what is running and renders what it said.
 /// Shared by the command and the tool, like `exec_on` and `transfer_on`, so that the two
 /// cannot disagree about what a failure looks like.
-fn ps_on(
-    agent: &str,
-    filter: &linklet_core::process::Filter,
-    token: Option<&Token>,
-) -> CommandOutcome {
-    let address = match configured_address(agent, token) {
+fn ps_on(agent: &str, filter: &linklet_core::process::Filter) -> CommandOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return CommandOutcome::failed(render_call_error(&error)),
     };
@@ -1570,14 +1518,8 @@ fn ps_on(
 /// a transfer whose bytes did not match the digest is a refusal rather than a quiet
 /// success -- so an ok result means the receiving side compared digests and the file
 /// under the real name is the one that was sent.
-fn transfer_on(
-    direction: Direction,
-    agent: &str,
-    from: &str,
-    to: &str,
-    token: Option<&Token>,
-) -> ToolOutcome {
-    let address = match configured_address(agent, token) {
+fn transfer_on(direction: Direction, agent: &str, from: &str, to: &str) -> ToolOutcome {
+    let address = match configured_address(agent) {
         Ok(address) => address,
         Err(error) => return ToolOutcome::failed(render_call_error(&error)),
     };
@@ -1594,64 +1536,9 @@ fn transfer_on(
     }
 }
 
-/// The token this host presents, from the file it names or from the environment.
-///
-/// The environment rather than a flag, so that the secret does not appear in a
-/// process listing or a shell history. `LINKLET_TOKEN_FILE` names a file instead,
-/// for the callers that must not hold the value themselves: an MCP client's
-/// configuration, and a scheduler script that starts the agent. `LINKLET_TOKEN`
-/// is the same variable the agent reads, so a bench with both ends on one machine
-/// needs it set once.
-///
-/// **A secret is named once.** When both are set, authenticated calls are refused.
-/// Ordering them silently would make the loser the
-/// source the operator believed was in force, and the symptom of that is a caller
-/// being told its token is wrong when the one it offered was right for one of the
-/// two. For the same reason a file that was named and cannot be read is not
-/// answered from the environment -- that would authenticate with a secret nobody
-/// named.
-///
-/// Explicit configuration is validated before any authenticated call. Absence
-/// allows a per-target saved credential; invalid explicit configuration never falls
-/// back. Local discovery and reachability do not consult credentials.
-fn configured_token() -> Result<Option<Token>, String> {
-    let file = std::env::var("LINKLET_TOKEN_FILE").ok();
-    let secret = std::env::var("LINKLET_TOKEN").ok();
-    if file.is_some() && secret.is_some() {
-        return Err("LINKLET_TOKEN_FILE and LINKLET_TOKEN are both set; choose one".into());
-    }
-    if file.is_none() && secret.is_none() {
-        return Ok(None);
-    }
-    let (source, secret) = match file {
-        Some(path) => {
-            let contents = std::fs::read_to_string(&path)
-                .map_err(|e| format!("LINKLET_TOKEN_FILE is unusable: cannot read {path}: {e}"))?;
-            (
-                format!("LINKLET_TOKEN_FILE ({path})"),
-                secret_in_file(&contents).to_string(),
-            )
-        }
-        None => (
-            "LINKLET_TOKEN".into(),
-            secret.ok_or("set LINKLET_TOKEN or LINKLET_TOKEN_FILE")?,
-        ),
-    };
-    Token::new(secret)
-        .map(Some)
-        .map_err(|e| format!("{source} is unusable: {e}"))
-}
-
-fn token_from_environment() -> Option<Token> {
-    configured_token()
-        .map_err(|error| eprintln!("linklet: {error}"))
-        .ok()
-        .flatten()
-}
-
 fn probe_on(agent: &str) -> CommandOutcome {
     match token_for(agent) {
-        Ok(token) => probe::run_probe(agent, Some(&token)),
+        Ok(token) => probe::run_probe(agent, &token),
         Err(error) => {
             let mut outcome = CommandOutcome::failed(error);
             outcome.code = i32::from(ExitCode::USAGE);
@@ -1661,22 +1548,16 @@ fn probe_on(agent: &str) -> CommandOutcome {
 }
 
 fn token_for(agent: &str) -> Result<Token, String> {
-    if let Some(token) = configured_token()? {
-        return Ok(token);
-    }
     let directory = linklet_adapters::credentials::config_dir()?;
-    linklet_adapters::credentials::saved_token(&directory, agent)?
-        .ok_or_else(|| format!("no saved credential for {agent}; run linklet pair --agent {agent} --code <six-digits>, or set LINKLET_TOKEN / LINKLET_TOKEN_FILE"))
+    linklet_adapters::credentials::saved_token(&directory, agent)?.ok_or_else(|| {
+        format!(
+            "no saved credential for {agent}; run linklet pair --agent {agent} --code <six-digits>"
+        )
+    })
 }
-fn configured_address(
-    agent: &str,
-    token: Option<&Token>,
-) -> Result<AgentAddress, linklet_client::CallError> {
+fn configured_address(agent: &str) -> Result<AgentAddress, linklet_client::CallError> {
     let address = AgentAddress::new(agent)?;
-    let token = match token {
-        Some(token) => token.clone(),
-        None => token_for(agent).map_err(linklet_client::CallError::Local)?,
-    };
+    let token = token_for(agent).map_err(linklet_client::CallError::Local)?;
     Ok(address.with_token(token))
 }
 fn pair_on(agent: &str, code: &str) -> CommandOutcome {

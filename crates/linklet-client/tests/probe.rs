@@ -8,6 +8,10 @@
 //! a wedged agent looks like from outside -- and neither can be faked with a working agent. So
 //! one of them binds a `TcpListener` and never accepts, which is the honest reproduction.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -61,6 +65,7 @@ fn scratch_dir() -> PathBuf {
 
 /// A running agent, killed when the test ends.
 struct Agent {
+    _credentials: Credentials,
     child: Child,
     address: AgentAddress,
     root: PathBuf,
@@ -69,10 +74,10 @@ struct Agent {
 impl Agent {
     fn start() -> Self {
         let root = scratch_dir();
+        let credentials = Credentials::new(Some(TEST_TOKEN), &[]);
 
         let mut child = Command::new(agent_binary())
-            .env("LINKLET_TOKEN", TEST_TOKEN)
-            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(credentials.env())
             .arg("--port")
             .arg("0")
             .current_dir(&root)
@@ -100,6 +105,7 @@ impl Agent {
             .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
 
         Self {
+            _credentials: credentials,
             child,
             address,
             root,

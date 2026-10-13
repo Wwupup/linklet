@@ -12,7 +12,6 @@
 #     or a script would need a `cmd.exe /c` wrapper, which is the whole reason this
 #     server is built into the binary rather than beside it.
 #   * Pair once with the six-digit target code; credentials are saved per target.
-#     Omit token environment settings for this flow.
 #
 # The skill is the other piece and goes somewhere else: copy
 # `integrations/skills/linklet` to `%USERPROFILE%\.dsh\skills\linklet`. See

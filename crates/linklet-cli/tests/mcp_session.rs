@@ -9,6 +9,10 @@
 //! A server that buffers its output is a server that looks fine in a unit test
 //! and hangs a client forever, which is why this file exists.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -43,15 +47,11 @@ fn repo_root() -> std::path::PathBuf {
 /// still arrive, and if the newline framing were wrong the parse below would
 /// fail. Flushing is proven by the round trip completing at all.
 fn session(messages: &[&str]) -> Vec<Value> {
-    session_with_token(messages, None)
+    session_with_credentials(messages, &[])
 }
 
-/// The same, with the host token in the environment.
-///
-/// One function with a token rather than two that differ in an environment variable: a
-/// copy of this that forgot the token would fail with "the agent refused" and send a
-/// reader looking at the transfer.
-fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Value> {
+/// The same, with saved credentials for the target addresses in these requests.
+fn session_with_credentials(messages: &[&str], peers: &[(&str, &str)]) -> Vec<Value> {
     let root = repo_root();
     assert!(
         root.join("Cargo.toml").is_file(),
@@ -59,6 +59,7 @@ fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Value> {
         root.display()
     );
 
+    let credentials = Credentials::new(None, peers);
     let mut command = Command::new(env!("CARGO_BIN_EXE_linklet"));
     command
         .arg("mcp")
@@ -66,10 +67,7 @@ fn session_with_token(messages: &[&str], token: Option<&str>) -> Vec<Value> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some(token) = token {
-        command.env("LINKLET_TOKEN", token);
-        command.env_remove("LINKLET_TOKEN_FILE");
-    }
+    command.envs(credentials.env());
 
     let mut child = command.spawn().expect("the binary under test should start");
 
@@ -465,9 +463,9 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
     let content = b"a file that crossed two processes\n";
     std::fs::write(&local, content).expect("a source outside the MCP working directory");
 
+    let credentials = Credentials::new(Some(token), &[]);
     let mut agent = Command::new(agent_binary())
-        .env("LINKLET_TOKEN", token)
-        .env_remove("LINKLET_TOKEN_FILE")
+        .envs(credentials.env())
         .args(["--port", "0"])
         .current_dir(&work)
         .stdout(Stdio::piped())
@@ -477,9 +475,10 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
     let port = {
         use std::io::{BufRead, BufReader};
         let mut banner = String::new();
-        BufReader::new(agent.stdout.take().expect("stdout"))
-            .read_line(&mut banner)
-            .expect("a listening banner");
+        let mut reader = BufReader::new(agent.stdout.take().expect("stdout"));
+        reader.read_line(&mut banner).expect("a listening banner");
+        let mut code = String::new();
+        reader.read_line(&mut code).expect("pairing code");
         assert!(banner.contains("relative paths from"), "{banner}");
         banner
             .split_whitespace()
@@ -560,7 +559,7 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
         let messages: Vec<&str> = messages.iter().map(String::as_str).collect();
         runs.push((
             calls,
-            session_with_token(&messages, Some(token)),
+            session_with_credentials(&messages, &[(&address, token)]),
             remote,
             collected,
             output,
@@ -670,7 +669,10 @@ fn discovery_uses_the_cli_network_listing_and_probe_errors_are_tool_errors() {
         "tools/call",
         r#"{"name":"probe","arguments":{"agent":"127.0.0.1:1"}}"#,
     );
-    let replies = session_with_token(&[&discover, &probe], Some("test-token-0123456789"));
+    let replies = session_with_credentials(
+        &[&discover, &probe],
+        &[("127.0.0.1:1", "test-token-0123456789")],
+    );
     let result = &reply_for(&replies, 1)["result"];
     assert_eq!(result["isError"], !output.status.success());
     if output.status.success() {

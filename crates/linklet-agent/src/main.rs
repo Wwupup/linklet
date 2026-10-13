@@ -39,7 +39,6 @@ mod spawn;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
-use linklet_core::auth::{Token, secret_in_file};
 use linklet_core::log::Rotation;
 use linklet_core::transfer::Destination;
 
@@ -74,11 +73,6 @@ usage:
 options:
   init            rotate saved code and credentials, then start; stop the agent first
   --port <port>   the port to listen on (default 8787)
-  --token <secret>  the shared secret callers must present (or LINKLET_TOKEN)
-  --token-file <file>  read the secret from the first line of this file (or
-                      LINKLET_TOKEN_FILE). A byte-order mark and the line ending
-                      are not part of it. Name this or --token, not both -- the
-                      two are two answers to one question
   --log <file>    where the request log goes (or LINKLET_LOG). Default: logs/agent.log
                   in the directory the agent's own executable is in, rolled over when
                   it reaches a mebibyte with three older files kept
@@ -87,9 +81,8 @@ options:
   --version      print the version
   -h, --help      print this
 
-With no explicit token, startup creates or reuses this account's permanent six-digit
+Startup creates or reuses this account's permanent six-digit
 pairing code and displays it. Pair from a controller once; credentials are remembered.
-Explicit --token/--token-file (or their environment variables) disable pairing.
 
 File paths are absolute, or relative to the directory the agent was started in.
 Access is limited by this process's operating-system permissions.
@@ -99,8 +92,6 @@ fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
 
     let mut port = DEFAULT_PORT;
-    let mut token: Option<String> = std::env::var("LINKLET_TOKEN").ok();
-    let mut token_file: Option<String> = std::env::var("LINKLET_TOKEN_FILE").ok();
     let mut log_path: Option<String> = std::env::var("LINKLET_LOG").ok();
     let mut no_log = false;
     let mut reset = false;
@@ -137,20 +128,6 @@ fn main() {
                 }
             },
             "--no-log" => no_log = true,
-            "--token" => match iterator.next() {
-                Some(value) => token = Some(value.clone()),
-                None => {
-                    eprintln!("linklet-agent: --token needs a value");
-                    std::process::exit(2);
-                }
-            },
-            "--token-file" => match iterator.next() {
-                Some(value) => token_file = Some(value.clone()),
-                None => {
-                    eprintln!("linklet-agent: --token-file needs a file");
-                    std::process::exit(2);
-                }
-            },
             other => {
                 eprintln!("linklet-agent: unexpected argument {other:?}");
                 eprintln!("{USAGE}");
@@ -159,68 +136,18 @@ fn main() {
         }
     }
 
-    // One secret, named once. Two sources are refused rather than ordered: the two
-    // are two answers to one question, and whichever lost would be the one the
-    // operator believed was in force -- so a caller would be told its token was
-    // wrong while the secret it presented was the right one for the file.
-    if token.is_some() && token_file.is_some() {
-        eprintln!(
-            "linklet-agent: a token and a token file were both given; the secret is one \
-             thing, so pass --token or --token-file, not both"
-        );
-        std::process::exit(2);
-    }
-
-    // Read here, with the token it stands in for and before the port is bound. A
-    // file that was named and cannot be read is refused rather than answered from
-    // the environment: falling back would authenticate with a secret nobody named,
-    // and the caller would be told its token is wrong.
-    let token = match token_file {
-        Some(path) => match std::fs::read_to_string(&path) {
-            Ok(contents) => Some(secret_in_file(&contents).to_string()),
-            Err(error) => {
-                eprintln!("linklet-agent: cannot read the token file {path}: {error}");
-                std::process::exit(2);
-            }
-        },
-        None => token,
-    };
-
-    if reset && token.is_some() {
-        eprintln!(
-            "linklet-agent: init manages saved credentials; remove explicit token configuration first"
-        );
-        std::process::exit(2);
-    }
-    let managed = if token.is_none() {
-        let result = linklet_adapters::credentials::config_dir().and_then(|path| {
-            linklet_adapters::credentials::AgentCredentials::acquire(&path, reset)
-        });
-        match result {
-            Ok(credentials) => Some(credentials),
-            Err(error) => {
-                eprintln!("linklet-agent: {error}");
-                std::process::exit(2);
-            }
+    let managed = match linklet_adapters::credentials::config_dir()
+        .and_then(|path| linklet_adapters::credentials::AgentCredentials::acquire(&path, reset))
+    {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            eprintln!("linklet-agent: {error}");
+            std::process::exit(2);
         }
-    } else {
-        None
     };
-    let token = token
-        .or_else(|| managed.as_ref().map(|c| c.token().expose().to_string()))
-        .unwrap_or_default();
-    let pairing =
-        managed.as_ref().map(
-            |credentials| match server::PairingState::new(credentials.code()) {
-                Ok(state) => std::sync::Arc::new(state),
-                Err(error) => {
-                    eprintln!("linklet-agent: {error}");
-                    std::process::exit(2);
-                }
-            },
-        );
-    let token = match Token::new(token) {
-        Ok(token) => token,
+    let token = managed.token().clone();
+    let pairing = match server::PairingState::new(managed.code()) {
+        Ok(state) => std::sync::Arc::new(state),
         Err(error) => {
             eprintln!("linklet-agent: {error}");
             std::process::exit(2);
@@ -335,9 +262,7 @@ fn main() {
         ),
     }
 
-    if let Some(credentials) = &managed {
-        println!("Pairing code: {}", credentials.code());
-    }
+    println!("Pairing code: {}", managed.code());
 
     for stream in listener.incoming() {
         match stream {
@@ -350,7 +275,7 @@ fn main() {
                 let log = request_log.clone();
                 let pairing = pairing.clone();
                 std::thread::spawn(move || {
-                    server::serve_connection(stream, &token, &paths, &log, pairing.as_deref())
+                    server::serve_connection(stream, &token, &paths, &log, &pairing)
                 });
             }
             // One failed accept is not a reason to stop serving. The listener is

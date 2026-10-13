@@ -51,7 +51,7 @@ pub fn requested(arguments: &[String]) -> Option<String> {
             "pull --agent <host:port> --from <remote-file> --to <local-file>\nTransfer one file and verify its digest."
         }
         "mcp" => {
-            "mcp\nServe tools over stdin/stdout. Credentials are remembered per target after pairing. LINKLET_TOKEN or LINKLET_TOKEN_FILE explicitly override them."
+            "mcp\nServe tools over stdin/stdout. Credentials are remembered per target after pairing."
         }
         _ => return None,
     };

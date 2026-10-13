@@ -30,7 +30,6 @@ fn run(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_linklet"))
         // No token, so that a command which gets as far as opening a socket fails on that
         // rather than on the token -- this file is about parsing, and the parse happens first.
-        .env_remove("LINKLET_TOKEN")
         .args(arguments)
         .output()
         .expect("the tool should run")

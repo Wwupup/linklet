@@ -32,11 +32,9 @@ credentials stop working. Initialization refuses while the store is owned by a
 running agent. It does not stop processes or modify service/startup configuration.
 Deleting files under a running process is not a supported reset method.
 
-Explicit target `--token`, `--token-file`, `LINKLET_TOKEN` or `LINKLET_TOKEN_FILE`
-disables managed pairing. `init` refuses explicit token configuration. On a
-controller, an explicit environment token or token file overrides saved credentials.
-Invalid explicit configuration never falls back. Clear these variables for the
-automatic flow. CLI and MCP share lookup, including batches with different secrets.
+Pairing is the only credential setup. CLI and MCP share per-target lookup,
+including batches with different secrets. Missing credentials name the `pair`
+command to run; there are no manual token flags or environment overrides.
 
 ## Exchange and bounds
 

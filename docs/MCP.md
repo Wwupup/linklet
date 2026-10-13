@@ -44,11 +44,8 @@ for its OS account; future calls load it per target. CLI uses the same store.
 Long-term tokens never enter tool arguments or results. The short code deliberately
 does enter the conversation. [Pairing](pairing.md) covers protection and reset.
 
-An explicit `LINKLET_TOKEN` or `LINKLET_TOKEN_FILE` overrides saved credentials.
-Remove these variables for automatic pairing. Both set together, an unreadable
-file, or an invalid explicit token is an error; it never falls back to saved state.
-Token files use their first line, excluding a BOM and line ending. `check`,
-`discover` and `testbed` need no credential.
+`check`, `discover` and `testbed` need no credential. All remote operations use
+the saved credential for their target address.
 
 `probe` confirms authenticated identity, including name and version. Pairing failures
 and failed persistence set `isError=true`; credentials are saved only after mutual

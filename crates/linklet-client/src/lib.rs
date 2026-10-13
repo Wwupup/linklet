@@ -214,7 +214,7 @@ pub struct AgentAddress {
     /// Optional in the type and required in practice: the token is what
     /// authenticates the handshake, so a call without one is refused before a socket
     /// is opened. It is optional here because an address is built in places that do
-    /// not know about configuration. CLI and MCP resolve explicit or saved credentials
+    /// not know about configuration. CLI and MCP resolve saved pairing credentials
     /// before calling this library. A caller can also supply its own token.
     pub token: Option<Token>,
 }
@@ -791,7 +791,7 @@ fn begin(
 ) -> Result<(Connection, Box<dyn Sealed>), CallError> {
     let Some(token) = address.token.as_ref() else {
         return Err(CallError::BadAddress(
-            "a sealed call needs a token: pair through CLI/MCP, or set LINKLET_TOKEN".to_string(),
+            "a sealed call needs a token: pair through CLI/MCP".to_string(),
         ));
     };
 

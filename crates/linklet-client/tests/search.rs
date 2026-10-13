@@ -13,6 +13,10 @@
 //! test binary is a program, integration tests cannot import from one another, and a module
 //! shared by two tests is the `tests/common/` arrangement this repository does not have.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -52,6 +56,7 @@ fn agent_binary() -> PathBuf {
 
 /// A running agent, killed when the test ends.
 struct Agent {
+    _credentials: Credentials,
     child: Child,
     address: AgentAddress,
     root: PathBuf,
@@ -60,10 +65,10 @@ struct Agent {
 impl Agent {
     fn start() -> Self {
         let root = scratch_dir();
+        let credentials = Credentials::new(Some(TEST_TOKEN), &[]);
 
         let mut child = Command::new(agent_binary())
-            .env("LINKLET_TOKEN", TEST_TOKEN)
-            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(credentials.env())
             .arg("--port")
             .arg("0")
             .current_dir(&root)
@@ -91,6 +96,7 @@ impl Agent {
             .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
 
         Self {
+            _credentials: credentials,
             child,
             address,
             root,

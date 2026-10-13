@@ -11,6 +11,10 @@
 //! the test is. Spawning a marker would also work and would cost a process, a port and a
 //! cleanup path -- and it would exercise exactly the same code.
 
+#[path = "../../test-support/credentials.rs"]
+mod credentials;
+use credentials::Credentials;
+
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -51,6 +55,7 @@ fn agent_binary() -> PathBuf {
 
 /// A running agent, killed when the test ends.
 struct Agent {
+    _credentials: Credentials,
     child: Child,
     address: AgentAddress,
     root: PathBuf,
@@ -59,10 +64,10 @@ struct Agent {
 impl Agent {
     fn start() -> Self {
         let root = scratch_dir();
+        let credentials = Credentials::new(Some(TEST_TOKEN), &[]);
 
         let mut child = Command::new(agent_binary())
-            .env("LINKLET_TOKEN", TEST_TOKEN)
-            .env_remove("LINKLET_TOKEN_FILE")
+            .envs(credentials.env())
             .arg("--port")
             .arg("0")
             .current_dir(&root)
@@ -90,6 +95,7 @@ impl Agent {
             .with_token(Token::new(TEST_TOKEN).expect("a usable test token"));
 
         Self {
+            _credentials: credentials,
             child,
             address,
             root,

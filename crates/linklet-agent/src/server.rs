@@ -77,7 +77,7 @@ pub fn serve_connection(
     expected: &Token,
     paths: &Destination,
     log: &RequestLog,
-    pairing: Option<&PairingState>,
+    pairing: &PairingState,
 ) {
     let mut connection = Connection::with_budget(stream, HELLO_BUDGET);
 
@@ -617,14 +617,8 @@ impl PairingState {
         })
     }
 }
-fn serve_pairing(
-    connection: &mut Connection,
-    hello: &Value,
-    token: &Token,
-    state: Option<&PairingState>,
-) {
+fn serve_pairing(connection: &mut Connection, hello: &Value, token: &Token, state: &PairingState) {
     let begin = || -> Result<_, String> {
-        let state = state.ok_or("pairing is disabled when an explicit token is configured")?;
         let message = linklet_core::pairing::read_message(hello)?;
         state
             .budget
