@@ -574,6 +574,14 @@ fn refuse_unreadable(connection: &mut Connection, error: &ConnectionError) {
 /// does one thing with either.
 fn begin_session(hello: &[u8], expected: &Token) -> Result<(Value, Box<dyn Sealed>), String> {
     let value = wire::parse_body(hello).map_err(|error| refusal_text(&error))?;
+    let protocol =
+        wire::handshake_protocol_from_json(&value).map_err(|error| refusal_text(&error))?;
+    if protocol != wire::PROTOCOL_VERSION {
+        return Err(format!(
+            "protocol {protocol} on the caller and protocol {} here; update both ends",
+            wire::PROTOCOL_VERSION
+        ));
+    }
     let peer = wire::handshake_public_from_json(&value).map_err(|error| refusal_text(&error))?;
     let peer = EphemeralPublic::from_bytes(peer).map_err(|error| error.to_string())?;
 

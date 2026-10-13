@@ -42,6 +42,9 @@ to answer one question: **what can I do now that I could not do before?**
 
 ### Fixed
 
+- Reject mismatched command protocol versions on the target during the hello,
+  before establishing a session.
+
 - Preserve multibyte character boundaries when command output is truncated,
   and retain BOM/byte-order detection for bounded UTF-16 file tails.
 

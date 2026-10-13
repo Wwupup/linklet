@@ -1305,3 +1305,24 @@ fn agent_version_succeeds_without_configuration() {
     assert_eq!(output.status.code(), Some(0));
     assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
 }
+
+#[test]
+fn an_old_protocol_is_refused_before_establishing_a_command_session() {
+    let agent = Agent::start();
+    let stream = TcpStream::connect(("127.0.0.1", agent.port)).expect("connect");
+    let mut connection = Connection::with_budget(stream, TEST_BUDGET);
+    let (public, _) = HkdfChannel
+        .propose(TEST_TOKEN.as_bytes())
+        .expect("public key");
+    let mut hello = wire::handshake_to_json(public.as_bytes());
+    hello["protocol"] = serde_json::json!(1);
+    connection
+        .write_frame(Kind::Hello, hello.to_string().as_bytes())
+        .expect("hello");
+    let frame = connection.read_frame(Kind::Hello).expect("reply");
+    let value = wire::parse_body(&frame).expect("JSON");
+    assert!(matches!(
+        wire::reply_from_json(&value).expect("reply"),
+        Reply::Refused(_)
+    ));
+}
