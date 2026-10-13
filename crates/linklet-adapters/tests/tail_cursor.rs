@@ -199,3 +199,33 @@ fn initial_long_line_respects_the_source_read_ceiling() {
     assert_eq!(page.text.len(), 17);
     assert!(page.range.start > 0);
 }
+
+#[cfg(windows)]
+#[test]
+fn system_code_page_pages_resume_across_a_partial_character() {
+    let f = Fixture::new();
+    let path = f.dir.join("log");
+    std::fs::write(&path, b"start\n").expect("file");
+    let mut request = request();
+    let first = linklet_adapters::tail::read(&f.paths, &request).expect("first");
+    let mut cursor = linklet_core::tail::Cursor::parse(&first.next_cursor).expect("cursor");
+    // Pin the target encoding without changing this test machine's system locale.
+    cursor.encoding = "cp1361".into();
+    request.cursor = Some(cursor.token());
+    let mut append = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("append");
+    append.write_all(&[0x88]).expect("half");
+    let half = linklet_adapters::tail::read(&f.paths, &request).expect("partial");
+    assert!(half.text.is_empty());
+    assert_eq!(half.range.end, 6);
+    assert_eq!(half.pending_bytes, 1);
+    assert!(!half.has_more);
+    request.cursor = Some(half.next_cursor);
+    append.write_all(&[0x61, b'\r', b'\n']).expect("rest");
+    let complete = linklet_adapters::tail::read(&f.paths, &request).expect("complete");
+    assert_eq!(complete.text, "\u{ac00}\r\n");
+    assert_eq!(complete.range.end, 10);
+    assert!(!complete.lossy);
+}

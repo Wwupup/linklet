@@ -2,7 +2,7 @@
 use linklet_core::{
     result::{ErrorCode, OperationError},
     search::{Encoding, sniff},
-    tail::{ByteRange, Cursor, Page, decode_page},
+    tail::{ByteRange, Cursor, Page},
     transfer::Destination,
     wire::TailRequest,
 };
@@ -13,6 +13,23 @@ use std::{
     path::Path,
 };
 const READ_LIMIT: u64 = 16 * 1024 * 1024;
+
+fn decode_page(
+    bytes: &[u8],
+    encoding: Encoding,
+    offset: u64,
+    budget: usize,
+) -> Result<linklet_core::tail::DecodedPage, OperationError> {
+    let decoded = linklet_core::tail::decode_page(bytes, encoding, offset, budget);
+    #[cfg(windows)]
+    if decoded.is_err()
+        && let Encoding::CodePage(page) = encoding
+    {
+        return crate::text::decode_page(bytes, page, budget)
+            .map_err(|error| OperationError::new(ErrorCode::IoError, "decode", error));
+    }
+    decoded
+}
 fn bad(message: impl Into<String>) -> OperationError {
     OperationError::new(ErrorCode::InvalidArgument, "cursor", message)
 }

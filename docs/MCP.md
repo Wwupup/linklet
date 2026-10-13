@@ -264,7 +264,10 @@ Cursor pages are sized before their cursor is issued, so the 32 KiB MCP content
 budget cannot silently skip log text. CLI pages allow up to 1 MiB of decoded
 text. Each call reads at most 16 MiB of source bytes, including bounded prefix
 and boundary samples. A long unfinished line can span several pages; a partial
-character remains before the cursor until its remaining bytes arrive.
+character remains before the cursor until its remaining bytes arrive. Windows
+code pages outside the pure decoder use the system .NET decoder with a five-second
+deadline. Only captured bytes travel through stdin; decoding creates no temporary
+file and does not reopen the log. Incomplete code units remain before the cursor.
 
 Cursors bind the controller target, resolved path, open-handle file identity,
 encoding and byte position. Each call authenticates normally; there is no cursor

@@ -35,6 +35,8 @@ to answer one question: **what can I do now that I could not do before?**
   Running at the observation boundary does not assert readiness.
 - Tail supports stateless cursors, bounded incremental pages, original newlines,
   byte ranges and file-change observations. Cursors never skip undisplayed text.
+  Windows legacy code pages retain character boundaries through a bounded .NET
+  fallback, including pages outside the portable decoder.
 
 ### Changed
 

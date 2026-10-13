@@ -96,9 +96,6 @@ fn decode_code_page(
     code_page: &str,
     skips: &[(u16, usize)],
 ) -> Result<(String, Encoding, bool), String> {
-    use std::io::{Read, Write};
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
     // Only the code-page expression is interpolated, never captured text or a path.
     let offsets = skips
         .iter()
@@ -114,8 +111,25 @@ $loss=$false; try {{ $t=$e.GetString($b,$skip,$b.Length-$skip) }} catch {{ $loss
 [Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);
 @{{text=$t;page=$p;lossy=$loss}} | ConvertTo-Json -Compress"#
     );
+    let value = run_decoder(bytes, &script)?;
+    let text = value["text"].as_str().ok_or("decoder omitted text")?;
+    let page = value["page"]
+        .as_u64()
+        .and_then(|p| u16::try_from(p).ok())
+        .ok_or("decoder omitted code page")?;
+    let lossy = value["lossy"]
+        .as_bool()
+        .ok_or("decoder omitted loss flag")?;
+    Ok((text.into(), Encoding::CodePage(page), lossy))
+}
+
+#[cfg(windows)]
+fn run_decoder(bytes: &[u8], script: &str) -> Result<serde_json::Value, String> {
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
     let mut child = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -155,22 +169,75 @@ $loss=$false; try {{ $t=$e.GetString($b,$skip,$b.Length-$skip) }} catch {{ $loss
     }
     written?.map_err(|e| format!("decoder input failed: {e}"))?;
     let output = read?.map_err(|e| format!("decoder output failed: {e}"))?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&output).map_err(|e| format!("invalid decoder reply: {e}"))?;
+    serde_json::from_slice(&output).map_err(|e| format!("invalid decoder reply: {e}"))
+}
+
+/// Uses the Windows decoder for code pages not implemented by the pure decoder.
+/// Input and output are bounded, and trailing incomplete characters remain unread.
+#[cfg(windows)]
+pub(crate) fn decode_page(
+    bytes: &[u8],
+    page: u16,
+    budget: usize,
+) -> Result<linklet_core::tail::DecodedPage, String> {
+    let bytes = &bytes[..bytes.len().min(budget.saturating_mul(4).saturating_add(4))];
+    let script = format!(
+        "$page={page};$budget={budget};\n{}",
+        include_str!("incremental-decoder.ps1")
+    );
+    let value = run_decoder(bytes, &script)?;
     let text = value["text"].as_str().ok_or("decoder omitted text")?;
-    let page = value["page"]
+    let consumed = value["consumed"]
         .as_u64()
-        .and_then(|p| u16::try_from(p).ok())
-        .ok_or("decoder omitted code page")?;
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("decoder omitted consumed count")?;
+    let pending = value["pending"]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+        .ok_or("decoder omitted pending count")?;
     let lossy = value["lossy"]
         .as_bool()
         .ok_or("decoder omitted loss flag")?;
-    Ok((text.into(), Encoding::CodePage(page), lossy))
+    if text.len() > budget || consumed > bytes.len() || pending > bytes.len() - consumed {
+        return Err("invalid decoder bounds".into());
+    }
+    Ok(linklet_core::tail::DecodedPage {
+        text: text.into(),
+        consumed,
+        pending,
+        lossy,
+    })
 }
 
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    #[test]
+    fn uncommon_code_pages_preserve_page_and_character_boundaries() {
+        let single = decode_page(&[0x82; 5], 437, 4).expect("OEM page");
+        assert_eq!(single.text, "\u{e9}\u{e9}");
+        assert_eq!(single.consumed, 2);
+        assert!(!single.lossy);
+        let bytes = [0x88, 0x61, 0x88, 0x61, 0x88];
+        let first = decode_page(&bytes, 1361, 4).expect("Johab page");
+        assert_eq!(first.text, "\u{ac00}");
+        assert_eq!(first.consumed, 2);
+        assert_eq!(first.pending, 1);
+        let second = decode_page(&bytes[first.consumed..], 1361, 4).expect("next");
+        assert_eq!(second.text, "\u{ac00}");
+        assert_eq!(second.consumed, 2);
+        let half = decode_page(&[0x88], 1361, 4).expect("partial");
+        assert_eq!((half.consumed, half.pending), (0, 1));
+        assert!(half.text.is_empty());
+        let invalid = decode_page(&[0x88, 0x20, 0x88], 1361, 8).expect("invalid byte");
+        assert_eq!(invalid.text, "\u{fffd}");
+        assert_eq!((invalid.consumed, invalid.pending), (2, 1));
+        assert!(invalid.lossy);
+        let large = decode_page(&[0x82; 40000], 437, 32768).expect("bounded page");
+        assert_eq!(large.text.len(), 32768);
+        assert_eq!(large.consumed, 16384);
+    }
+
     #[test]
     fn a_clipped_double_byte_stream_keeps_character_boundaries() {
         let mut capture = linklet_core::output::Capture::default();
