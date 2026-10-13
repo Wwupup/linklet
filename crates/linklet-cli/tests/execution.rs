@@ -200,3 +200,43 @@ fn spawn_reports_only_what_was_observed() {
     );
     std::thread::sleep(std::time::Duration::from_millis(1250));
 }
+
+#[test]
+fn mcp_tail_pages_do_not_skip_content_to_fit_the_presentation_budget() {
+    let fixture = Fixture::new();
+    let content = format!("header\r\n{}", "\u{4e2d}\u{1f600}long".repeat(12000));
+    std::fs::write(fixture.dir.join("log"), &content).expect("log");
+    let mut cursor = None;
+    let mut text = String::new();
+    let mut calls = 0;
+    loop {
+        let mut args = json!({"path":"log","lines":20});
+        if let Some(c) = cursor {
+            args["cursor"] = Value::String(c);
+        }
+        let result = fixture.tool("tail", args);
+        assert_eq!(result["isError"], false, "{result}");
+        let data = &result["structuredContent"]["data"];
+        let page = data["text"].as_str().expect("text");
+        assert!(
+            page.len()
+                + result["content"][0]["text"]
+                    .as_str()
+                    .expect("summary")
+                    .len()
+                <= 32768
+        );
+        text.push_str(page);
+        cursor = Some(data["next_cursor"].as_str().expect("cursor").to_string());
+        calls += 1;
+        if data["has_more"] == false {
+            break;
+        }
+        assert!(calls < 20, "cursor must make progress");
+    }
+    assert!(calls > 1);
+    assert_eq!(text, content);
+    let result = fixture.tool("tail", json!({"path":"log","cursor":cursor}));
+    assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"]["data"]["text"], "");
+}

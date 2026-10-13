@@ -1319,6 +1319,7 @@ fn run_tail(arguments: &[String]) -> i32 {
         Flag::takes_value("--agent"),
         Flag::takes_value("--from"),
         Flag::takes_value("--lines"),
+        Flag::takes_value("--cursor"),
     ];
     let args = match read(arguments, &flags, Strictness::Strict) {
         Ok(args) => args,
@@ -1343,6 +1344,8 @@ fn run_tail(arguments: &[String]) -> i32 {
     tail_on(
         agent,
         &TailRequest {
+            cursor: args.value("--cursor").map(str::to_string),
+            content_bytes: linklet_core::tail::PAGE_BYTES,
             path: path.to_string(),
             count,
         },
@@ -1377,11 +1380,27 @@ fn tail_on(agent: &str, request: &TailRequest) -> CommandOutcome {
     };
 
     match linklet_client::tail(&address, request) {
-        Ok(search) => CommandOutcome::answered(
-            linklet_core::search::render(&search),
-            i32::from(!search.searched || search.truncated),
-        )
-        .facts(agent, wire::search_to_json(&search)),
+        Ok(page) => {
+            let mut data = serde_json::to_value(&page).expect("page serializes");
+            data["complete"] = (!page.has_more && page.pending_bytes == 0).into();
+            let mut result = CommandOutcome::answered(
+                format!(
+                    "{} bytes {}..{} in {}, {}; has_more={}\n{}\nnext_cursor {}",
+                    page.range.end - page.range.start,
+                    page.range.start,
+                    page.range.end,
+                    page.path,
+                    page.encoding,
+                    page.has_more,
+                    page.text,
+                    page.next_cursor
+                ),
+                0,
+            )
+            .facts(agent, data);
+            result.tool.warnings = page.warnings;
+            result
+        }
         Err(error) => CommandOutcome::call_failed(agent, &error),
     }
 }

@@ -392,13 +392,14 @@ fn answer(
         Ok(Request::Grep(grep)) => Response::Sealed(wire::encode_search_reply(
             &linklet_adapters::grep(paths, &grep.path, &grep.pattern, grep.limit, grep.direction),
         )),
-        Ok(Request::Tail(tail)) => Response::Sealed(wire::encode_search_reply(
-            &linklet_adapters::tail(paths, &tail.path, tail.count),
-        )),
-        // The request that answers "what is in there" before a caller reads or pulls from it.
-        // A directory that is not there is a **listing whose `found` is false**, not an empty
-        // one: the two are the same `Vec` and opposite facts, and a caller that confused them
-        // would conclude a machine has no logs.
+        Ok(Request::Tail(tail)) => {
+            Response::Sealed(match linklet_adapters::tail::read(paths, &tail) {
+                Ok(page) => {
+                    wire::reply_result(serde_json::to_value(page).expect("page serializes"))
+                }
+                Err(error) => wire::reply_failure(&error),
+            })
+        }
         Ok(Request::Ls(list)) => Response::Sealed(wire::encode_ls_reply(
             &linklet_adapters::list_directory(paths, &list.path),
         )),

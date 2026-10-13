@@ -712,3 +712,7 @@ budget; CLI keeps the target stream limits. Direct arguments are never joined.
 spawn now observes for 500 ms by default (0..5000 ms, zero skips observation).
 It reports early exit codes, PID kind, paths and a bounded log tail. Running at
 the observation boundary does not assert readiness. No task history is retained.
+
+tail now returns stateless incremental pages with byte ranges, next_cursor,
+has_more, explicit fragments and file-change observations. MCP never advances a
+log cursor over undisplayed content. Each read remains bounded to 16 MiB.

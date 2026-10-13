@@ -448,6 +448,10 @@ pub struct GrepRequest {
 /// A request to read the end of a file on the agent's machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TailRequest {
+    /// Resume from a stateless cursor; absent means the last count lines.
+    pub cursor: Option<String>,
+    /// Internal presentation ceiling in UTF-8 bytes (4..=1 MiB).
+    pub content_bytes: usize,
     /// The file, absolute or relative to the agent startup directory.
     pub path: String,
     /// How many lines from the end.
@@ -683,6 +687,7 @@ pub fn request_to_json(request: &Request) -> Value {
         }),
         Request::Tail(tail) => serde_json::json!({
             "op": OP_TAIL,
+            "cursor":tail.cursor, "content_bytes":tail.content_bytes,
             "path": tail.path,
             "count": tail.count as i64,
         }),
@@ -1663,7 +1668,29 @@ pub fn tail_request_from_json(value: &Value) -> Result<TailRequest, WireError> {
         None => return Err(WireError::BadRequest("count: missing".to_string())),
     };
 
-    Ok(TailRequest { path, count })
+    let cursor = match value.get("cursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.len() <= crate::tail::CURSOR_BYTES => Some(s.clone()),
+        _ => {
+            return Err(WireError::BadRequest(
+                "cursor: expected bounded text".into(),
+            ));
+        }
+    };
+    let content_bytes = match value.get("content_bytes") {
+        None => crate::tail::PAGE_BYTES,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (4..=crate::tail::PAGE_BYTES as u64).contains(n))
+            .ok_or_else(|| WireError::BadRequest("content_bytes outside 4..=1048576".into()))?
+            as usize,
+    };
+    Ok(TailRequest {
+        path,
+        count,
+        cursor,
+        content_bytes,
+    })
 }
 
 /// A required string field, refused by name when it is missing or empty.

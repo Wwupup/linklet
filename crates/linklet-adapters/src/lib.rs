@@ -42,8 +42,11 @@ pub use discovery::{Scan, default_gateway, local_interfaces, plan_here, scan};
 pub use listing::list as list_directory;
 pub use mcp::{FALLBACK_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION, serve};
 pub use processes::{kill as kill_processes, list as list_processes, named as processes_named};
-pub use search::{MAX_BYTES as MAX_SEARCH_BYTES, grep, tail};
+pub use search::{MAX_BYTES as MAX_SEARCH_BYTES, grep};
 pub use system::SystemProber;
 pub use tcp::{MIN_BUDGET, TcpProbe, effective_budget};
 pub use text::{TextSource, decode_captured, decode_text};
 pub use transfer::{TransferFailure, describe, digest_of_file, part_path, receive_body, send_body};
+
+/// Bounded stateless incremental log reads.
+pub mod tail;

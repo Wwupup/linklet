@@ -22,9 +22,7 @@
 use std::path::Path;
 
 use linklet_core::result::{ErrorCode, OperationError};
-use linklet_core::search::{
-    Direction, Encoding, Limit, Noun, Pattern, Search, lines_of, scan, sniff,
-};
+use linklet_core::search::{Direction, Encoding, Limit, Pattern, Search, lines_of, scan, sniff};
 
 /// The most of a file this will read.
 ///
@@ -78,49 +76,6 @@ pub fn grep(
     };
 
     let search = scan(&with_text.lines, pattern, limit, direction);
-    finish(search, path, with_text)
-}
-
-/// Reads the last `count` lines of an absolute or base-relative file path.
-///
-/// The same reading as [`grep`] and the same ceiling, with a pattern that matches
-/// everything -- because "show me the end of the log" is the other half of "look at the
-/// log", and doing it through a pull moves the whole file to answer a question about its
-/// last few lines.
-pub fn tail(paths: &linklet_core::transfer::Destination, path: &str, count: usize) -> Search {
-    let target = match paths.resolve(path) {
-        Ok(target) => target,
-        Err(error) => {
-            return unreadable(
-                path,
-                OperationError::new(ErrorCode::InvalidArgument, "validate", error.to_string()),
-            );
-        }
-    };
-
-    let resolved = target.to_string_lossy();
-    let path = resolved.as_ref();
-    let with_text = match read_lines(&target, path, Direction::Last) {
-        Ok(read) => read,
-        Err(problem) => return unreadable(path, problem),
-    };
-
-    // Every line matches, so the search machinery does the reporting: the counts, the
-    // truncation, the encoding and the file size are the same questions whatever was asked.
-    let mut search = scan(
-        &with_text.lines,
-        &Pattern::new(""),
-        Limit {
-            max_matches: count,
-            context: 0,
-        },
-        Direction::Last,
-    );
-    // **A read is not a search**, and the summary has to say which it was: `more than 2
-    // matches` for a request that asked for the last two lines is a small untruth about what
-    // the caller asked for, and the kind of thing that makes the rest of the line suspect.
-    search.noun = Noun::Lines;
-
     finish(search, path, with_text)
 }
 

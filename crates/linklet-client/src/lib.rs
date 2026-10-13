@@ -602,8 +602,46 @@ pub fn grep(
 pub fn tail(
     address: &AgentAddress,
     request: &TailRequest,
-) -> Result<linklet_core::search::Search, CallError> {
-    read(address, Request::Tail(request.clone()))
+) -> Result<linklet_core::tail::Page, CallError> {
+    if let Some(token) = &request.cursor {
+        let cursor = linklet_core::tail::Cursor::parse(token)
+            .map_err(|e| CallError::BadAddress(e.to_string()))?;
+        if cursor.target != address.text {
+            return Err(CallError::BadAddress(
+                "cursor belongs to a different target".into(),
+            ));
+        }
+    }
+    let (mut connection, mut session) = begin(address, HANDSHAKE_ALLOWANCE)?;
+    let reply = ask(
+        &mut connection,
+        session.as_mut(),
+        &Request::Tail(request.clone()),
+        READ_ALLOWANCE,
+    )?;
+    match reply {
+        Reply::Refused(error) => Err(CallError::Refused(error)),
+        Reply::Result(value) => {
+            let mut page: linklet_core::tail::Page =
+                serde_json::from_value(value).map_err(|e| CallError::Protocol(e.to_string()))?;
+            let mut cursor = linklet_core::tail::Cursor::parse(&page.next_cursor)
+                .map_err(|e| CallError::Protocol(e.to_string()))?;
+            if page.range.start > page.range.end
+                || page.range.end != cursor.position
+                || page.range.end > page.file_bytes
+                || page.text.len() > request.content_bytes
+                || page.path != cursor.path
+                || page.encoding != cursor.encoding
+            {
+                return Err(CallError::Protocol(
+                    "invalid tail range, budget or cursor".into(),
+                ));
+            }
+            cursor.target = address.text.clone();
+            page.next_cursor = cursor.token();
+            Ok(page)
+        }
+    }
 }
 
 /// Sends one of the two reading requests and returns the search it answered with.

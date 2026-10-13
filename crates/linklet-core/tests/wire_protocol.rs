@@ -1107,6 +1107,8 @@ fn a_tail_count_past_the_ceiling_is_refused_rather_than_clamped() {
     assert_eq!(
         ok,
         Request::Tail(linklet_core::wire::TailRequest {
+            cursor: None,
+            content_bytes: linklet_core::tail::PAGE_BYTES,
             path: "a.log".to_string(),
             count: 50,
         })
@@ -1292,4 +1294,13 @@ fn direct_program_arguments_and_cwd_survive_the_wire() {
     let mut conflicting = value;
     conflicting["command"] = "echo unsafe fallback".into();
     assert!(wire::request_from_json(&conflicting).is_err());
+}
+
+#[test]
+fn tail_cursor_and_content_budget_survive_the_wire() {
+    let value = serde_json::json!({"op":"tail","path":"app.log","count":20,"cursor":"opaque","content_bytes":31744});
+    let request = wire::request_from_json(&value).expect("tail request");
+    let output = wire::request_to_json(&request);
+    assert_eq!(output["cursor"], "opaque");
+    assert_eq!(output["content_bytes"], 31744);
 }

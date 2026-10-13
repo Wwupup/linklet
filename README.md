@@ -460,3 +460,10 @@ Put all Linklet options before the command or --program. Following arguments,
 including --help, belong to the remote program. cwd is per call; it never changes
 the agent's startup directory. MCP results have a shared 32 KiB content budget;
 truncation is explicit and does not change a successful command's status.
+
+To follow a log, call tail once for the last lines, then pass its next_cursor to
+subsequent calls (CLI: --cursor '<opaque value>'). Pages preserve newlines and
+report has_more, byte ranges, encoding, line fragments and detected file resets.
+No new bytes is a successful empty page. File replacement or truncation restarts
+at the beginning with an explicit warning; bounded continuity checks cannot prove
+that arbitrary in-place edits never occurred.

@@ -30,7 +30,7 @@ pub fn requested(arguments: &[String]) -> Option<String> {
             "grep --agent <host:port> --from <remote-file> --pattern <text> [-i|--ignore-case] [--first|--last] [--max <n>] [--context <n>]\nSearch a bounded file window with explicit encoding."
         }
         "tail" => {
-            "tail --agent <host:port> --from <remote-file> [--lines <n>]\nRead the end of a file, within the 16 MiB reading ceiling."
+            "tail --agent <host:port> --from <remote-file> [--lines <n>] [--cursor <opaque>]\nRead the last lines or resume new bytes. Return a bounded page, next_cursor and has_more; preserve newlines and report file changes."
         }
         "ls" => {
             "ls --agent <host:port> --from <remote-directory>\nList files using the agent account permissions."

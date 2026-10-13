@@ -701,6 +701,9 @@ pub fn tools() -> Vec<Tool> {
         },
     ];
     for tool in &mut tools {
+        if tool.name == "tail" {
+            tool.input_schema["properties"]["cursor"] = serde_json::json!({"type":"string","description":"Opaque next_cursor from the preceding page for this target and path."});
+        }
         if tool.name == "spawn" {
             tool.input_schema["properties"]["observe_ms"] =
                 serde_json::json!({"type":"integer","minimum":0,"maximum":5000,"default":500});
@@ -1050,14 +1053,17 @@ pub fn dispatch(
             Ok(runner.grep(&agent, &request))
         }
         "tail" => {
-            reject_unknown(arguments, &["agent", "lines", "path"])?;
+            reject_unknown(arguments, &["agent", "lines", "path", "cursor"])?;
             let agent = required_str(arguments, "agent")?;
             let path = required_str(arguments, "path")?;
             let count = optional_int(arguments, "lines", 20, crate::wire::MAX_TAIL_LINES as u64)?;
+            let cursor = optional_str(arguments, "cursor")?;
 
             Ok(runner.tail(
                 &agent,
                 &crate::wire::TailRequest {
+                    cursor,
+                    content_bytes: crate::presentation::CONTENT_BUDGET - 1024,
                     path,
                     count: count as usize,
                 },

@@ -182,3 +182,8 @@ every other document here -- **the commit that changes the code changes this
 file.** It should never need its own commit.
 
 
+
+- `crates/linklet-core/src/execution.rs`: shell/direct invocation validation.
+- `crates/linklet-core/src/presentation.rs`: shared MCP content budget.
+- `crates/linklet-core/src/tail.rs`: cursor and character-safe page decisions.
+- `crates/linklet-adapters/src/tail.rs`: bounded reads and file-handle identity.

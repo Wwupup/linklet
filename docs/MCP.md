@@ -242,3 +242,25 @@ absolute output path, elapsed observation time and a bounded combined log tail.
 No state means service readiness. A shell exit says nothing about all its
 descendants. Only running child handles are retained for reaping; no task history,
 restart, supervision or automatic retry is provided.
+
+## Incremental log pages
+
+The first tail call returns the last lines requested (default 20). Pass its
+next_cursor back with the same target and path to read subsequent bytes in order.
+Replies contain text with original newlines, range.start/end (exclusive end),
+next_cursor, has_more, pending_bytes, encoding, lossy, line-fragment flags and
+file_changed. Empty text with has_more=false is a successful observation.
+
+Cursor pages are sized before their cursor is issued, so the 32 KiB MCP content
+budget cannot silently skip log text. CLI pages allow up to 1 MiB of decoded
+text. Each call reads at most 16 MiB of source bytes, including bounded prefix
+and boundary samples. A long unfinished line can span several pages; a partial
+character remains before the cursor until its remaining bytes arrive.
+
+Cursors bind the controller target, resolved path, open-handle file identity,
+encoding and byte position. Each call authenticates normally; there is no cursor
+session on the server. Replacement, shortening, changed boundary samples, or a
+newly detected encoding are reported and restart from the file beginning. A
+missing file is an error. continuity=boundary_checked only describes the sampled
+boundary: arbitrary rewrites outside those samples cannot be ruled out. A reset
+never claims continuity with the previous contents.

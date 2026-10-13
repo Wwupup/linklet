@@ -153,3 +153,8 @@ Prefer program with args when invoking a known executable. Use command for shell
 builtins, pipelines, redirection, and Windows batch files. Set cwd explicitly
 when a command depends on a project directory. Read structuredContent; MCP text
 is a short summary and large content has explicit presentation_truncated flags.
+
+For log following, retain tail.next_cursor and pass it with the same target and
+path. Drain has_more pages before waiting for new output. Honor file_changed and
+continuity warnings; do not merge a reset with older contents as an uninterrupted
+stream. For spawn, inspect the observed state and exit code; no state means ready.

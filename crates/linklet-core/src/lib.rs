@@ -67,3 +67,6 @@ pub mod execution;
 
 /// Bounded structured tool presentation.
 pub mod presentation;
+
+/// Stateless incremental log results.
+pub mod tail;

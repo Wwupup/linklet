@@ -526,30 +526,17 @@ fn a_tail_reports_lines_and_not_matches() {
     let search = tail(
         &agent.address,
         &TailRequest {
+            cursor: None,
+            content_bytes: linklet_core::tail::PAGE_BYTES,
             path: "app.log".to_string(),
             count: 2,
         },
     )
     .expect("the agent should answer");
 
-    assert!(search.searched, "{search:#?}");
-    assert_eq!(search.noun, linklet_core::search::Noun::Lines);
-    let rendered = linklet_core::search::render(&search);
-    assert!(
-        rendered.contains(&format!(
-            "lines in {}",
-            agent.root.join("app.log").display()
-        )),
-        "{rendered}"
-    );
-    assert!(!rendered.contains("matches"), "{rendered}");
-    assert_eq!(
-        search
-            .lines
-            .iter()
-            .map(|line| line.text.as_str())
-            .collect::<Vec<_>>(),
-        vec!["three", "four"],
-        "the last two, in the order they appear"
-    );
+    assert_eq!(search.count, 2);
+    assert_eq!(search.text, "three\nfour\n");
+    assert!(!search.has_more);
+    assert_eq!(search.range.end, 19);
+    assert!(!search.next_cursor.is_empty());
 }

@@ -613,7 +613,13 @@ fn file_tools_use_absolute_and_parent_paths_outside_the_startup_directory() {
                         .expect("stdout")
                         .contains("crossed")
                 ),
-                "grep" | "tail" => assert!(
+                "tail" => assert!(
+                    result["structuredContent"]["data"]["text"]
+                        .as_str()
+                        .expect("tail text")
+                        .contains("crossed")
+                ),
+                "grep" => assert!(
                     result["structuredContent"]["data"]["lines"]
                         .to_string()
                         .contains("crossed")
