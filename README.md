@@ -324,7 +324,11 @@ code is the only credential tool argument.
 
 Tool results include structuredContent and outputSchema, with explicit success,
 failure, or unknown outcome. Pair and probe also return the target account, elevation,
-shell, startup directory, and limits. A lost reply never triggers an automatic retry.
+shell, startup directory, and limits. They also return a startup snapshot of Python 3
+and PowerShell runtimes found on the target's PATH, with verified executable paths,
+versions, or explicit failure states. Use an available runtime's `program` with
+literal `args`; no new execution tool is needed. Restart the agent to refresh this
+snapshot. A lost reply never triggers an automatic retry.
 
 `docs/MCP.md` is the surface as its maintainer sees it: why each tool is separate,
 and the two places a caller goes wrong. `integrations/` is in this repository, and a

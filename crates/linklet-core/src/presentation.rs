@@ -68,14 +68,20 @@ fn shares(sizes: &[usize], mut budget: usize) -> Vec<usize> {
 /// are budgeted before their cursor is issued, so this function never cuts them.
 pub fn present(outcome: &ToolOutcome) -> ToolOutcome {
     let mut result = outcome.clone();
-    result.text = prefix(outcome.text.lines().next().unwrap_or(""), 1024).into();
+    let runtime_context = outcome.data.get("runtimes").is_some_and(Value::is_object);
+    result.text = if runtime_context {
+        prefix(&outcome.text, 4096)
+    } else {
+        prefix(outcome.text.lines().next().unwrap_or(""), 1024)
+    }
+    .into();
     let mut content = Vec::new();
     slots(&result.data, "", &mut content);
     let limits = shares(
         &content.iter().map(|(_, size, _)| *size).collect::<Vec<_>>(),
         CONTENT_BUDGET - result.text.len(),
     );
-    let mut shortened = false;
+    let mut shortened = runtime_context && result.text.len() < outcome.text.len();
     for ((path, size, stream), limit) in content.into_iter().zip(limits) {
         if stream {
             if let Some(value) = result.data.pointer_mut(&path) {

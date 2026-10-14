@@ -117,6 +117,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-core/src/result.rs` | typed operation status, errors, and structured result envelopes |
 | `crates/linklet-core/src/identity.rs` | authenticated target process context |
 | `crates/linklet-adapters/src/identity.rs` | bounded OS account and hostname observation |
+| `crates/linklet-adapters/src/runtimes.rs` | bounded startup Python and PowerShell execution probes |
 | `crates/linklet-adapters/src/failure.rs` | OS error categories at I/O boundaries |
 | `crates/linklet-core/src/tool.rs` | the MCP tool surface: what may be called, and the rules on it |
 | `crates/linklet-core/src/wire.rs` | the host-agent protocol: paths, messages, and the hex for sealed bodies |

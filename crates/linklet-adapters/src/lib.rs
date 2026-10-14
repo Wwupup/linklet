@@ -30,6 +30,7 @@ mod listing;
 mod mcp;
 pub mod pairing;
 mod processes;
+pub mod runtimes;
 mod search;
 mod system;
 mod tcp;

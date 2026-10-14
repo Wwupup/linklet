@@ -52,8 +52,18 @@ fn identity() -> Value {
         json!({"name":string(),"version":string(),"hostname":nullable(string()),
         "os":nullable(string()),"arch":nullable(string()),"account":nullable(string()),
         "elevated":nullable(boolean()),"shell":nullable(string()),"startup_cwd":nullable(string()),
-        "observed_at_ms":nullable(count()),"limits":{"type":["object","null"]},"warnings":strings()}),
+        "observed_at_ms":nullable(count()),"limits":{"type":["object","null"]},"warnings":strings(),
+        "runtimes":nullable(object(json!({"observed_at_ms":count(),"entries":array(runtime())})))}),
     )
+}
+
+fn runtime() -> Value {
+    let name = json!({"enum":["python","powershell","pwsh"]});
+    let nonempty = json!({"type":"string","minLength":1});
+    json!({"anyOf":[
+        object(json!({"name":name,"status":{"const":"available"},"program":nonempty,"version":nonempty})),
+        object(json!({"name":name,"status":{"enum":["not_found","failed","timed_out"]},"reason":nonempty}))
+    ]})
 }
 
 pub(crate) fn tool(name: &str) -> Value {

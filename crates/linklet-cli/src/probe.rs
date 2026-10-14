@@ -13,8 +13,11 @@ pub fn run_probe(agent: &str, token: &Token) -> CommandOutcome {
     });
     let error = match result {
         Ok(Liveness::Answered(identity)) => {
-            let mut result = CommandOutcome::answered(format!("answered {agent}: {identity}"), 0)
-                .facts(agent, identity.to_json());
+            let mut result = CommandOutcome::answered(
+                format!("answered {agent}: {identity}{}", identity.runtime_summary()),
+                0,
+            )
+            .facts(agent, identity.to_json());
             result.tool.warnings = identity.warnings;
             return result;
         }

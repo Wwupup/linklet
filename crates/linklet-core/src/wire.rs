@@ -2205,6 +2205,19 @@ pub fn identity_from_json(reply: &Reply) -> Result<crate::identity::Identity, Wi
             "identity name and version must be nonempty".into(),
         ));
     }
+    if let Some(snapshot) = &identity.runtimes {
+        for runtime in &snapshot.entries {
+            if let crate::identity::RuntimeResult::Available { program, version } = &runtime.result
+                && (program.trim().is_empty()
+                    || program.contains('\0')
+                    || version.trim().is_empty())
+            {
+                return Err(WireError::BadRequest(
+                    "available runtime program and version must be nonempty, without NUL in program".into(),
+                ));
+            }
+        }
+    }
     Ok(identity)
 }
 

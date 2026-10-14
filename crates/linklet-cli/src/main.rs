@@ -1700,7 +1700,10 @@ fn pair_on(agent: &str, code: &str) -> CommandOutcome {
         linklet_adapters::credentials::save_token(&directory, agent, &token)
             .map_err(linklet_client::CallError::Local)?;
         Ok((
-            format!("paired with {agent} ({identity}); credential saved for this account"),
+            format!(
+                "paired with {agent} ({identity}); credential saved for this account{}",
+                identity.runtime_summary()
+            ),
             identity,
         ))
     })();

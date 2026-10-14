@@ -128,6 +128,50 @@ and limits. Unknown auxiliary facts are null with warnings; they do not undo pai
 Saved credentials never appear in results. A sudo-capable account is not reported
 as elevated unless the agent itself is currently running as root.
 
+### Startup runtime context
+
+Before accepting connections, the agent probes Python 3 (`python3`, then `python`),
+PowerShell (`pwsh`), and, on Windows, Windows PowerShell (`powershell.exe`). Only
+the agent's startup PATH is searched, selecting the first file for each name;
+there is no disk scan, launcher lookup, package inventory, or automatic install.
+Each family shares a two-second execution/output deadline across its candidates;
+the probes run sequentially and retain at most 8192 bytes per stream. OS path
+lookup and process creation are subject to the operating system's own delays.
+Profiles are disabled and Python startup hooks are excluded from the probe.
+Stdin is closed. A timed-out probe child is killed and reaped.
+
+`pair` and `probe` include `data.runtimes`, with a separate `observed_at_ms` and
+`entries`. An entry names `python`, `pwsh`, or `powershell` and has one status:
+
+- `available`: a short program ran and returned `program` (absolute path) and
+  `version`. Use that path with literal `args` in `exec` or `spawn`.
+- `not_found`: no candidate was found on the startup PATH, not proof that the
+  machine has no installation elsewhere.
+- `failed`: launch, exit, or output validation failed; `reason` describes it.
+- `timed_out`: the observation deadline expired; availability remains unknown.
+
+Runtime failures do not fail startup, pairing, or authenticated identity. Peers
+without this additive field yield `runtimes: null`, never an empty capability claim.
+The same snapshot is returned for every connection to this agent process. Restart
+the agent to refresh after an installation or PATH change. This does not promise
+third-party packages, project virtual environments, future execution success, or
+additional OS permissions. A failed command is not automatically retried in Python.
+
+MCP initialization supplies instructions for obtaining target context; it does not
+connect to every remembered target. Tool descriptions advertise runtime context,
+and replies include both structured observations and a readable summary. Up to
+4096 bytes of identity text are retained within the shared 32 KiB content budget;
+any shortening is marked in presentation metadata. For example, after obtaining
+the actual interpreter path (the address and path below are illustrative):
+
+```json
+{"agent":"10.0.0.5:8787","program":"C:\\Python313\\python.exe","args":["-c","print('hello')"]}
+```
+
+Longer scripts can be transferred first and run by filename. `python -` is not a
+script transport because command stdin is closed. PowerShell inline code uses
+`-NoProfile`, `-NonInteractive`, `-Command` in its literal argument array.
+
 `exec` sets `isError=true` for nonzero command exits, timeouts, or failed calls.
 A batch is an error if any target fails. `probe` is an error unless authentication
 and identity validation succeed. Truncation alone does not fail an execution.

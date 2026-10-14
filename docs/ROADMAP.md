@@ -27,6 +27,12 @@ any command fails. CLI and the 14 MCP tools share typed results. MCP exposes out
 structuredContent; unknown outcomes are distinct from known failures. Pair and probe
 return authenticated process context. Saved credentials survive the protocol upgrade.
 
+Startup now probes Python 3 and PowerShell on the agent's PATH. Pair and probe
+return cached per-target runtime paths, versions, execution states and observation
+time. Existing direct execution accepts those paths. Runtime failures do not
+prevent service startup; restarting the agent refreshes the snapshot. See MCP.md
+for search scope and probe limits.
+
 The agent is an ordinary process: startup makes it available and exit makes it
 offline. No service installation, autostart, supervision, or automatic restart is
 provided. Earlier M10 entries below are historical measurements and decisions;

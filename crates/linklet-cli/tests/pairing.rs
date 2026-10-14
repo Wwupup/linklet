@@ -1,4 +1,6 @@
 //! Pair once, then use credentials across independent CLI and MCP processes.
+#[path = "../../test-support/runtime_fixture_support.rs"]
+mod runtime_fixture_support;
 #[path = "../../test-support/schemas.rs"]
 mod schemas;
 use serde_json::{Value, json};
@@ -14,6 +16,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_runtimes(None)
+    }
+    fn with_runtimes(runtime_mode: Option<&str>) -> Self {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!(
             "linklet-pair-cli-{}-{}",
@@ -28,17 +33,36 @@ impl Fixture {
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| repository.join("target"));
-        let mut agent = Command::new(target.join(format!(
+        let mut command = Command::new(target.join(format!(
             "debug/linklet-agent{}",
             std::env::consts::EXE_SUFFIX
-        )))
-        .args(["--port", "0", "--no-log"])
-        .env("LOCALAPPDATA", root.join("target"))
-        .env("XDG_CONFIG_HOME", root.join("target"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("start agent");
+        )));
+        if let Some(mode) = runtime_mode {
+            let bin = root.join("runtime bin");
+            runtime_fixture_support::build(&bin);
+            for name in ["python", "python3"] {
+                std::fs::write(bin.join(format!("{name}.mode")), mode).expect("runtime mode");
+            }
+            // Only replace Python here; credential and account observations use
+            // the real Windows PowerShell independently of runtime discovery.
+            for name in ["powershell", "pwsh"] {
+                std::fs::remove_file(bin.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)))
+                    .expect("remove unused interpreter alias");
+            }
+            let mut paths = vec![bin];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").expect("PATH"),
+            ));
+            command.env("PATH", std::env::join_paths(paths).expect("fixture PATH"));
+        }
+        let mut agent = command
+            .args(["--port", "0", "--no-log"])
+            .env("LOCALAPPDATA", root.join("target"))
+            .env("XDG_CONFIG_HOME", root.join("target"))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start agent");
         let mut reader = BufReader::new(agent.stdout.take().expect("stdout"));
         let mut line = String::new();
         reader.read_line(&mut line).expect("banner");
@@ -228,6 +252,117 @@ fn mcp_calls(f: &Fixture, controller: &str, messages: &[Value]) -> Vec<Value> {
 }
 fn call(id: u32, name: &str, args: Value) -> Value {
     json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}})
+}
+
+#[test]
+fn pair_and_probe_publish_cached_target_runtimes_that_exec_can_use() {
+    let first = Fixture::with_runtimes(Some("available"));
+    let second = Fixture::with_runtimes(Some("available"));
+    // Discovery must finish at startup, before even the first pairing call.
+    for name in ["python", "python3"] {
+        std::fs::write(
+            first.root.join("runtime bin").join(format!("{name}.mode")),
+            "fail",
+        )
+        .expect("change interpreter after startup");
+    }
+    let paired = mcp_calls(
+        &first,
+        "runtime-controller",
+        &[
+            call(1, "pair", json!({"agent":first.address,"code":first.code})),
+            call(
+                2,
+                "pair",
+                json!({"agent":second.address,"code":second.code}),
+            ),
+        ],
+    );
+    let snapshot = &paired[0]["result"]["structuredContent"]["data"]["runtimes"];
+    assert!(
+        snapshot["observed_at_ms"].is_u64(),
+        "runtime snapshot missing: {paired:?}"
+    );
+    let python = snapshot["entries"]
+        .as_array()
+        .expect("entries")
+        .iter()
+        .find(|r| r["name"] == "python")
+        .expect("python observation");
+    assert_eq!(python["status"], "available");
+    let program = python["program"].as_str().expect("direct program");
+    assert!(Path::new(program).starts_with(&first.root));
+    let other = &paired[1]["result"]["structuredContent"]["data"]["runtimes"];
+    assert_ne!(snapshot["entries"], other["entries"], "per-target programs");
+    assert!(
+        paired[0]["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text")
+            .contains(program)
+    );
+
+    // Probe must reuse the same startup snapshot, too.
+    let probed = mcp_calls(
+        &first,
+        "runtime-controller",
+        &[call(3, "probe", json!({"agent":first.address}))],
+    );
+    assert_eq!(
+        probed[0]["result"]["structuredContent"]["data"]["runtimes"],
+        *snapshot
+    );
+    for name in ["python", "python3"] {
+        std::fs::remove_file(first.root.join("runtime bin").join(format!("{name}.mode")))
+            .expect("restore interpreter");
+    }
+    let executed = mcp_calls(
+        &first,
+        "runtime-controller",
+        &[call(
+            4,
+            "exec",
+            json!({"agent":first.address,"program":program,"args":["-c","print('hello')"]}),
+        )],
+    );
+    assert_eq!(executed[0]["result"]["isError"], false);
+    assert!(
+        executed[0]["result"]["structuredContent"]["data"]["stdout"]["text"]
+            .as_str()
+            .expect("stdout")
+            .contains("script executed")
+    );
+}
+
+#[test]
+fn failed_and_timed_out_runtime_probes_do_not_prevent_pairing_or_commands() {
+    for (mode, status) in [("fail", "failed"), ("hang", "timed_out")] {
+        let f = Fixture::with_runtimes(Some(mode));
+        let replies = mcp_calls(
+            &f,
+            "controller",
+            &[
+                call(1, "pair", json!({"agent":f.address,"code":f.code})),
+                call(
+                    2,
+                    "exec",
+                    json!({"agent":f.address,"command":"echo still-usable"}),
+                ),
+            ],
+        );
+        for reply in &replies {
+            assert_eq!(reply["result"]["isError"], false, "{reply}");
+        }
+        let entries = replies[0]["result"]["structuredContent"]["data"]["runtimes"]["entries"]
+            .as_array()
+            .expect("runtime observations");
+        assert_eq!(
+            entries
+                .iter()
+                .find(|r| r["name"] == "python")
+                .expect("python")["status"],
+            status
+        );
+    }
 }
 
 #[test]

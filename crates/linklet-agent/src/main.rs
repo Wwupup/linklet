@@ -224,6 +224,8 @@ fn main() {
         }
     };
 
+    let runtimes = std::sync::Arc::new(linklet_adapters::runtimes::observe());
+
     // Bound before the banner is printed, so that "listening on" is only said
     // once it is true. A message that claims something before trying it is the
     // failure mode this whole project is a reaction to.
@@ -274,8 +276,9 @@ fn main() {
                 let paths = paths.clone();
                 let log = request_log.clone();
                 let pairing = pairing.clone();
+                let runtimes = runtimes.clone();
                 std::thread::spawn(move || {
-                    server::serve_connection(stream, &token, &paths, &log, &pairing)
+                    server::serve_connection(stream, &token, &paths, &log, &pairing, &runtimes)
                 });
             }
             // One failed accept is not a reason to stop serving. The listener is

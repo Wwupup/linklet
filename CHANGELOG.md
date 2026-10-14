@@ -11,6 +11,21 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+## [0.5.0] -- 2026-10-14
+
+### Added
+
+- Agents probe Python 3 and PowerShell on their startup PATH. Pair and probe
+  return verified interpreter paths and versions, or explicit not-found, failed,
+  and timed-out states. CLI and MCP show the same per-target startup snapshot;
+  restart the agent to refresh it. Existing exec/spawn program arguments run the
+  chosen interpreter, without adding tools or requiring Python to start Linklet.
+
+### Known gaps
+
+- The seven real-machine smoke claims have not been run against a second machine
+  for this release.
+
 ## [0.4.1] -- 2026-10-13
 
 This is the first published package of the 0.4 series and includes all changes

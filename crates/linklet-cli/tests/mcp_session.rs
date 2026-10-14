@@ -232,6 +232,24 @@ fn initialize_reports_its_supported_protocol_version() {
 }
 
 #[test]
+fn initialize_explains_where_to_obtain_target_runtime_capabilities() {
+    let replies = session(&[&request(
+        1,
+        "initialize",
+        r#"{"protocolVersion":"2025-06-18"}"#,
+    )]);
+    let instructions = replies[0]["result"]["instructions"]
+        .as_str()
+        .expect("connection guidance");
+    for word in ["pair", "probe", "runtimes", "program", "args"] {
+        assert!(
+            instructions.contains(word),
+            "missing {word}: {instructions}"
+        );
+    }
+}
+
+#[test]
 fn the_tool_list_holds_one_tool_with_a_short_description() {
     let replies = session(&[&request(1, "tools/list", "")]);
 

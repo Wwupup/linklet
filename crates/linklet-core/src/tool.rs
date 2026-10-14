@@ -338,7 +338,7 @@ pub fn tools() -> Vec<Tool> {
     let mut tools = vec![
         Tool {
             name: "pair",
-            description: "Pair by six-digit code and remember the target.",
+            description: "Pair and remember a target; return context and runtimes.",
             input_schema: serde_json::json!({
                 "type":"object", "properties":{
                     "agent":{"type":"string", "description":"host:port"},
@@ -682,7 +682,7 @@ pub fn tools() -> Vec<Tool> {
         },
         Tool {
             name: "probe",
-            description: "Authenticate a remote agent and return name/version.",
+            description: "Authenticate a target; return context and runtimes.",
             input_schema: serde_json::json!({"type":"object","properties":{
                 "agent":{"type":"string","minLength":1,"description":"the agent's host:port"}
             },"required":["agent"],"additionalProperties":false}),

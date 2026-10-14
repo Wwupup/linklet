@@ -34,6 +34,7 @@ use linklet_adapters::{
 use linklet_core::auth::{self, Token};
 use linklet_core::channel::{EphemeralPublic, Handshake, Sealed};
 use linklet_core::frame::{FrameError, Kind};
+use linklet_core::identity::RuntimeSnapshot;
 use linklet_core::log::{Operation, Outcome};
 use linklet_core::transfer::{Destination, Manifest};
 use linklet_core::wire::{self, Request, WireError};
@@ -78,6 +79,7 @@ pub fn serve_connection(
     paths: &Destination,
     log: &RequestLog,
     pairing: &PairingState,
+    runtimes: &RuntimeSnapshot,
 ) {
     let mut connection = Connection::with_budget(stream, HELLO_BUDGET);
 
@@ -92,7 +94,7 @@ pub fn serve_connection(
     if let Ok(value) = wire::parse_body(&hello)
         && value.get("pairing").is_some()
     {
-        serve_pairing(&mut connection, &value, expected, pairing, paths);
+        serve_pairing(&mut connection, &value, expected, pairing, paths, runtimes);
         return;
     }
     let session = match begin_session(&hello, expected) {
@@ -118,7 +120,7 @@ pub fn serve_connection(
     };
 
     connection.set_budget(MESSAGE_BUDGET);
-    answer_one(&mut connection, session, paths, log);
+    answer_one(&mut connection, session, paths, log, runtimes);
 }
 
 /// Reads the one sealed request on a connection and answers it.
@@ -138,6 +140,7 @@ fn answer_one(
     mut session: Box<dyn Sealed>,
     paths: &Destination,
     log: &RequestLog,
+    runtimes: &RuntimeSnapshot,
 ) {
     let Ok(body) = connection.read_frame(Kind::Sealed) else {
         // Nothing was read, so there is nothing to name: no operation arrived.
@@ -173,7 +176,7 @@ fn answer_one(
     let id = log.taken(named);
     let started = Instant::now();
 
-    let reply = answer(connection, session.as_mut(), &plaintext, paths);
+    let reply = answer(connection, session.as_mut(), &plaintext, paths, runtimes);
 
     // Sealed with the same session, so the command's output -- the part a caller most
     // wants kept -- never crosses the network in the clear. One buffer, reused for
@@ -329,13 +332,12 @@ fn answer(
     session: &mut dyn Sealed,
     plaintext: &[u8],
     paths: &Destination,
+    runtimes: &RuntimeSnapshot,
 ) -> Response {
     let request = wire::parse_body(plaintext).and_then(|value| wire::request_from_json(&value));
 
     match request {
-        Ok(Request::Identity) => Response::Sealed(wire::reply_result(
-            linklet_adapters::identity::observe(paths.base(), env!("CARGO_PKG_VERSION")).to_json(),
-        )),
+        Ok(Request::Identity) => Response::Sealed(wire::reply_result(identity(paths, runtimes))),
         Ok(Request::Run(run)) => Response::Sealed(run_reply(&crate::execute::run(&run))),
         Ok(Request::Push(manifest)) => {
             Response::Sealed(receive(connection, session, &manifest, paths))
@@ -631,6 +633,13 @@ fn begin_session(
     ))
 }
 
+/// Current process context with the immutable startup runtime observations.
+fn identity(paths: &Destination, runtimes: &RuntimeSnapshot) -> Value {
+    let mut identity = linklet_adapters::identity::observe(paths.base(), env!("CARGO_PKG_VERSION"));
+    identity.runtimes = Some(runtimes.clone());
+    identity.to_json()
+}
+
 /// One password record and one global budget for all pairing connections.
 pub struct PairingState {
     server: linklet_adapters::pairing::PairingServer,
@@ -652,6 +661,7 @@ fn serve_pairing(
     token: &Token,
     state: &PairingState,
     paths: &Destination,
+    runtimes: &RuntimeSnapshot,
 ) {
     let begin = || -> Result<_, String> {
         let message = linklet_core::pairing::read_message(hello)?;
@@ -699,7 +709,7 @@ fn serve_pairing(
     match finish() {
         Ok(mut session) => {
             let reply = wire::reply_result(
-                serde_json::json!({"token":token.expose(), "identity":linklet_adapters::identity::observe(paths.base(), env!("CARGO_PKG_VERSION")).to_json()}),
+                serde_json::json!({"token":token.expose(), "identity":identity(paths, runtimes)}),
             );
             let _ = write_reply(connection, session.as_mut(), &reply);
         }

@@ -80,7 +80,8 @@ pub fn handle(message: &Value, run_tool: &RunTool<'_>) -> Action {
             serde_json::json!({
                 "protocolVersion": FALLBACK_PROTOCOL_VERSION,
                 "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION}
+                "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+                "instructions": "Use pair for a new target or probe for an already paired target to obtain its process context and startup runtimes. Choose an available runtime for the task and use its program with literal args in exec or spawn. Runtime observations belong to that target; they do not promise packages or permissions. Restart the target agent to refresh its runtime snapshot."
             }),
         )),
         "tools/list" => Action::Reply(reply(&id, serde_json::json!({"tools": tool_list_json()}))),

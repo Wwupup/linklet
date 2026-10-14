@@ -10,7 +10,7 @@ be deployed as a pair. Nothing here is published to a registry, and no crate is 
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
-Release **0.4.1 uses protocol 3**.
+Release **0.5.0 uses protocol 3**.
 Typed results, per-call execution modes/directories, incremental log cursors and
 startup observation accompany bounded command streams.
 Upgrade the host and agent together; protocol 1 and 2 peers are refused before a
@@ -23,6 +23,11 @@ The v0.4.0 tag failed Windows CI before publication; 0.4.1 is the first
 published package of this series and leaves that tag unchanged.
 
 ## What the number means
+
+Release 0.5.0 adds an optional identity field with a startup snapshot of verified
+Python and PowerShell interpreters. Old readers ignore the field and new readers
+report null when it is absent. This is a minor feature release and does not change
+wire protocol 3.
 
 `0.x.y`, and while the major is 0 the minor is the interesting one.
 

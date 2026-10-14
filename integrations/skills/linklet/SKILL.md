@@ -20,6 +20,20 @@ account, elevation, shell, startup directory and limits: reuse this context.
 For an already paired target, `probe` obtains the same context in one call.
 Unknown auxiliary facts are null with warnings; sudo eligibility is not elevation.
 
+Pair and probe also return `runtimes`, a per-target startup snapshot of Python 3
+and PowerShell found on the agent's PATH. Reuse its `available` entries: choose
+the language suited to the task and pass its absolute `program` with literal
+`args` to exec/spawn. Python inline code uses `-c`; PowerShell uses `-NoProfile`,
+`-NonInteractive`, `-Command`. For long scripts, transfer a file and execute it.
+Stdin is closed, so do not use `python -` to send source.
+
+An available interpreter does not imply third-party packages, a project virtual
+environment, or extra permissions. `not_found` describes only the PATH search;
+`failed` and `timed_out` carry reasons, and null means an older peer did not report
+runtimes. These observations do not fail authentication. Restart the agent to
+refresh after environment changes; do not repeat probes expecting a new scan or
+automatically repeat a failed operation in another language.
+
 Do not request a long-term token or configure the removed LINKLET_TOKEN /
 LINKLET_TOKEN_FILE variables. `linklet-agent init` rotates the pairing state
 after the old agent stops, so controllers then need to pair again.
