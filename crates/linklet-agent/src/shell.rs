@@ -36,7 +36,7 @@ pub fn command_line(line: &str) -> Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let mut command = Command::new("cmd.exe");
+        let mut command = linklet_adapters::background_command("cmd.exe");
         // cmd removes this outer pair; raw_arg preserves the caller's inner quotes.
         command
             .args(["/D", "/S", "/C"])
@@ -72,7 +72,7 @@ pub fn kill_tree(pid: u32) {
         // a shell that has started a program leaves that program running, holding the pipes,
         // and the caller waits for output that will never arrive because nothing is going to
         // write it and nothing has closed it.
-        let _ = Command::new("taskkill")
+        let _ = linklet_adapters::background_command("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -203,7 +203,7 @@ pub fn invocation(
             } else {
                 path.to_path_buf()
             };
-            let mut command = Command::new(executable);
+            let mut command = linklet_adapters::background_command(executable);
             command.args(args);
             #[cfg(unix)]
             {

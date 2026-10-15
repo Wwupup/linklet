@@ -4,7 +4,7 @@ use serde_json::json;
 use std::{
     io::Read,
     path::Path,
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -44,13 +44,13 @@ pub fn observe(startup: &Path, version: &str) -> Identity {
 fn account() -> Result<(String, String, bool), String> {
     #[cfg(windows)]
     let mut command = {
-        let mut command = Command::new("powershell.exe");
+        let mut command = crate::background_command("powershell.exe");
         command.args(["-NoProfile", "-NonInteractive", "-Command", r#"[Console]::OutputEncoding=New-Object Text.UTF8Encoding($false);$i=[Security.Principal.WindowsIdentity]::GetCurrent();$p=New-Object Security.Principal.WindowsPrincipal($i);@{hostname=[Environment]::MachineName;account=$i.Name;elevated=$p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)}|ConvertTo-Json -Compress"#]);
         command
     };
     #[cfg(not(windows))]
     let mut command = {
-        let mut command = Command::new("sh");
+        let mut command = crate::background_command("sh");
         command.args(["-c", "uname -n && id -un && id -u"]);
         command
     };

@@ -126,9 +126,9 @@ $loss=$false; try {{ $t=$e.GetString($b,$skip,$b.Length-$skip) }} catch {{ $loss
 #[cfg(windows)]
 fn run_decoder(bytes: &[u8], script: &str) -> Result<serde_json::Value, String> {
     use std::io::{Read, Write};
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
-    let mut child = Command::new("powershell.exe")
+    let mut child = crate::background_command("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

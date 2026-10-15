@@ -9,7 +9,7 @@
 //! dependency on a program whose output differs across versions. `tasklist` writes CSV, and
 //! CSV is a format this project can pin in a test.
 
-use std::process::Command;
+use crate::background_command;
 
 use linklet_core::process::Process;
 
@@ -36,7 +36,7 @@ use super::{MAX_READ, Parsed};
 /// The reason `tasklist` could not be run. It is an error rather than an empty list because
 /// the two mean opposite things to a caller deciding whether it is safe to overwrite a file.
 pub(super) fn read_all() -> Result<Parsed, linklet_core::result::OperationError> {
-    let output = Command::new("tasklist")
+    let output = background_command("tasklist")
         .args(["/FO", "CSV", "/NH"])
         .output()
         .map_err(|error| {
@@ -66,7 +66,7 @@ pub(super) fn read_all() -> Result<Parsed, linklet_core::result::OperationError>
 /// gone, which is the outcome the caller wanted, so the answer is checked against the machine
 /// rather than against the exit code.
 pub(super) fn stop(pid: u32) -> bool {
-    let _ = Command::new("taskkill")
+    let _ = background_command("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output();
 
@@ -81,7 +81,7 @@ pub(super) fn stop(pid: u32) -> bool {
 /// exactly the answer a deploy loop must not be given. The filtered form returns the one pid or
 /// the "no tasks" notice, and the notice is read as "gone" because that is what it says.
 fn exists(pid: u32) -> bool {
-    let output = Command::new("tasklist")
+    let output = background_command("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
         .output();
 
@@ -104,7 +104,7 @@ fn exists(pid: u32) -> bool {
 /// fail to protect the right one, and both are worse than the narrower guard the caller is told
 /// about.
 pub(super) fn parent_pid(pid: u32) -> Option<u32> {
-    let output = Command::new("wmic")
+    let output = background_command("wmic")
         .args([
             "process",
             "where",

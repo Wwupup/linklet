@@ -4,7 +4,7 @@
 //! in `linklet_core::discover`, where it is a table of tests rather than an experiment on
 //! somebody's network -- this module only runs the two programs and hands the text over.
 
-use std::process::Command;
+use crate::background_command;
 
 use linklet_core::discover::{Interface, dotted_quads_in, parse_ipconfig};
 
@@ -17,7 +17,7 @@ use linklet_core::discover::{Interface, dotted_quads_in, parse_ipconfig};
 /// "the interfaces could not be read" is a fact about the call, and returning one for the other
 /// is the mistake this project keeps meeting.
 pub(super) fn local_interfaces() -> Result<Vec<Interface>, String> {
-    let output = Command::new("ipconfig").output();
+    let output = background_command("ipconfig").output();
     let output = match output {
         Ok(output) => output,
         Err(error) => return Err(format!("cannot run ipconfig: {error}")),
@@ -47,7 +47,10 @@ pub(super) fn local_interfaces() -> Result<Vec<Interface>, String> {
 /// the scan off a router, and a scan without it is a scan that probes one more address rather
 /// than a scan that fails.
 pub(super) fn default_gateway() -> Option<u32> {
-    let output = Command::new("route").args(["print", "-4"]).output().ok()?;
+    let output = background_command("route")
+        .args(["print", "-4"])
+        .output()
+        .ok()?;
     let text = String::from_utf8_lossy(&output.stdout);
 
     for line in text.lines() {
