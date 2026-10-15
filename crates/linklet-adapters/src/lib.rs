@@ -39,7 +39,7 @@ mod text;
 mod transfer;
 
 pub use channel::{HkdfChannel, OVERHEAD_BYTES};
-pub use command::background_command;
+pub use command::{background_command, declare_no_console};
 pub use connection::{Connection, ConnectionError};
 pub use discovery::{Scan, default_gateway, local_interfaces, plan_here, scan};
 pub use listing::list as list_directory;

@@ -64,6 +64,17 @@ conclusion before it was found.
   confirmed it from the other side**: the bench's `linklet-agent.exe` is still launched
   through that redirect, and `C:\linklet\agent.log` is 0 bytes for an agent that printed a
   banner and has answered every call since. An empty log is evidence about the launcher.
+- **`CREATE_NO_WINDOW` on a helper takes the console's code page away with the window, and a test
+  caught it on CI before it shipped.** A console program takes its own output encoding from the
+  console it is attached to; a helper started with the flag has none, so it answers in the
+  machine's **OEM** code page. A path holding `\u{4e2d}` came back as a literal `?` on
+  `windows-latest`, whose OEM page is 437 and cannot represent it, while the same test passed here,
+  whose OEM page is 936 and can -- so the local suite was green on a broken rule. Measured
+  directly: on a UTF-8 console, `cmd /C cd` returned OEM bytes `D6 D0` with the flag and console
+  UTF-8 bytes without it. The flag is therefore declared by the entry point that has no console
+  (the tray) instead of applied to every helper. The other half is consistent rather than broken:
+  a process that genuinely has no console gets OEM page from `cmd` and from `chcp.com` alike, which
+  is the page the decoder reads, so a windowless agent still decodes its own command output.
 - **Windows commands preserve inner quotes.** The agent now uses
   `cmd.exe /D /S /C` with a raw, outer-quoted command string. Quoted executable
   paths, arguments, pipes, and redirection are supported. The caller still needs
