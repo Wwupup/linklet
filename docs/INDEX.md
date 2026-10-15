@@ -144,11 +144,14 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/src/processes/windows.rs` | `tasklist`, `taskkill`, `wmic`, and the CSV parser that survives a localised notice |
 | `crates/linklet-adapters/src/processes/linux.rs` | `/proc`, `kill`, and the zombie that is not a running process |
 | `crates/linklet-agent/src/shell.rs` | the one module that knows which operating system this is: `cmd /C` or `sh -c` |
+| `crates/linklet-agent/src/lib.rs` | the target service both entry points run: flags, startup, accept and drain |
+| `crates/linklet-agent/src/usage.rs` | the command-line help the console and the tray share |
 | `crates/linklet-adapters/src/mcp.rs` | the MCP server: stdio, newline-delimited JSON-RPC |
 | `crates/linklet-agent/src/server.rs` | the handshake, then one request, and when to answer a refusal |
 | `crates/linklet-agent/src/log.rs` | the agent's log file, and what happens when it cannot be written |
 | `crates/linklet-agent/src/spawn.rs` | starting a program that outlives the request, with its own output file |
 | `crates/linklet-agent/src/execute.rs` | running a command, and killing the tree it started |
+| `crates/linklet-agent/src/lifecycle.rs` | the shared service's shutdown, duplicate-instance and credential-lock tests |
 | `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |
 | `crates/linklet-core/tests/architecture.rs` | the layer rule and the dependency allowlist, checked not trusted |
