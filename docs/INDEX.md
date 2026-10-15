@@ -162,6 +162,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/tests/transfer.rs` | a real file over a real socket, and what a failure may leave |
 | `crates/linklet-adapters/tests/handshake.rs` | forward secrecy and the man in the middle |
 | `crates/linklet-adapters/tests/channel_sealing.rs` | confidentiality, integrity, ordering |
+| `crates/linklet-adapters/tests/console.rs` | which console a helper process is started on |
 | `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |
 | `crates/linklet-agent/tests/tray_binary.rs` | the tray's GUI subsystem, and its service as a process |
 | `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary, transfers included |
