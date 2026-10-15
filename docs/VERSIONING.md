@@ -193,6 +193,24 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    section says "built from this commit", and whose verification lives after the fact, where it
    was actually learned.
 
+   **Done at 0.6.0, after the fact and recorded here for the same reason.** The published
+   `linklet-0.6.0.zip` was downloaded with `gh release download`, checked against the release's own
+   `SHA256SUMS` (`81bf987e3e8b0e18...`), and unpacked. The binaries **inside it** were driven against
+   this machine's own LAN address: the archive's own `linklet-tray.exe` served as the agent on a
+   disposable port and credential store, the archive's `linklet.exe` made the seven claims of
+   `docs/smoke.md` against it, the archive's `linklet-agent.exe` was refused as a duplicate of the
+   account the tray held, and the archive's Linux `linklet` paired with the tray, ran a command,
+   listed a directory whose name is not ASCII, and moved a file each way with a byte-identical
+   digest. All three Windows executables reported 0.6.0, and the Linux pair extracted at mode 755.
+
+   **What that does not establish.** It is one machine, so claim 1 -- the firewall -- is still
+   untested on a real second machine, which is what `CHANGELOG.md` records under `[0.6.0]` against
+   this release. The tray was driven as the process it is; **nobody clicked its menu**, so the
+   menu's copy, log-folder and Exit actions remain a manual check, as `docs/VERIFYING.md` says.
+   The CJK directory was checked on purpose: an earlier build of this release answered `?` for that
+   path on a runner whose OEM code page could not represent it, which is the failure
+   `docs/machine.md` now records.
+
    The Linux half is worth naming separately, because it is new at 0.3.0 and it is the reason the
    archive carries two platforms: the published `bin/x86_64-unknown-linux-gnu/linklet` extracted
    with mode **755**, completed a handshake with the Windows agent, ran a command on it, listed its
