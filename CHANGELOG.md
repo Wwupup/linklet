@@ -11,6 +11,8 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+## [0.6.0] -- 2026-10-15
+
 ### Added
 
 - Windows includes a standalone `linklet-tray.exe` sharing the console agent's
@@ -18,6 +20,11 @@ to answer one question: **what can I do now that I could not do before?**
   connection information, opens the log folder, and exits without a console.
   Exit stops new connections and waits for accepted requests to finish; detached
   programs remain running. Duplicate starts and startup failures show dialogs.
+
+### Known gaps
+
+- The seven real-machine smoke claims have not been run against a second machine
+  for this release. The tray's menu has not been exercised by hand.
 
 ## [0.5.0] -- 2026-10-14
 

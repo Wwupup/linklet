@@ -10,7 +10,7 @@ be deployed as a pair. Nothing here is published to a registry, and no crate is 
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
 
-Release **0.5.0 uses protocol 3**.
+Release **0.6.0 uses protocol 3**.
 Typed results, per-call execution modes/directories, incremental log cursors and
 startup observation accompany bounded command streams.
 Upgrade the host and agent together; protocol 1 and 2 peers are refused before a
@@ -24,10 +24,12 @@ published package of this series and leaves that tag unchanged.
 
 ## What the number means
 
-Release 0.5.0 adds an optional identity field with a startup snapshot of verified
-Python and PowerShell interpreters. Old readers ignore the field and new readers
-report null when it is absent. This is a minor feature release and does not change
-wire protocol 3.
+Release 0.6.0 adds the Windows tray entry point, which runs the console agent's
+service under a tray menu and reads the same credentials. It changes no wire
+protocol and no command line: a target may still run the console agent, and the
+two are refused as duplicates of one account rather than allowed to race for the
+port. This is a minor feature release; protocol 3 is unchanged. The Windows
+release now carries three executables instead of two.
 
 `0.x.y`, and while the major is 0 the minor is the interesting one.
 
