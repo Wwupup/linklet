@@ -41,7 +41,7 @@ Three jobs, because a release is one file and that file cannot be built in one p
 
 | job | where | what it does |
 |---|---|---|
-| `build (x86_64-pc-windows-msvc)` | `windows-latest` | the tag/manifest check, `tools/verify.ps1`, `cargo build --release --locked`, upload the two `.exe` |
+| `build (x86_64-pc-windows-msvc)` | `windows-latest` | the tag/manifest check, `tools/verify.ps1`, `cargo build --release --locked`, upload the three `.exe` (host, console agent, tray agent) |
 | `build (x86_64-unknown-linux-gnu)` | `ubuntu-latest` | the same, uploading the two binaries |
 | `assemble and attach` | `ubuntu-latest` | download both artifacts, `tools/make_release.sh`, `gh release create` |
 
@@ -81,8 +81,8 @@ same thing.
 **What the script checks before it will produce anything**, each because the alternative is
 publishing something quietly wrong:
 
-1. Both triples are present, each with both executables. An archive that holds one platform is the
-   failure the whole arrangement exists to prevent.
+1. Both triples are present, with both console executables and the Windows tray. An archive that
+   holds one platform is the failure the whole arrangement exists to prevent.
 2. Every payload item is in the tag -- checked **before** anything is staged, because a package that
    lost the skill would still publish and would only be missed by whoever tried to follow it.
 3. The finished archive holds every path it meant to, at the top level it meant to.

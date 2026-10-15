@@ -25,6 +25,7 @@ it anywhere and the paths below are relative to the folder it creates:
 linklet-<version>/
   bin/x86_64-pc-windows-msvc/linklet.exe          the host tool, and the MCP server a client is pointed at
   bin/x86_64-pc-windows-msvc/linklet-agent.exe    goes on each Windows machine being driven
+  bin/x86_64-pc-windows-msvc/linklet-tray.exe     the same Windows agent with a tray menu
   bin/x86_64-unknown-linux-gnu/linklet            the same tool for a Linux host
   bin/x86_64-unknown-linux-gnu/linklet-agent      the agent for a Linux machine
   integrations/                                   this file, the client entry, and the skill

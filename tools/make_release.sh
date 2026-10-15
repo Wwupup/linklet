@@ -8,10 +8,12 @@
 #
 #   tools/make_release.sh <version> <binaries-dir> <out-dir> <owner/repo>
 #
-# `<binaries-dir>` holds one directory per target triple, each with the two executables:
+# `<binaries-dir>` holds one directory per target triple, with two console executables
+# and an additional linklet-tray.exe on Windows:
 #
 #   <binaries>/x86_64-pc-windows-msvc/linklet.exe       <binaries>/x86_64-unknown-linux-gnu/linklet
 #   <binaries>/x86_64-pc-windows-msvc/linklet-agent.exe <binaries>/x86_64-unknown-linux-gnu/linklet-agent
+#   <binaries>/x86_64-pc-windows-msvc/linklet-tray.exe
 #
 # Which is exactly what `actions/download-artifact` produces when each platform uploads under its
 # own triple -- so the directory names are not decoration, they are the handover format.
@@ -34,7 +36,7 @@
 #
 # # What it checks before it will produce anything
 #
-#   1. Both triples are present, each with both executables.
+#   1. Both triples are present, with both console executables and the Windows tray.
 #   2. Every payload item is in the tag -- checked **before** anything is staged, because a package
 #      that lost the skill would still publish and would only be missed by whoever tried to follow
 #      it.
@@ -92,11 +94,11 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 stage="$work/stage/linklet-$version"
 
-# 1. Both platforms, both executables. A missing one is a build that did not happen, and an
+# 1. Both platforms, including the Windows tray. A missing binary is a build that did not happen, and an
 #    archive that quietly holds one platform is the failure this file exists to make impossible.
 for triple in "$windows" "$linux"; do
     case "$triple" in
-        "$windows") names=(linklet.exe linklet-agent.exe) ;;
+        "$windows") names=(linklet.exe linklet-agent.exe linklet-tray.exe) ;;
         *) names=(linklet linklet-agent) ;;
     esac
     for name in "${names[@]}"; do
@@ -145,6 +147,7 @@ rm -f "$archive"
 expected=(
     "linklet-$version/bin/$windows/linklet.exe"
     "linklet-$version/bin/$windows/linklet-agent.exe"
+    "linklet-$version/bin/$windows/linklet-tray.exe"
     "linklet-$version/bin/$linux/linklet"
     "linklet-$version/bin/$linux/linklet-agent"
 )
@@ -192,13 +195,14 @@ rest of a deployment beside them:
 linklet-@VERSION@/
   bin/x86_64-pc-windows-msvc/linklet.exe        the host tool, and the MCP server
   bin/x86_64-pc-windows-msvc/linklet-agent.exe  goes on each Windows machine being driven
+  bin/x86_64-pc-windows-msvc/linklet-tray.exe   the Windows agent with a tray menu
   bin/x86_64-unknown-linux-gnu/linklet          the same tool, built on Linux
   bin/x86_64-unknown-linux-gnu/linklet-agent    the agent for a Linux machine
   integrations/                                 the client entry, and the skill
   README.md, CHANGELOG.md, LICENSE, docs/       what an operator reads
 ```
 
-**Each binary is built by the platform it runs on** rather than cross-compiled, and both come from
+**Each binary is built by the platform it runs on** rather than cross-compiled, and all come from
 the tag. **Upgrade the agent and controller together: this release uses command protocol 3,
 and protocol 1 or 2 peers are refused before execution.** Saved pairing credentials remain valid.
 

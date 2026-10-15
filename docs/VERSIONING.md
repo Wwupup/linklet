@@ -4,8 +4,8 @@ What a version number means here, which changes raise it, and what has to happen
 cut. The point of writing it down is that "should this be 0.3.0 or 0.3.1?" has an answer that
 does not depend on who is asking.
 
-**This tool is a set, not a library.** Five crates, one workspace version, and the two binaries
-that matter -- `linklet` and `linklet-agent` -- are built from the same commit and are meant to
+**This tool is a set, not a library.** Five crates, one workspace version, and the entry points
+-- `linklet`, `linklet-agent` and the Windows `linklet-tray` -- are built from the same commit and are meant to
 be deployed as a pair. Nothing here is published to a registry, and no crate is versioned
 independently: a rule that let `linklet-core` be 0.4 while `linklet-agent` was 0.3 would create
 a compatibility matrix for a tool that has exactly one deployment at a time.
@@ -124,6 +124,7 @@ already had once: a release was called 0.2.0 while every binary still reported 0
    |---|---|
    | `bin/x86_64-pc-windows-msvc/linklet.exe` | the host tool, and the MCP server, for Windows |
    | `bin/x86_64-pc-windows-msvc/linklet-agent.exe` | goes on each Windows machine being driven |
+   | `bin/x86_64-pc-windows-msvc/linklet-tray.exe` | the Windows agent with a tray menu |
    | `bin/x86_64-unknown-linux-gnu/linklet` | the same tool, built on Linux |
    | `bin/x86_64-unknown-linux-gnu/linklet-agent` | the agent for a Linux machine |
    | `integrations/` | the client entry, the skill, and how to install both |

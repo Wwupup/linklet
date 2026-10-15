@@ -29,7 +29,7 @@
 # the claims in `docs/smoke.md` need a target on a network, and a runner has none. So this job
 # starts from the premise that the tag was pushed on purpose, after somebody did that.
 #
-# **It does not install anything.** The archive is files: two executables per platform, a client
+# **It does not install anything.** The archive is files: console executables, a Windows tray, a client
 # entry and a skill. Putting an agent on a target is still a file copy a person makes once, and
 # `integrations/README.md` says so where somebody about to try it will read it.
 #
@@ -79,9 +79,11 @@ jobs:
           - os: windows-latest
             triple: x86_64-pc-windows-msvc
             suffix: .exe
+            tray: target/release/linklet-tray.exe
           - os: ubuntu-latest
             triple: x86_64-unknown-linux-gnu
             suffix: ""
+            tray: ""
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
@@ -136,11 +138,11 @@ jobs:
         run: cargo build --workspace --release --locked
 
       # **The handover format is the directory name.** The artifact is named for the target triple
-      # and holds the two executables at its root, so `actions/download-artifact` gives the
+      # and holds that platform's executables at its root, so `actions/download-artifact` gives the
       # assembling job a directory per platform with exactly the names `tools/make_release.sh`
       # expects. `if-no-files-found: error` because an artifact that is empty because a path was
       # misspelled is the failure this release exists to not have.
-      - name: Upload the two binaries
+      - name: Upload the platform binaries
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.triple }}
@@ -148,6 +150,7 @@ jobs:
           path: |
             target/release/linklet${{ matrix.suffix }}
             target/release/linklet-agent${{ matrix.suffix }}
+            ${{ matrix.tray }}
 
   publish:
     name: assemble and attach

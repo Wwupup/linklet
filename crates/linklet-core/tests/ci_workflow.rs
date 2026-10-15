@@ -227,6 +227,33 @@ fn the_release_builds_a_binary_for_every_platform_it_ships() {
 }
 
 #[test]
+fn the_windows_tray_is_uploaded_and_checked_in_the_release_archive() {
+    let release = workflow("release.yml");
+    let script = fs::read_to_string(root().join("tools/make_release.sh")).expect("release script");
+    assert!(
+        release.contains("target/release/linklet-tray.exe"),
+        "Windows tray is not uploaded"
+    );
+    let windows_names = script
+        .split("names=(")
+        .nth(1)
+        .expect("Windows binary names")
+        .split(')')
+        .next()
+        .expect("names");
+    assert!(
+        windows_names
+            .split_whitespace()
+            .any(|name| name == "linklet-tray.exe"),
+        "tray not staged"
+    );
+    assert!(
+        script.contains("\"linklet-$version/bin/$windows/linklet-tray.exe\""),
+        "tray not checked in archive"
+    );
+}
+
+#[test]
 fn the_payload_list_is_the_release_script_s_and_not_the_workflow_s() {
     // The files a release carries that are **not** built used to be listed in the workflow. They
     // are in `tools/make_release.sh` now, for the same reason the four gates are in
