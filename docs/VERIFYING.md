@@ -49,6 +49,14 @@ Three jobs, because a release is one file and that file cannot be built in one p
 shipping something that was never run on the operating system it is for, and the gates that ran on
 that leg would be about the other machine.
 
+The Windows tray's GUI subsystem, shared service shutdown/draining and credential
+ownership are covered by the normal gates. On an interactive Windows desktop,
+also run `cargo test -p linklet-agent --test tray_binary -- --ignored`: it starts
+the real tray binary with disposable credentials, checks a protocol response and
+duplicate-instance refusal, then removes its process and state. This desktop test
+does not assert visual appearance or interact with menus. Check the menu's copy,
+log-folder and Exit actions manually when changing the Windows UI.
+
 **The assembling job runs on Linux, and the reason is not symmetry.** A zip records the Unix mode
 of every entry. `Compress-Archive` writes `external_attr = 0` for every one of them; measured, it
 leaves a Linux binary on disk at mode **600** -- not executable, and not readable by anyone else.

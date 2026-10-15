@@ -152,6 +152,8 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-agent/src/spawn.rs` | starting a program that outlives the request, with its own output file |
 | `crates/linklet-agent/src/execute.rs` | running a command, and killing the tree it started |
 | `crates/linklet-agent/src/lifecycle.rs` | the shared service's shutdown, duplicate-instance and credential-lock tests |
+| `crates/linklet-agent/src/tray.rs` | the Windows tray binary, and the console message on every other platform |
+| `crates/linklet-agent/src/tray_windows.rs` | the tray menu, dialogs, clipboard and draining exit |
 | `crates/linklet-client/src/lib.rs` | the handshake, then the sealed request |
 | `crates/linklet-cli/src/main.rs` | argument parsing and printing, nothing else |
 | `crates/linklet-core/tests/architecture.rs` | the layer rule and the dependency allowlist, checked not trusted |
@@ -161,6 +163,7 @@ Direction: `cli -> adapters -> core`. The core is pure; the edges are thin.
 | `crates/linklet-adapters/tests/handshake.rs` | forward secrecy and the man in the middle |
 | `crates/linklet-adapters/tests/channel_sealing.rs` | confidentiality, integrity, ordering |
 | `crates/linklet-agent/tests/agent_server.rs` | the agent as a process, including who may ask |
+| `crates/linklet-agent/tests/tray_binary.rs` | the tray's GUI subsystem, and its service as a process |
 | `crates/linklet-client/tests/against_agent.rs` | the client against the real agent binary, transfers included |
 | `crates/linklet-client/tests/search.rs` | the search over a socket: the window, the ceiling and the encoding that won |
 | `crates/linklet-client/tests/ps.rs` | the listing and the deploy loop over a socket: look, stop, and confirm -- on whichever platform the suite runs on |

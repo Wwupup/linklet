@@ -10,6 +10,10 @@ description = "The target-side agent: a standalone executable that runs a comman
 name = "linklet-agent"
 path = "src/main.rs"
 
+[[bin]]
+name = "linklet-tray"
+path = "src/tray.rs"
+
 [dependencies]
 serde_json.workspace = true
 linklet-adapters = { path = "../linklet-adapters" }
@@ -21,3 +25,9 @@ linklet-core = { path = "../linklet-core" }
 
 [lints]
 workspace = true
+
+[target."cfg(windows)".dependencies]
+clipboard-win = "5"
+rfd = { version = "0.17", default-features = false }
+tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
+tray-icon = { version = "0.26", default-features = false }

@@ -125,7 +125,14 @@ Set-Location C:\linklet\transfers
 C:\linklet\linklet-agent.exe
 ```
 
-**The log is kept for you**, at `logs/agent.log` beside `linklet-agent.exe`, and it
+For desktop use, double-click `linklet-tray.exe` instead. The tray menu shows the
+pairing code and connection details, copies them, opens the log folder, and exits.
+The tray and console agent share credentials; run only one per account. Exit
+stops new connections and waits for accepted requests to finish. Detached `spawn`
+programs continue running. No autostart or service is installed. Relative paths use
+the startup working directory, shown in the tray's connection details.
+
+**The log is kept for you**, at `logs/agent.log` beside the agent executable, and it
 rolls over at a mebibyte keeping three older files. Nothing has to be passed for that;
 `--log <file>` moves it and `--no-log` turns it off, and the log is where the request
 that never finished is named -- see `docs/smoke.md`.

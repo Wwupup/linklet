@@ -243,7 +243,7 @@ The distinction between 1 and 3 is the one an agent needs: "the machines are dow
 and "the tool could not start" send it to different places, and collapsing them
 into one non-zero code loses exactly the information it came for.
 
-All commands support `-h/--help` and both binaries support `--version`; these exit 0.
+All commands support `-h/--help` and every binary supports `--version`; these exit 0.
 For `exec` and `spawn`, put Linklet options before the command or an explicit `--`.
 Remote `--help` and other options pass through once the command starts.
 
@@ -253,7 +253,24 @@ Probe exit codes: 0 authenticated identity (name and version), 1 connection fail
 
 ## Starting the target process
 
-On Windows, open a terminal as the account whose permissions the agent should use:
+On Windows, double-click `linklet-tray.exe` for a tray icon with no console window.
+Its menu shows the listening port and pairing code, copies connection information,
+opens the log folder, and exits. Connection details include local LAN IPv4 addresses,
+the working directory and log path; use an address reachable from the controller.
+The tray shares the console agent's credentials and account lock, so run only one
+of them per account. Startup errors appear in a dialog.
+
+Exit closes the listener immediately and shows `Stopping` while accepted requests
+finish using their existing timeouts. A slow request or transfer can delay exit;
+detached programs started through `spawn` remain running. The tray runs in the
+current user's desktop session; it does not install a service or enable autostart.
+GUI programs explicitly launched by callers can still display their own windows.
+
+The tray accepts the same startup flags as `linklet-agent`; help and version open
+dialogs. Relative paths still use the startup working directory, shown in Connection
+details. Use a shortcut's `Start in` field when choosing that directory.
+
+For console operation, open a terminal as the account whose permissions the agent should use:
 
 ```powershell
 Set-Location C:\work

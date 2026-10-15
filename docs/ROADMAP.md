@@ -38,6 +38,10 @@ offline. No service installation, autostart, supervision, or automatic restart i
 provided. Earlier M10 entries below are historical measurements and decisions;
 the supervisor and unbounded-output descriptions are superseded by this policy.
 
+Windows also has a minimal `linklet-tray.exe` entry point, sharing the console
+agent's service and credentials. It provides status, pairing/connection details,
+clipboard actions, log-folder access and a draining exit in the logged-in session.
+
 ## M0 -- the skeleton
 
 - [x] workspace, three crates, the dependency-direction rule

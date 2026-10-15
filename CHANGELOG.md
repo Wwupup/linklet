@@ -11,6 +11,14 @@ to answer one question: **what can I do now that I could not do before?**
 
 ## [Unreleased]
 
+### Added
+
+- Windows includes a standalone `linklet-tray.exe` sharing the console agent's
+  service and credentials. Its menu shows status and pairing details, copies
+  connection information, opens the log folder, and exits without a console.
+  Exit stops new connections and waits for accepted requests to finish; detached
+  programs remain running. Duplicate starts and startup failures show dialogs.
+
 ## [0.5.0] -- 2026-10-14
 
 ### Added
